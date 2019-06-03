@@ -66,6 +66,9 @@ public:
   /// loads all snowball stopword files in a directory using LoadSwFile()
   static void LoadSwDir(const TStr& DNm);
 
+  /// return the number of loaded stop words
+  int Len() { return SwStrH.Len(); }
+
   // traverse words
   int FFirstSwId() const {return SwStrH.FFirstKeyId();}
   bool FNextSwId(int& SwId, TStr& SwStr) const {

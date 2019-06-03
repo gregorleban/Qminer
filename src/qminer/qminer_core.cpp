@@ -5583,10 +5583,11 @@ bool TIndex::TQmGixItemPos::Add(const int& Pos) {
 // compute the intersection of the current item (this) and Item, where the maximum allowed difference in
 // positions is MaxDiff. If MaxDiff value is negative we have a match if Item pos is on the left or right of 
 // a position in this
-TIndex::TQmGixItemPos TIndex::TQmGixItemPos::Intersect(const TQmGixItemPos& Item, const int& MaxDiff) const {
+TIndex::TQmGixItemPos TIndex::TQmGixItemPos::Intersect(const TQmGixItemPos& Item, const int& MaxDiff, int& TotalMatchingDiff) const {
     // first remember the length of boths items
     const int PosLen1 = GetPosLen();
     const int PosLen2 = Item.GetPosLen();
+    TotalMatchingDiff = 0;
     // new item
     TQmGixItemPos _Item(RecId);
     // go over all matches and compare them
@@ -5600,10 +5601,12 @@ TIndex::TQmGixItemPos TIndex::TQmGixItemPos::Intersect(const TQmGixItemPos& Item
             }
             // check if we are within the intersection, first simple case
             if (MaxDiff > 0 && Pos1 < Pos2 && Pos2 <= (Pos1 + MaxDiff)) {
+                TotalMatchingDiff += Pos2 - Pos1;
                 _Item.Add(Pos2); break;
             }
             // if MaxDiff is negative we have a match if Pos2 appears on the left OR right side of Pos1
             if (MaxDiff < 0 && abs(Pos2-Pos1) <= -MaxDiff) {
+                TotalMatchingDiff += abs(Pos2-Pos1);
                 _Item.Add(Pos2); break;
             }
             // check for special case when Pos2 is after the break (% 0xFF).
@@ -5611,6 +5614,7 @@ TIndex::TQmGixItemPos TIndex::TQmGixItemPos::Intersect(const TQmGixItemPos& Item
             if ((MaxDiff > 0 && Pos1 < (Pos2 + Modulo) && (Pos2 + Modulo) <= (Pos1 + MaxDiff)) ||
                 (MaxDiff < 0 && Modulo - abs(Pos1 - Pos1) <= -MaxDiff))
             {
+                TotalMatchingDiff += (Pos2 + Modulo) - Pos1;
                 // if we have the case where Pos2 goes over the modulo we likely have a case
                 // where the values in _Item have higher values than Pos2. This would break the
                 // conditions so we have to create a new _Item where the values will be properly sorted
@@ -5719,6 +5723,11 @@ void TIndex::DoJoinQueryTiny(const int& KeyId, const TUInt64V& RecIdV, TUInt64In
     RecIdFqV.Sort();
 }
 
+void TIndex::GetPosItemV(const int& KeyId, const TUInt64& WordId, TVec<TQmGixItemPos>& ItemPosV)
+{
+    GixPos->GetItemV(TQmGixKey(KeyId, WordId), ItemPosV);
+}
+
 void TIndex::DoQueryPos(const int& KeyId, const TUInt64V& WordIdV,
         const TIntV& MaxDiffV, TUInt64IntKdV& RecIdFqV) const {
 
@@ -5726,6 +5735,8 @@ void TIndex::DoQueryPos(const int& KeyId, const TUInt64V& WordIdV,
     QmAssert(MaxDiffV.Len() + 1 == WordIdV.Len());
     // prepare empty return vector
     RecIdFqV.Clr();
+    // value that will contain the minimum distance between matches found using the Intersection()
+    int MinFoundDist;
     // if no words, no results!
     if (WordIdV.Empty()) { return; }
     // get records for the first word from the index and
@@ -5760,7 +5771,7 @@ void TIndex::DoQueryPos(const int& KeyId, const TUInt64V& WordIdV,
                 const TQmGixItemPos& CurrentItem = CurrentItemV[SameRecIdN];
                 Assert(CurrentItem.GetRecId() == WordItem.GetRecId());
                 // find any intersections of words
-                TQmGixItemPos _Item = CurrentItem.Intersect(WordItem, MaxDiff);
+                TQmGixItemPos _Item = CurrentItem.Intersect(WordItem, MaxDiff, MinFoundDist);
                 // keep if there is intersection
                 if (!_Item.Empty()) { _ItemV.Add(_Item); }
                 SameRecIdN++;

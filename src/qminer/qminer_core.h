@@ -3124,7 +3124,7 @@ private:
         TStr GetKeyNm(const TQmGixKey& Key) const;
     };
 
-private:
+public:
     /// Gix item to be used for storing records together with token positions
     class TQmGixItemPos {
     public:
@@ -3195,7 +3195,8 @@ private:
         /// position is <= MaxDiff ahead of this. This contains only positions that
         /// are in the intersection and we keep the position from Item (bigger)
         /// which makes it easier to intersect with the next word.
-        TQmGixItemPos Intersect(const TQmGixItemPos& Item, const int& MaxDiff) const;
+        /// TotalMatchingDiff will on return contain the sum of differences in the document mentions between the two searched terms
+        TQmGixItemPos Intersect(const TQmGixItemPos& Item, const int& MaxDiff, int& TotalMatchingDiff) const;
 
         /// since we can have multiple items with same record id, two items are same if they have same record id and have the matching first position
         /// each position can appear only once for the same record.
@@ -3227,7 +3228,6 @@ private:
     typedef TPt<TBTreeIndex<TFlt> > PBTreeIndexFlt;
     typedef TPt<TBTreeIndex<TSFlt> > PBTreeIndexSFlt;
 
-private:
     /// Remember index location
     TStr IndexFPath;
     /// Remember access mode to the index
@@ -3421,6 +3421,9 @@ public:
 
     /// Check if index opened in read-only mode
     bool IsReadOnly() const { return Access == faRdOnly; }
+
+    /// get the list of items and their positions from the position index
+    void GetPosItemV(const int& KeyId, const TUInt64& WordId, TVec<TQmGixItemPos>& ItemPosV);
 
     /// Search inverted index using single key-word pair
     PRecSet SearchGix(const TWPt<TBase>& Base, const int& KeyId, const uint64& WordId) const;
