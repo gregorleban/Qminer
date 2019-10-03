@@ -172,13 +172,15 @@ PExcept TExcept::New(const TStr& MsgStr, const TStr& LocStr) {
 	return PExcept(new TExcept(MsgStr, Stack));
 }
 
-PExcept TExcept::New(const int& ErrorCode, const TStr& MsgStr, const TStr& LocStr) {
+PExcept TExcept::New(const int& ErrorCode, const TStr& MsgStr, const TStr& LocStr, const bool& ExtractStackTrace) {
 	TChA Stack = LocStr;
 
 #ifdef GLib_WIN
-	if (Stack.Len() > 0) { Stack += "\n"; }
-	Stack += "Stack trace:\n";
-	Stack += TBufferStackWalker::GetStackTrace();
+    if (ExtractStackTrace) {
+        if (Stack.Len() > 0) { Stack += "\n"; }
+        Stack += "Stack trace:\n";
+        Stack += TBufferStackWalker::GetStackTrace();
+    }
 #endif
 
 	return PExcept(new TExcept(ErrorCode, MsgStr, Stack));

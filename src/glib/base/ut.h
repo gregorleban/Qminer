@@ -216,7 +216,7 @@ public:
   TExcept(const int& _ErrorCode, const TStr& _MsgStr, const TStr& _LocStr) :
 	  MsgStr(_MsgStr), LocStr(_LocStr), ErrorCode(_ErrorCode) {}
   static PExcept New(const TStr& MsgStr, const TStr& LocStr = TStr());
-  static PExcept New(const int& ErrorCode, const TStr& MsgStr, const TStr& LocStr = TStr());
+  static PExcept New(const int& ErrorCode, const TStr& MsgStr, const TStr& LocStr = TStr(), const bool& ExtractStackTrace = true);
   virtual ~TExcept(){}
 
   TStr GetMsgStr() const {return MsgStr;}
