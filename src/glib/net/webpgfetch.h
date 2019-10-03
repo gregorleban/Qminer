@@ -86,6 +86,7 @@ public:
   virtual void OnFetch(const int& FId, const PWebPg& WebPg){}
   virtual void OnNotify(const int& FId, const TStr& MsgStr){}
   virtual void OnError(const int& FId, const TStr& MsgStr){}
+  virtual void OnError(const int& FId, const TStr& MsgStr, const TStr& Url) {}
   virtual void OnStatus(const TStr& MsgStr){};
 
   friend class TWebPgFetchEvent;

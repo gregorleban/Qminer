@@ -111,6 +111,7 @@ TWebPgFetchEvent::TWebPgFetchEvent(TWebPgFetch* _Fetch, const int& _FId,
 
 void TWebPgFetchEvent::OnFetchError(const TStr& MsgStr){
   Fetch->OnError(FId, MsgStr+" ["+CurUrl->GetUrlStr()+"]");
+  Fetch->OnError(FId, MsgStr + " [" + CurUrl->GetUrlStr() + "]", CurUrl->GetUrlStr());
   CloseConn(); Fetch->DisconnUrl(FId);
 }
 
