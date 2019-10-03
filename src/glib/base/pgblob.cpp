@@ -24,8 +24,7 @@ bool TPgBlobPgPt::operator==(const TPgBlobPgPt& Pt) const {
 
 /// Comparison of pointers for sorting
 bool TPgBlobPgPt::operator<(const TPgBlobPgPt& Pt) const {
-    return
-        (FileIndex < Pt.FileIndex) ||
+    return(FileIndex < Pt.FileIndex) ||
         ((FileIndex == Pt.FileIndex) && (Page < Pt.Page));
 }
 
@@ -137,16 +136,14 @@ TPgBlobFile::TPgBlobFile(
 
 /// Destructor
 TPgBlobFile::~TPgBlobFile() {
-    EAssertR(
-        fclose(FileId) == 0,
+    EAssertR(fclose(FileId) == 0,
         "Can not close file '" + TStr(FNm.CStr()) + "'.");
 }
 
 /// Load page with given index from the file into buffer
 int TPgBlobFile::LoadPage(const uint32& Page, void* Bf) {
     SetFPos(Page * PG_PAGE_SIZE);
-    EAssertR(
-        fread(Bf, 1, PG_PAGE_SIZE, FileId) == PG_PAGE_SIZE,
+    EAssertR(fread(Bf, 1, PG_PAGE_SIZE, FileId) == PG_PAGE_SIZE,
         "Error reading file '" + TStr(FNm) + "'.");
     return 0;
 }
@@ -163,15 +160,13 @@ int TPgBlobFile::SavePage(const uint32& Page, const void* Bf, int Len) {
 
 /// Refresh the position - internal check
 void TPgBlobFile::RefreshFPos() {
-    EAssertR(
-        fseek(FileId, 0, SEEK_CUR) == 0,
+    EAssertR(fseek(FileId, 0, SEEK_CUR) == 0,
         "Error seeking into file '" + TStr(FNm) + "'.");
 }
 
 /// Set position in the file
 void TPgBlobFile::SetFPos(const int& FPos) {
-    EAssertR(
-        fseek(FileId, FPos, SEEK_SET) == 0,
+    EAssertR(fseek(FileId, FPos, SEEK_SET) == 0,
         "Error seeking into file '" + TStr(FNm) + "'.");
 }
 
@@ -180,14 +175,14 @@ long TPgBlobFile::CreateNewPage() {
     EAssertR(
         (Access != TFAccess::faRdOnly) && (fseek(FileId, 0, SEEK_END) == 0),
         "Error seeking into file '" + TStr(FNm) + "' - " + TStr::Fmt("%d", errno));
-    long len = ftell(FileId);
-    if (MxFileLen > 0 && len >= MxFileLen) {
+    long Len = ftell(FileId);
+    if (MxFileLen > 0 && Len >= MxFileLen) {
         return -1;
     }
-    size_t written = fwrite(EmptyPage, PG_PAGE_SIZE, 1, FileId);
-    EAssertR(written == 1, "Error writing file '" + TStr(FNm) + "'.");
+    size_t Written = fwrite(EmptyPage, PG_PAGE_SIZE, 1, FileId);
+    EAssertR(Written == 1, "Error writing file '" + TStr(FNm) + "'.");
     PgCnt++;
-    return len / PG_PAGE_SIZE;
+    return Len / PG_PAGE_SIZE;
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -195,8 +190,7 @@ long TPgBlobFile::CreateNewPage() {
 const int TPgBlob::MxBlobFLen = 2000000000;
 
 /// Add given buffer to page, to existing item that has length 0
-void TPgBlob::ChangeItem(
-    char* Pg, uint16 ItemIndex, const char* Bf, const int BfL) {
+void TPgBlob::ChangeItem(char* Pg, uint16 ItemIndex, const char* Bf, const int BfL) {
     TPgHeader* Header = (TPgHeader*)Pg;
     EAssert(BfL + (int)sizeof(TPgBlobPageItem) <= Header->GetFreeMem());
 
@@ -218,7 +212,7 @@ uint16 TPgBlob::AddItem(char* Pg, const char* Bf, const int BfL) {
     TPgHeader* Header = (TPgHeader*)Pg;
     EAssert(Header->CanStoreBf(BfL));
 
-    uint16 res = Header->ItemCount;
+    const uint16 ItemCount = Header->ItemCount;
     TPgBlobPageItem* NewItem = GetItemRec(Pg, Header->ItemCount);
     NewItem->Len = BfL;
     NewItem->Offset = Header->OffsetFreeEnd - BfL;
@@ -233,7 +227,7 @@ uint16 TPgBlob::AddItem(char* Pg, const char* Bf, const int BfL) {
 
     Header->SetDirty(true);
 
-    return res;
+    return ItemCount;
 }
 
 /// Retrieve buffer from specified page
@@ -269,14 +263,14 @@ void TPgBlob::DeleteItem(char* Pg, uint16 ItemIndex) {
     Header->SetDirty(true);
 
     // optimization - if all items are deleted, mark as empty page
-    bool all_deleted = true;
+    bool AllDeleted = true;
     for (int i = 0; i < Header->ItemCount; i++) {
         if (GetItemRec(Pg, i)->Len == 0) {
-            all_deleted = false;
+            AllDeleted = false;
             break;
         }
     }
-    if (all_deleted) {
+    if (AllDeleted) {
         Header->OffsetFreeStart = sizeof(TPgHeader);
         Header->OffsetFreeEnd = PG_PAGE_SIZE;
         Header->ItemCount = 0;
@@ -336,19 +330,19 @@ TPgBlob::~TPgBlob() {
 /// Save main file
 void TPgBlob::SaveMain() {
     TFOut SOut(FNm + ".main");
-    TInt children_cnt(Files.Len());
-    children_cnt.Save(SOut);
+    TInt ChildrenCount(Files.Len());
+    ChildrenCount.Save(SOut);
     Fsm.Save(SOut);
 }
 
 /// Load main file
 void TPgBlob::LoadMain() {
     TFIn SIn(FNm + ".main");
-    TInt children_cnt;
-    children_cnt.Load(SIn);
+    TInt ChildrenCount;
+    ChildrenCount.Load(SIn);
     Fsm.Load(SIn);
     Files.Clr();
-    for (int i = 0; i < children_cnt; i++) {
+    for (int i = 0; i < ChildrenCount; i++) {
         TStr FNmChild = FNm + ".bin" + TStr::GetNrNumFExt(i);
         Files.Add(TPgBlobFile::New(FNmChild, Access, MxBlobFLen));
     }
@@ -356,26 +350,26 @@ void TPgBlob::LoadMain() {
 
 /// remove given page from LRU list
 void TPgBlob::UnlistFromLru(int Pg) {
-    LoadedPage& a = LoadedPages[Pg];
+    LoadedPage& Page = LoadedPages[Pg];
     if (LruFirst == Pg) {
-        LruFirst = a.LruNext;
+        LruFirst = Page.LruNext;
     }
     if (LruLast == Pg) {
-        LruLast = a.LruPrev;
+        LruLast = Page.LruPrev;
     }
-    if (a.LruNext >= 0) {
-        LoadedPages[a.LruNext].LruPrev = a.LruPrev;
+    if (Page.LruNext >= 0) {
+        LoadedPages[Page.LruNext].LruPrev = Page.LruPrev;
     }
-    if (a.LruPrev >= 0) {
-        LoadedPages[a.LruPrev].LruNext = a.LruNext;
+    if (Page.LruPrev >= 0) {
+        LoadedPages[Page.LruPrev].LruNext = Page.LruNext;
     }
 }
 
 /// insert given (new) page to the start of LRU list
 void TPgBlob::EnlistToStartLru(int Pg) {
-    LoadedPage& a = LoadedPages[Pg];
-    a.LruPrev = -1;
-    a.LruNext = LruFirst;
+    LoadedPage& Page = LoadedPages[Pg];
+    Page.LruPrev = -1;
+    Page.LruNext = LruFirst;
     if (LruFirst >= 0) {
         LoadedPages[LruFirst].LruPrev = Pg;
     }
@@ -387,9 +381,9 @@ void TPgBlob::EnlistToStartLru(int Pg) {
 
 /// insert given (new) page to the end of LRU list
 void TPgBlob::EnlistToEndLru(int Pg) {
-    LoadedPage& a = LoadedPages[Pg];
-    a.LruPrev = LruLast;
-    a.LruNext = -1;
+    LoadedPage& Page = LoadedPages[Pg];
+    Page.LruPrev = LruLast;
+    Page.LruNext = -1;
     if (LruLast >= 0) {
         LoadedPages[LruLast].LruNext = Pg;
     }
@@ -401,9 +395,9 @@ void TPgBlob::EnlistToEndLru(int Pg) {
 
 /// move given page to the start of LRU list
 void TPgBlob::MoveToStartLru(int Pg) {
-    LoadedPage& a = LoadedPages[Pg];
+    LoadedPage& Page = LoadedPages[Pg];
     if (LruFirst < 0) { // empty LRU list
-        a.LruNext = a.LruPrev = -1;
+        Page.LruNext = Page.LruPrev = -1;
         LruFirst = LruLast = Pg;
     } else if (LruFirst == Pg) {
         // it's ok, already at start LRU
@@ -415,9 +409,9 @@ void TPgBlob::MoveToStartLru(int Pg) {
 
 /// move given page to the end of LRU list - so that it is evicted first
 void TPgBlob::MoveToEndLru(int Pg) {
-    LoadedPage& a = LoadedPages[Pg];
+    LoadedPage& Page = LoadedPages[Pg];
     if (LruLast < 0) { // empty LRU list
-        a.LruNext = a.LruPrev = -1;
+        Page.LruNext = Page.LruPrev = -1;
         LruFirst = LruLast = Pg;
     } else if (LruLast == Pg) {
         // it's ok, already at end LRU
@@ -436,14 +430,13 @@ int TPgBlob::Evict() {
         }
         Pg = LoadedPages[Pg].LruPrev;
     }
-    LoadedPage& a = LoadedPages[Pg];
+    LoadedPage& Page = LoadedPages[Pg];
     UnlistFromLru(Pg);
-    LoadedPagesH.DelKey(a.Pt);
+    LoadedPagesH.DelKey(Page.Pt);
     char* PgPt = GetPageBf(Pg);
     if (ShouldSavePageP(PgPt)) {
-        int Len = (((TPgHeader*)PgPt)->ItemCount > 0 ? -1 : sizeof(TPgHeader));
-        Files[a.Pt.GetFIx()]->SavePage(a.Pt.GetPg(), PgPt, Len);
-    } else {
+        const int Len = (((TPgHeader*)PgPt)->ItemCount > 0 ? -1 : sizeof(TPgHeader));
+        Files[Page.Pt.GetFIx()]->SavePage(Page.Pt.GetPg(), PgPt, Len);
     }
     return Pg;
 }
@@ -458,14 +451,15 @@ char* TPgBlob::LoadPage(const TPgBlobPgPt& Pt, const bool& LoadData) {
     if ((uint64)LoadedPages.Len() == MxLoadedPages) {
         // evict last page + load new page
         Pg = Evict();
-        LoadedPage& a = LoadedPages[Pg];
+        LoadedPage& Page = LoadedPages[Pg];
         if (LoadData) {
             Files[Pt.GetFIx()]->LoadPage(Pt.GetPg(), GetPageBf(Pg));
         }
-        a.Pt = Pt;
+        Page.Pt = Pt;
         EnlistToStartLru(Pg);
         LoadedPagesH.AddDat(Pt, Pg);
-    } else {
+    } 
+    else {
         // simply load the page
         LastExtentCnt++;
         if (LastExtentCnt >= PG_EXTENT_PCOUNT) {
@@ -474,11 +468,11 @@ char* TPgBlob::LoadPage(const TPgBlobPgPt& Pt, const bool& LoadData) {
             LastExtentCnt = 0;
         }
         Pg = LoadedPages.Add();
-        LoadedPage& a = LoadedPages[Pg];
+        LoadedPage& Page = LoadedPages[Pg];
         if (LoadData) {
             Files[Pt.GetFIx()]->LoadPage(Pt.GetPg(), GetPageBf(Pg));
         }
-        a.Pt = Pt;
+        Page.Pt = Pt;
         EnlistToStartLru(Pg);
         LoadedPagesH.AddDat(Pt, Pg);
     }
@@ -538,7 +532,7 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL) {
     TPgBlobPgPt PgPt;
     char* PgBf = NULL;
     TPgHeader* PgH = NULL;
-    bool is_new_page = false;
+    bool IsNewPage = false;
 
     // scan last 5 used pages if there is some space
     // the logic is that during batch inserts we should reuse
@@ -559,9 +553,10 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL) {
     if (PgBf == NULL) {
         if (Fsm.FsmGetFreePage(BfL + sizeof(TPgBlobPageItem), PgPt)) {
             PgBf = LoadPage(PgPt);
-        } else {
+        } 
+        else {
             CreateNewPage(PgPt, &PgBf);
-            is_new_page = true;
+            IsNewPage = true;
         }
     }
 
@@ -571,7 +566,7 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL) {
     PgH = (TPgHeader*)PgBf;
 
     // update free-space-map
-    if (is_new_page) {
+    if (IsNewPage) {
         Fsm.FsmAddPage(PgPt, PgH->GetFreeMem());
     } else {
         Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
@@ -580,8 +575,7 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL) {
 }
 
 /// Store existing BLOB to storage
-TPgBlobPt TPgBlob::Put(
-    const char* Bf, const int& BfL, const TPgBlobPt& Pt) {
+TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL, const TPgBlobPt& Pt) {
     IAssert(Access != TFAccess::faRdOnly);
 
     // find page
@@ -594,22 +588,23 @@ TPgBlobPt TPgBlob::Put(
     PgH = (TPgHeader*)PgBf;
     ItemRec = GetItemRec(PgBf, Pt.GetIIx());
 
-    int existing_size = ItemRec->Len;
-    if (existing_size == BfL) {
+    int ExistingSize = ItemRec->Len;
+    if (ExistingSize == BfL) {
         // we're so lucky, just overwrite buffer
         memcpy(PgBf + ItemRec->Offset, Bf, BfL);
         PgH->SetDirty(true);
         return Pt;
 
-    } else if (existing_size + PgH->GetFreeMem() >= BfL + (int)sizeof(TPgBlobPageItem)) {
+    } 
+    else if (ExistingSize + PgH->GetFreeMem() >= BfL + (int)sizeof(TPgBlobPageItem)) {
         // ok, everything can still be inside this page
         DeleteItem(PgBf, Pt.GetIIx());
 
         ChangeItem(PgBf, Pt.GetIIx(), Bf, BfL);
         Fsm.FsmUpdatePage(Pt, PgH->GetFreeMem());
         return Pt;
-
-    } else {
+    } 
+    else {
         // bad luck, we need to move data to new page
         DeleteItem(PgBf, Pt.GetIIx());
         Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
@@ -678,20 +673,22 @@ void TPgBlob::Clr() {
 
 /// Save part of the data, given time-window
 void TPgBlob::PartialFlush(int WndInMsec) {
-    if (Access == TFAccess::faRdOnly)
+    if (Access == TFAccess::faRdOnly) {
         return;
+    }
     TTmStopWatch sw(true);
     for (int i = 0; i < LoadedPages.Len(); i++) {
         if (ShouldSavePage(i)) {
             LoadedPage& a = LoadedPages[i];
             Files[a.Pt.GetFIx()]->SavePage(a.Pt.GetPg(), GetPageBf(i));
-            if (sw.GetMSec() > WndInMsec)
+            if (sw.GetMSec() > WndInMsec) {
                 break;
+            }
         }
     }
 }
 
-/// Marks page as dirty - data inside was written directly
+/// Marks page as Dirty - data inside was Written directly
 void TPgBlob::SetDirty(const TPgBlobPt& Pt) {
     IAssert(Access != TFAccess::faRdOnly);
     char* Pg = LoadPage(Pt);
@@ -700,20 +697,20 @@ void TPgBlob::SetDirty(const TPgBlobPt& Pt) {
 
 /// Retrieve statistics for this object
 PJsonVal TPgBlob::GetStats() {
-    int dirty = 0;
+    int Dirty = 0;
     for (int i = 0; i < LoadedPages.Len(); i++) {
         if (ShouldSavePage(i)) {
-            dirty++;
+            Dirty++;
         }
     }
 
-    PJsonVal res = TJsonVal::NewObj();
-    res->AddToObj("page_size", PG_PAGE_SIZE);
-    res->AddToObj("loaded_pages", LoadedPages.Len());
-    res->AddToObj("dirty_pages", dirty);
-    res->AddToObj("loaded_extents", Extents.Len());
-    res->AddToObj("cache_size", PG_EXTENT_SIZE * Extents.Len());
-    return res;
+    PJsonVal Res = TJsonVal::NewObj();
+    Res->AddToObj("page_size", PG_PAGE_SIZE);
+    Res->AddToObj("loaded_pages", LoadedPages.Len());
+    Res->AddToObj("dirty_pages", Dirty);
+    Res->AddToObj("loaded_extents", Extents.Len());
+    Res->AddToObj("cache_size", PG_EXTENT_SIZE * Extents.Len());
+    return Res;
 }
 
 /// This function verifies single page - buffer already loaded in memory
@@ -752,14 +749,14 @@ void TPgBlob::VerifyPage(char* Pg) {
 
 /// Scans all pages and verifies their internal structure
 void TPgBlob::RunVerification() {
-    TMemBase tmp(PG_PAGE_SIZE);
+    TMemBase TmpMem(PG_PAGE_SIZE);
     // pages on disk
     for (int FileN = 0; FileN < Files.Len(); FileN++) {
         auto File = Files[FileN];
         const uint32 Pages = File->GetPgCnt();
         for (uint32 PageN = 0; PageN < Pages; PageN++) {
-            File->LoadPage(PageN, tmp.GetBf());
-            VerifyPage(tmp.GetBf());
+            File->LoadPage(PageN, TmpMem.GetBf());
+            VerifyPage(TmpMem.GetBf());
         }
     }
     // pages in memory
@@ -825,8 +822,9 @@ void TPgBlobFsm::FsmUpdatePage(const TPgBlobPgPt& Pt, const uint16& FreeSpace) {
 /// If page exists, pointer to it is stored into sent parameter
 bool TPgBlobFsm::FsmGetFreePage(int RequiredSpace, TPgBlobPgPt& PgPt) {
     int index_max = MaxFSpace.GetIndexOfMax();
-    if (index_max < 0 || MaxFSpace.GetVal(index_max) < RequiredSpace)
+    if (index_max < 0 || MaxFSpace.GetVal(index_max) < RequiredSpace) {
         return false;
+    }
     PgPt = MaxFSpace.GetPtOf(index_max);
     return true;
 }

@@ -757,10 +757,12 @@ void TGix<TKey, TItem>::DeleteItemSet(const TKey& Key) {
 template <class TKey, class TItem>
 TBlobPt TGix<TKey, TItem>::EnlistItemSet(const PGixItemSet& ItemSet) const {
     AssertReadOnly(); // check if we are allowed to write
+	// save the ItemsSet to MOut
     TMOut MOut;
     ItemSet->Save(MOut);
-    TBlobPt res = ItemSetBlobBs->PutBlob(MOut.GetSIn());
-    return res;
+	// put the data into a blob
+    TBlobPt Res = ItemSetBlobBs->PutBlob(MOut.GetSIn());
+    return Res;
 }
 
 template <class TKey, class TItem>
@@ -776,7 +778,7 @@ void TGix<TKey, TItem>::AddItem(const TKey& Key, const TItem& Item) {
         // we don't have this key, create a new itemset and add new item immidiatelly
         PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, this);
         ItemSet->AddItem(Item, false);
-        TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to disk
+        TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to a blob
         KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
         ItemSetCache.Put(KeyId, ItemSet); // add it to cache
     }
