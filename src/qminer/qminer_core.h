@@ -3319,10 +3319,10 @@ public:
         const int64& CacheSizePos, const int& SplitLen);
     /// Checks if there is an existing index at the given path
     static bool Exists(const TStr& IndexFPath) {
-        return TFile::Exists(IndexFPath + "Index.GixFull.Gix") ||
-            TFile::Exists(IndexFPath + "Index.GixPos.Gix") ||
-            TFile::Exists(IndexFPath + "Index.GixSmall.Gix") ||
-            TFile::Exists(IndexFPath + "Index.GixTiny.Gix"); }
+        return TFile::Exists(TPath::Combine(IndexFPath, "Index.GixFull.Gix")) ||
+            TFile::Exists(TPath::Combine(IndexFPath, "Index.GixPos.Gix")) ||
+            TFile::Exists(TPath::Combine(IndexFPath, "Index.GixSmall.Gix")) ||
+            TFile::Exists(TPath::Combine(IndexFPath, "Index.GixTiny.Gix")); }
 
     /// Close the query
     ~TIndex();
