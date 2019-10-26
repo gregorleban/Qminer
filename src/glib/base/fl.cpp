@@ -1028,7 +1028,7 @@ void TFile::Copy(const TStr& SrcFNm, const TStr& DstFNm,
 
 bool TFile::Move(const TStr& SrcFNm, const TStr& DstFNm,
   const bool& ThrowExceptP, const bool& FailIfExistsP) {
-	return MoveFileEx(SrcFNm.CStr(), DstFNm.CStr(), FailIfExistsP ? 0 : MOVEFILE_REPLACE_EXISTING) != 0;
+	return MoveFileEx(SrcFNm.CStr(), DstFNm.CStr(), FailIfExistsP ? MOVEFILE_COPY_ALLOWED : MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING) != 0;
 }
 
 #elif defined(GLib_LINUX)
