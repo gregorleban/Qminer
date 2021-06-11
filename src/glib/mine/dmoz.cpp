@@ -431,7 +431,7 @@ PDMozBs TDMozBs::LoadTxt(const TStr& FPath,
     if (TopTok->IsTag("Alias")){
       // extract field
       TStr SymStr=TopTok->GetArgVal("r:id");
-      TStr TitleStr=TopTok->GetTagTok("d:Title")->GetTokStr(false);
+      TStr TitleStr=TopTok->GetTagTok("d:ArticleTitle")->GetTokStr(false);
       TStr SubstStr=TopTok->GetTagTok("Target")->GetArgVal("r:resource");
       // create entry
       TMd5Sig SymMd5(SymStr);
@@ -602,7 +602,7 @@ PDMozBs TDMozBs::LoadTxt(const TStr& FPath,
         // extract field values
         TStr ExtUrlStr=TopTok->GetArgVal("about");
         TStr TitleStr; PXmlTok TitleTok;
-        if (TopTok->IsSubTag("d:Title", TitleTok)){
+        if (TopTok->IsSubTag("d:ArticleTitle", TitleTok)){
           TitleStr=TitleTok->GetTokStr(false);}
         TStr DescStr; PXmlTok DescTok;
         if (TopTok->IsSubTag("d:Description", DescTok)){

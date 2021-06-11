@@ -971,7 +971,7 @@ void THtmlDoc::SaveHtmlToXml(
   THtmlLx HtmlLx(HtmlSIn);
   TChA ContTextChA; bool InScript=false;
   // save text
-  fprintf(fXml, "<Body>\n");
+  fprintf(fXml, "<Sentence>\n");
   while (HtmlLx.GetSym()!=hsyEof){
     TStr Str=HtmlLx.ChA;
     switch (HtmlLx.Sym){
@@ -1073,7 +1073,7 @@ void THtmlDoc::SaveHtmlToXml(
       fprintf(fXml, "  <Text>%s</Text>\n", ContTextChA.CStr());}
     ContTextChA.Clr();
   }
-  fprintf(fXml, "</Body>\n");
+  fprintf(fXml, "</Sentence>\n");
   // save outgoing urls
   fprintf(fXml, "<OutUrls>\n");
   for (int UrlN=0; UrlN<OutUrlStrV.Len(); UrlN++){

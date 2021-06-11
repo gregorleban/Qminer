@@ -44,10 +44,19 @@ TWebSrv::TWebSrv(
     if (FixedPortNP){
       Sock->Listen(PortN);
     } else {
-      Fail;
+      TExcept::Throw("Failed to start the web service");
+      //Fail;       // we should never call ExeStop
       //PortN=Sock->GetPortAndListen(PortN);
     }
-  } catch (...){TSockEvent::UnReg(SockEvent); throw;}
+  } 
+  catch (PExcept Ex) {
+    TSockEvent::UnReg(SockEvent); 
+    throw Ex;
+  }
+  catch (...){
+    TSockEvent::UnReg(SockEvent); 
+    TExcept::Throw("Failed to start the web service");
+  }
   // notify
   TChA MsgChA;
   MsgChA+="Web-Server: Started at port ";

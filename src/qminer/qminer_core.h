@@ -1675,6 +1675,22 @@ public:
 
 ///////////////////////////////
 /// Record filter by unsigned integer field.
+
+class TRecFilterBitwiseByFieldByte : public TRecFilterByField {
+private:
+    /// Set of values
+    uchar Val;
+    bool Negate;
+
+public:
+    /// Constructor
+    TRecFilterBitwiseByFieldByte(const TWPt<TBase>& _Base, const int& _FieldId, const uchar& Val_, const bool& Negate = false, const bool& _FilterNullP = true);
+    /// Filter function
+    bool Filter(const TRec& Rec) const;
+};
+
+///////////////////////////////
+/// Record filter by unsigned integer field.
 class TRecFilterByFieldUInt : public TRecFilterByField {
 private:
     /// Minimal value

@@ -2777,6 +2777,21 @@ bool TRecFilterByFieldByteSet::Filter(const TRec& Rec) const {
 
 ///////////////////////////////
 /// Record Filter by Integer Field.
+TRecFilterBitwiseByFieldByte::TRecFilterBitwiseByFieldByte(const TWPt<TBase>& _Base, const int& _FieldId, const uchar& _Val,
+    const bool& _Negate, const bool& _FilterNullP) : TRecFilterByField(_Base, _FieldId, _FilterNullP), Val(_Val), Negate(_Negate) { }
+
+bool TRecFilterBitwiseByFieldByte::Filter(const TRec& Rec) const {
+    bool RecNull = Rec.IsFieldNull(FieldId);
+    if (RecNull) { return !FilterNullP; }
+    const uchar RecVal = Rec.GetFieldByte(FieldId);
+    const bool Matches = (RecVal & Val) != 0;
+    // if negate, then inverse the decision
+    if (Negate) { return !Matches; }
+    return Matches;
+}
+
+///////////////////////////////
+/// Record Filter by Integer Field.
 TRecFilterByFieldUInt::TRecFilterByFieldUInt(const TWPt<TBase>& _Base, const int& _FieldId, const uint& _MinVal,
     const uint& _MaxVal, const bool& _FilterNullP): TRecFilterByField(_Base, _FieldId, _FilterNullP), MinVal(_MinVal), MaxVal(_MaxVal) { }
 
