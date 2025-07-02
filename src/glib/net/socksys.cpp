@@ -120,6 +120,23 @@ public:
 	// status
 	TStr GetLastErr() const;
 	TStr GetStatusStr();
+
+    // register a callback that should be called from the main thread (used for inter-thread communication)
+    void RegisterAsyncCallback(uv_async_t* AsyncHandle, uv_async_cb Callback) {
+        uv_async_init(Loop, AsyncHandle, Callback);
+    }
+    // notify uvlib to call the callback from the main thread
+    void CallAsyncCallback(uv_async_t* AsyncHandle) {
+        if (AsyncHandle != NULL) {
+            uv_async_send(AsyncHandle);
+        }
+    }
+    // unregister the callback
+    void UnregisterAsyncCallback(uv_async_t* AsyncHandle) {
+        if (AsyncHandle != NULL) {
+            uv_close((uv_handle_t*)AsyncHandle, nullptr);
+        }
+    }
 };
 
 // socket system initialized
@@ -176,13 +193,30 @@ void TSockSys::RefLoop() {
 }
 
 void TSockSys::UnrefLoop() { 
-	IAssert(LoopRef != NULL);
-	// unrefernce the timer
-	uv_unref((uv_handle_t*)LoopRef); 
-	// kill the timer
-	uv_close((uv_handle_t*)LoopRef, NULL);
-	free(LoopRef);
-	LoopRef = NULL;
+    /*
+    * there are use cases where the UnrefLoop() can be called multiple times so we need to check first if it's aready NULL
+    * Example: 
+    TSockSys::OnConnect 
+        -> TWebPgFetchEvent::OnConnect 
+            -> TWebPgFetchEvent::OnFetchError 
+                -> TWebFetchBlocking::OnError 
+                    -> TLoop::Unref
+        -> TWebPgFetchEvent::OnError
+            -> TWebPgFetchEvent::OnFetchError
+                -> TWebFetchBlocking::OnError
+                    -> TLoop::Unref
+
+    So in essence, TWebPgFetchEvent::OnConnect fails, but we don't stop the request there and the TWebPgFetchEvent::OnError 
+    then again calls the TLoop::Unref.
+    */
+    if (LoopRef != NULL) {
+        // unrefernce the timer
+        uv_unref((uv_handle_t*)LoopRef);
+        // kill the timer
+        uv_close((uv_handle_t*)LoopRef, NULL);
+        free(LoopRef);
+        LoopRef = NULL;
+    }
 }
 
 bool TSockSys::IsSockEvent(const uint64& SockEventId) const { 
@@ -480,7 +514,7 @@ void TSockSys::OnConnect(uv_connect_t* ConnectHnd, int Status) {
 	if (SockSys.IsSockEvent(SockEventId)) {
 		SockEvent = SockSys.GetSockEvent(SockEventId);
 	} else {
-		SaveToErrLog("SockSys.OnConnect: Socket without SockEvent");
+		// SaveToErrLog("SockSys.OnConnect: Socket without SockEvent");
 		return;
 	}
 	// execute callback

@@ -10,6 +10,9 @@
 // Forward
 ClassHdTP(TSock, PSock);
 ClassHdTP(TSockHost, PSockHost);
+typedef struct uv_async_s uv_async_t;
+typedef void (*uv_async_cb)(uv_async_t* handle, int status);
+
 
 /////////////////////////////////////////////////
 // Event-Loop
@@ -154,6 +157,13 @@ public:
 
 	static const TStr LocalhostNm; // = "localhost"
 	static const TStr LoopbackIpNum; // = "127.0.0.1"
+
+    // register a callback that should be called from the main thread (used for inter-thread communication)
+    static void RegisterAsyncCallback(uv_async_t* AsyncHandle, uv_async_cb Callback);
+    // notify uvlib to call the callback from the main thread
+    static void CallAsyncCallback(uv_async_t* AsyncHandle);
+    // unregister the callback
+    static void UnregisterAsyncCallback(uv_async_t* AsyncHandle);
 };
 
 /////////////////////////////////////////////////

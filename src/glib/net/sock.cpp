@@ -216,6 +216,21 @@ bool TSock::IsSockId(const uint64& SockId) {
   return SockSys.IsSock(SockId);
 }
 
+// register a callback that should be called from the main thread (used for inter-thread communication)
+void TSock::RegisterAsyncCallback(uv_async_t* AsyncHandle, uv_async_cb Callback) {
+    SockSys.RegisterAsyncCallback(AsyncHandle, Callback);
+}
+
+// notify uvlib to call the callback from the main thread
+void TSock::CallAsyncCallback(uv_async_t* AsyncHandle) {
+    SockSys.CallAsyncCallback(AsyncHandle);
+}
+
+// unregister the callback
+void TSock::UnregisterAsyncCallback(uv_async_t* AsyncHandle) {
+    SockSys.UnregisterAsyncCallback(AsyncHandle);
+}
+
 /////////////////////////////////////////////////
 // Timer
 
