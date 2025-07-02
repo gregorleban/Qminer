@@ -154,3 +154,5 @@ test*.txt
 # GIT FILES
 *.orig
 /TestStore
+/src/third_party/libuv-ex/
+/src/third_party/libuv/docs/

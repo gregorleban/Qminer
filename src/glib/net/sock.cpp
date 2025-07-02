@@ -241,7 +241,7 @@ typedef struct {
 } uv_timer_req_t;
 
 // declaration of callback, since sock.h is not aware of libuv
-void TTTimer_OnTimeOut(uv_timer_t* TimerHnd, int Status) {
+void TTTimer_OnTimeOut(uv_timer_t* TimerHnd) {
 	uv_timer_req_t* _TimerHnd = (uv_timer_req_t*)TimerHnd;
 	_TimerHnd->Timer->OnTimeOut();
 }
