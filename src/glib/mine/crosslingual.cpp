@@ -151,7 +151,7 @@ namespace TCrossLingual
 		LangIds.Gen(ProjPairs);
 		int PairN = 0;
 		while (ProjectorPathReader.GetNextLn(Path)) {
-			printf("Projector path %s", Path.CStr());
+			printf("Loading projector path %s... ", Path.CStr());
 			if (Path[Path.Len() -1] == '/') {
 				Path = Path.GetSubStr(0, Path.Len() - 2);
 			}
@@ -182,7 +182,7 @@ namespace TCrossLingual
 			Projectors.Add(TPair<TFltVV,TFltVV>(P1, P2));
 
 			PairN++;
-			printf("loaded hub projector %s, dims %d %d %d %d %d %d %d %d\n", Path.CStr(), c1.Len(), c2.Len(), idoc1.Len(), idoc2.Len(), P1.GetRows(), P1.GetCols(), P2.GetRows(), P2.GetCols());
+			//printf("loaded., dims %d %d %d %d %d %d %d %d\n", Path.CStr(), c1.Len(), c2.Len(), idoc1.Len(), idoc2.Len(), P1.GetRows(), P1.GetCols(), P2.GetRows(), P2.GetCols());
 		}
 		printf("Hubs OK\n");
 		TInt ConMatrixCount = 0;
@@ -333,9 +333,6 @@ namespace TCrossLingual
 		if (Lang2Id_.EqI(HubLangId)){
 			Lang2Id = Friend;
 		}
-		//printf("%s, %s\n", DocLangId.CStr(), Lang2Id.CStr());
-		//char c;
-		//std::cin >> c;
 		int KeyId;
 		if (ConIdxH.IsKey(TStrPr(DocLangId, Lang2Id), KeyId)) {
 			ConMat = &ConMatrices[ConIdxH[KeyId]].Val1;
@@ -363,21 +360,9 @@ namespace TCrossLingual
 		const TFltV* InvDocV = NULL;
 		bool OK = TCLHubProjector::SelectMatrices(DocLangId, Lang2Id, ProjMat, Center, ConMat, InvDocV, DmozSpecial);
 		if (!OK){
-			if (DmozSpecial){
-				//printf("Dmoz special case, identity matrix assumed!\n");
-			}
-			else{
-				//printf("select failed\n");
-			}
+			return;
 		}
-		//printf("SELECTY hub projector %s %s, \n", DocLangId.CStr(), Lang2Id.CStr());
-		//printf("SELECTY center, invdoc dims %d %d \n",Center->Len(), InvDocV->Len());
-		//printf("SELECTY projmat %d %d\n ", ProjMat->GetRows(), ProjMat->GetCols());
-		if (ConMat != NULL){}
-		//printf("SELECTY conmat dims %d %d \n", ConMat->GetRows(), ConMat->GetCols());
-		
-
-
+	
 		// Reweight Doc!
 		TPair<TIntV, TFltV> DocTemp = Doc;
 		for (int ElN = 0; ElN < Doc.Val1.Len(); ElN++) {
@@ -385,16 +370,10 @@ namespace TCrossLingual
 			//printf("Original: %d %g\n Weight %g\n After: %g\n", Doc.Val1[ElN], Doc.Val2[ElN], (*InvDocV)[Doc.Val1[ElN]], DocTemp.Val2[ElN]);
 		}
 
-
-		////Projected = ConMat(ProjMat*Doc - Center)
 		TFltV Pd(ProjMat->GetCols());
-		//printf("Projection start!\n");
 #ifdef COLMAJOR_DATA
 		TLinAlg::Multiply(*ProjMat, DocTemp, Pd);
 #else
-		//printf("Row major case projection matrices\n");
-		//TFltVV temp = *ProjMat; temp.Transpose();
-		//printf("Size of projection matrices: (%d, %d)\n", ProjMat->GetXDim(), ProjMat->GetYDim());
 		TLinAlg::MultiplyT(DocTemp, *ProjMat, Pd);
 #endif
 		//printf("Projection done!\n");
@@ -479,52 +458,33 @@ namespace TCrossLingual
 		TTriple<TIntV, TIntV, TFltV> DocMatrixTemp;
 		if (Tfidf){
 			DocMatrixTemp = DocMatrix;
-			//time.Start();
 			for (int ElN = 0; ElN < DocMatrixTemp.Val1.Len(); ElN++) {
 				DocMatrixTemp.Val3[ElN] = DocMatrix.Val3[ElN] * (*InvDocV)[DocMatrix.Val1[ElN]];
 			}
-			//time.Stop("Inverse indexing costs: ");
-			//time.Reset(false);
 		}
-		//Projected = ConMat(ProjMat*DocMatrix - Center* ones(1, size(DocMatrix,2)))
 		int Docs = DocMatrix.Val2[DocMatrix.Val2.GetMxValN()] + 1;
-		//printf("Number of docs %d\n", Docs);
-		// Compute: Pd_minus_cones := ProjMat*DocMatrix - Center* ones(1, size(DocMatrix,2))
 		TFltVV Pd_minus_cones;
 #ifdef COLMAJOR_DATA
 		Pd_minus_cones.Gen(ProjMat->GetRows(), Docs);
 #else
 		Pd_minus_cones.Gen(Docs, ProjMat->GetCols());
 #endif
-		//printf("Vector generated \n");
-		//printf("Start multiply sparse %d", Docs);
-		//time.Start();
-		//ROW and COLUMN major mess
-		//TLinAlg::Transpose(DocMatrixTemp, DocMatrixTempT);
+
 		if (Tfidf){
-			//printf("TFidf\n");
 #ifdef COLMAJOR_DATA
-			//Andrej index template madness, add IndexType to template
 			TLinAlg::Multiply(*ProjMat, DocMatrixTemp, Pd_minus_cones);
 #else
-			//Andrej index template madness, add IndexType to template
 			TLinAlg::MultiplyT(DocMatrixTemp, *ProjMat, Pd_minus_cones);
 #endif
 		}
 		else{
 #ifdef COLMAJOR_DATA
-			//Andrej index template madness, add IndexType to template
 			TLinAlg::Multiply(*ProjMat, DocMatrix, Pd_minus_cones);
 #else
-			//Andrej index template madness, add IndexType to template
 			TLinAlg::MultiplyT(DocMatrix, *ProjMat, Pd_minus_cones);
 #endif
 		}
-		//time.Stop("Projection costs: ");
-		//time.Reset(false);
-		//SwDispTmMsg("finished multiply");
-		//time.Start();
-
+		
 #ifdef COLMAJOR_DATA
 	#ifndef INTEL
 		for (int ColN = 0; ColN < Pd_minus_cones.GetCols(); ColN++) {
@@ -556,9 +516,6 @@ namespace TCrossLingual
 	#endif
 #endif
 
-		//time.Stop("Naive centering of data: ");
-		//time.Reset(false);
-		//SwDispTmMsg("finished advec");
 		if (Projected.Empty() && !DmozSpecial) {
 			printf("Projected is empty!!!");
 #ifdef COLMAJOR_DATA
@@ -567,8 +524,6 @@ namespace TCrossLingual
 			Projected.Gen(Pd_minus_cones.GetRows(), ConMat->GetCols());
 #endif
 		}	
-		//SwDispTmMsg("finished gen");
-		//time.Start();
 		if (ConMat != NULL){
 			if (DmozSpecial || (*ConMat)(0, 0).Val == 1.0){
 				//[ANDREJ]printf("Identity matrix detected!!!\n");
@@ -586,8 +541,6 @@ namespace TCrossLingual
 		else{
 			Projected = Pd_minus_cones;
 		}
-		//time.Stop("Projection with connection matrix costs: ");
-		//SwDispTmMsg("finished multiply conmat pd_minus_cones");
 	}
 
 	TCLCore::TCLCore(TCLProjector* Projectors_, const TStrV& TokenzierLangIdV, const TStrV& TokenizerPaths) {
@@ -656,13 +609,9 @@ namespace TCrossLingual
 		TPair<TIntV, TFltV> Doc2;		
 		TextToVector(Text1, Lang1Id, Doc1);
 		TextToVector(Text2, Lang2Id, Doc2);
-		//printf("Transformation to vectors 2 done!\n");
 		if (Doc1.Val1.Len() == 0 || Doc2.Val1.Len() == 0){
 			return 0;
 		}
-		//printf("Transformation to vectors 1 done: %d!\n", Doc1.Val1.Len());
-		//printf("Transformation to vectors 2 done: %d!\n", Doc2.Val1.Len());
-		//printf("Transformation to vectors done!\n");
 		return GetSimilarity(Doc1, Doc2, Lang1Id, Lang2Id);
 	}
 
@@ -671,18 +620,13 @@ namespace TCrossLingual
 			return 0;
 		}
 		TFltV PDoc1; TFltV PDoc2;
-		//Project(Doc1, Lang1Id, Lang2Id, PDoc1, false);
-		//Project(Doc2, Lang2Id, Lang1Id, PDoc2, false);
 		Project(Doc1, Lang1Id, Lang2Id, PDoc1, false);
 		Project(Doc2, Lang2Id, Lang1Id, PDoc2, false);
-		//printf("Projections done!\n");
 		TLinAlg::Normalize(PDoc1);
-		//printf("Pdoc1:%g\n", PDoc1[0]);
 		TLinAlg::Normalize(PDoc2);
 		bool transpose_flag = true;
 		const TFltVV* Proxy = NULL;
 		this->Projectors->GetProxyMatrix(Lang1Id, Lang2Id, Proxy, transpose_flag, this->Friend);
-		//printf("Pdoc2:%g\n", PDoc2[0]);
 		return TLinAlg::DotProduct(PDoc1, PDoc2);		
 	}
 
@@ -746,9 +690,7 @@ namespace TCrossLingual
 		
 		TFltV Sim1(n1, n1);
 		TFltV Sim2(n2, n2);
-		//printf("Reserve done\n");
-		//printf("(%d %d) * %d = %d", PDoc1Mat.GetXDim(), PDoc1Mat.GetYDim(), PDoc1.Len(), Sim1.Len());
-		//printf("(%d %d) * %d = %d", PDoc2Mat.GetXDim(), PDoc2Mat.GetYDim(), PDoc2.Len(), Sim2.Len());
+
 #ifdef COLMAJOR_DATA
 		TLinAlg::MultiplyT(PDoc1Mat, PDoc2, Sim1);
 		TLinAlg::MultiplyT(PDoc2Mat, PDoc1, Sim2);
@@ -756,12 +698,8 @@ namespace TCrossLingual
 		TLinAlg::Multiply(PDoc1Mat, PDoc2, Sim1);
 		TLinAlg::Multiply(PDoc2Mat, PDoc1, Sim2);
 #endif
-		//printf("Sim1: %d\n", Sim1.Len());
-		//printf("Sim1: %d\n", Sim1.Len());
-		//printf("Reveal magic\n");
-		//printf("%d", Lang1Words.Len());
+		
 		Lang1Words.Gen(n1, 0);
-		//printf("Alocation magic\n");
 		for (int ElN = 0; ElN < n1; ElN++) {			
 			Lang1Words.Add(TPair<TFlt, TInt>(Sim1[ElN], Doc1.Val1[ElN]));
 		}	
@@ -773,22 +711,9 @@ namespace TCrossLingual
 		
 		TLinAlg::Normalize(PDoc1);
 		TLinAlg::Normalize(PDoc2);
-		//printf("Normalite DOne\n");
 		Lang1Words.Sort(false);
 		Lang2Words.Sort(false);
-		//TLinAlg::DotProduct(PDoc1, PDoc2);
-		//printf("Sort Words DOne\n");
-		/*
-		for (int i = 0; i < PDoc1.Len(); i++){
-			printf("%g\t", PDoc1[i].Val);
-		}
-		printf("\n");
-		for (int i = 0; i < PDoc2.Len(); i++){
-			printf("%g\t", PDoc2[i].Val);
-		}*/
-		//printf("\n");
-	
-		//return 1;
+		
 		return TLinAlg::DotProduct(PDoc1,PDoc2);
 	}
 
@@ -799,36 +724,24 @@ namespace TCrossLingual
 		TPair<TIntV, TFltV> Doc2;
 		TextToVector(Text1, Lang1Id, Doc1);
 		TextToVector(Text2, Lang2Id, Doc2);
-		printf("Doc1\n");
-		for (int i = 0; i < Doc1.Val1.Len(); i++){
-			printf("%s: (%d, %g)", GetWordByKeyIdLangId(Lang1Id, Doc1.Val1[i]).GetStr().CStr(), Doc1.Val1[i].Val, Doc1.Val2[i].Val);
-		}
-		printf("\nDoc2\n");
-		for (int i = 0; i < Doc2.Val2.Len(); i++){
-			printf("%s: (%d, %g)", GetWordByKeyIdLangId(Lang2Id, Doc2.Val1[i]).GetStr().CStr(), Doc2.Val1[i].Val, Doc2.Val2[i].Val);
-		}
-
+		
 		if (Doc1.Val1.Len() == 0 || Doc2.Val1.Len() == 0){
 			return 0;
 		}
 		TVec<TPair<TFlt,TInt> > Lang1Words;
 		TVec<TPair<TFlt,TInt> > Lang2Words;
 		double sim =  ExplainSimilarity(Doc1, Doc2, Lang1Id, Lang2Id, Lang1Words, Lang2Words);	
-		//printf("Sim done!\n");
-		//printf("%d %d %f\n", Lang1Words.Len(), Lang2Words.Len(), sim);
+		
 		// Copy Lang1Words (vector of pairs (sim,widx)) to Lang1TopWords (string vector)
 		Lang1TopWords.Gen(0);		
-		//Andrej Macro is probably better, no arguments missmatch
 		for (int WordN = 0; WordN < TMath::Mn(k, Lang1Words.Len()); WordN++) {
 			Lang1TopWords.Add(GetWordByKeyIdLangId(Lang1Id, Lang1Words[WordN].Val2));
 		}
-		//printf("Lang1Words %d\n", Lang1Words.Len());
 		Lang2TopWords.Gen(0);
 		for (int WordN = 0; WordN < TMath::Mn(k, Lang2Words.Len()); WordN++) {
 			Lang2TopWords.Add(GetWordByKeyIdLangId(Lang2Id, Lang2Words[WordN].Val2));
 		}
-		//printf("Lang2Words %d\n", Lang2Words.Len());
-
+		
 		return sim;
 
 	}
@@ -952,8 +865,6 @@ namespace TCrossLingual
 		Centroids.Gen(PDoc.GetRows(), Taxonomy.GetNodes());
 		for (int CatN = 0; CatN < Taxonomy.GetNodes(); CatN++) {
 			int NodeId = IdxV[CatN];
-			//Andrej
-			//index NodeId = IdxV[CatN];
 			int Docs = Taxonomy.GetNodeVal(NodeId).DocIdxV.Len();
 			int Rows = PDoc.GetRows();
 			if (Docs > 0) {
