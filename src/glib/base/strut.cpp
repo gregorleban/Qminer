@@ -194,6 +194,18 @@ TStr TStrUtil::GetStr(const TStrH& StrH, const TStr& FieldDelimiterStr, const TS
 TStr TStrUtil::GetStr(const int& Val, const TStr& ThousandDelimiterStr)
 {
     TStr StrVal = TInt(Val).GetStr();
+    return GetNumWithSeparator(StrVal, ThousandDelimiterStr);
+}
+
+TStr TStrUtil::GetStr(const uint64& Val, const TStr& ThousandDelimiterStr)
+{
+    TStr StrVal = TUInt64(Val).GetStr();
+    return GetNumWithSeparator(StrVal, ThousandDelimiterStr);
+}
+
+TStr TStrUtil::GetNumWithSeparator(const TStr& Val, const TStr& ThousandDelimiterStr)
+{
+    TStr StrVal = Val;
     int Ind = 0;
     for (int N = StrVal.Len() - 1; N > 0; N--) {
         Ind++;

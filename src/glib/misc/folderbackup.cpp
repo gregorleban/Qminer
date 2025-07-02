@@ -316,8 +316,9 @@ void TFolderBackup::GetBackupFolders(const TStr& ProfileName, TStrV& FolderNmV) 
     if (ProfileH.IsKey(ProfileName)) {
         TBackupProfile Profile = ProfileH.GetDat(ProfileName);
         const TVec<TBackupLogInfo>& LogV = Profile.GetLogs();
-        for (int N = 0; N < LogV.Len(); N++)
+        for (int N = 0; N < LogV.Len(); N++) {
             FolderNmV.Add(LogV[N].GetFolderName());
+        }
     }
 }
 

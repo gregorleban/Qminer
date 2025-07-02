@@ -34,12 +34,16 @@ public:
 
     // format number 1234567 as "1,234,567"
     static TStr GetStr(const int& Val, const TStr& ThousandDelimiterStr = ",");
+    static TStr GetStr(const uint64& Val, const TStr& ThousandDelimiterStr = ",");
 
 	template <class TKey, class TDat>
 	static TStr GetStr(const THash<TKey, TDat>& KeyDatH);
 
 	/// returns the furation in the form of 1h55m13s
 	static TStr GetHMSStrFromMSecs(const uint64& TmMSecs);
+
+private:
+    static TStr GetNumWithSeparator(const TStr& Val, const TStr& ThousandDelimiterStr = ",");
 };
 
 template <class TKey, class TDat>
