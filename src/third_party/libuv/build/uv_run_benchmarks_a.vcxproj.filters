@@ -1,85 +1,85 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\snprintf.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\snprintf.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\runner-win.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\runner-win.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-async-pummel.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-async-pummel.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-async.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-async.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-fs-stat.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-fs-stat.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-getaddrinfo.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-getaddrinfo.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-loop-count.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-loop-count.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-queue-work.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-queue-work.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-million-async.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-million-async.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-million-timers.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-million-timers.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-multi-accept.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-multi-accept.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-ping-pongs.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-ping-pongs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-ping-udp.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-ping-udp.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-pound.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-pound.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-pump.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-pump.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-sizes.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-sizes.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-spawn.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-spawn.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-tcp-write-batch.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-tcp-write-batch.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-thread.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-thread.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\benchmark-udp-pummel.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\benchmark-udp-pummel.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\blackhole-server.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\blackhole-server.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\echo-server.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\echo-server.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\run-benchmarks.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\run-benchmarks.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\test\runner.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\runner.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <CustomBuild Include="E:\Temp\11\libuv\CMakeLists.txt" />
+    <CustomBuild Include="E:\Development\IJS\Qminer\src\third_party\libuv\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Source Files">
-      <UniqueIdentifier>{D8577A8C-49FD-346F-8145-07F8C114A693}</UniqueIdentifier>
+      <UniqueIdentifier>{5B9D189C-DF0F-3D1D-909D-75AE7524C678}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

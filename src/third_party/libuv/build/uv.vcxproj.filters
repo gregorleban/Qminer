@@ -1,124 +1,124 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="E:\Temp\11\libuv\src\fs-poll.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\fs-poll.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\idna.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\idna.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\inet.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\inet.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\random.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\random.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\strscpy.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\strscpy.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\strtok.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\strtok.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\thread-common.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\thread-common.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\threadpool.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\threadpool.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\timer.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\timer.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\uv-common.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\uv-common.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\uv-data-getter-setters.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\uv-data-getter-setters.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\version.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\version.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\async.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\async.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\core.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\core.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\detect-wakeup.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\detect-wakeup.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\dl.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\dl.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\error.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\fs.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\fs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\fs-event.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\fs-event.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\getaddrinfo.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\getaddrinfo.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\getnameinfo.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\getnameinfo.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\handle.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\handle.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\loop-watcher.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\loop-watcher.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\pipe.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\pipe.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\thread.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\thread.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\poll.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\poll.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\process.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\process.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\process-stdio.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\process-stdio.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\signal.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\signal.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\snprintf.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\snprintf.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\stream.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\stream.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\tcp.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\tcp.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\tty.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\tty.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\udp.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\udp.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\util.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\util.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\winapi.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\winapi.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Temp\11\libuv\src\win\winsock.c">
+    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\winsock.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <CustomBuild Include="E:\Temp\11\libuv\CMakeLists.txt" />
+    <CustomBuild Include="E:\Development\IJS\Qminer\src\third_party\libuv\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Source Files">
-      <UniqueIdentifier>{D8577A8C-49FD-346F-8145-07F8C114A693}</UniqueIdentifier>
+      <UniqueIdentifier>{5B9D189C-DF0F-3D1D-909D-75AE7524C678}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

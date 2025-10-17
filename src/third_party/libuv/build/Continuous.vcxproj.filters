@@ -1,17 +1,17 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <CustomBuild Include="E:\Temp\11\libuv\build\CMakeFiles\8333a63a6795082854fb1ecb300632e5\Continuous.rule">
+    <CustomBuild Include="E:\Development\IJS\Qminer\src\third_party\libuv\build\CMakeFiles\1ee1a139ded87b67123cbc3b112a7ae2\Continuous.rule">
       <Filter>CMake Rules</Filter>
     </CustomBuild>
-    <CustomBuild Include="E:\Temp\11\libuv\CMakeLists.txt" />
+    <CustomBuild Include="E:\Development\IJS\Qminer\src\third_party\libuv\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="E:\Temp\11\libuv\build\CMakeFiles\Continuous" />
+    <None Include="E:\Development\IJS\Qminer\src\third_party\libuv\build\CMakeFiles\Continuous" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="CMake Rules">
-      <UniqueIdentifier>{E3A10966-5880-35EE-B1F8-B5BF8C27EAB6}</UniqueIdentifier>
+      <UniqueIdentifier>{AED71B34-3662-3B9D-A6A3-581A82F44102}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>
