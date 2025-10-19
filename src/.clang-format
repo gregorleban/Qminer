@@ -1,0 +1,22 @@
+---
+Language: Cpp
+# Force pointers to the type for C++.
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+ColumnLimit:     100
+AllowShortFunctionsOnASingleLine: Inline
+BraceWrapping:
+  AfterClass:      true
+  AfterControlStatement: true
+  AfterFunction:   true
+  AfterEnum:       true
+  AfterNamespace:  true
+  AfterStruct:     true
+  BeforeElse:      true
+  AfterUnion:      true
+  IndentBraces:    false
+SortIncludes:     false
+SpaceBeforeParens: ControlStatements
+BreakBeforeBraces: Stroustrup
+PointerAlignment: Left
