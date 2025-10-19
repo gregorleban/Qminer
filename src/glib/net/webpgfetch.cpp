@@ -118,6 +118,10 @@ void TWebPgFetchEvent::OnFetchError(const TStr& MsgStr){
 void TWebPgFetchEvent::OnFetchEnd(const PHttpResp& HttpResp){
   EAssert(HttpResp->IsOk());
   EndMSecs=TTm::GetCurUniMSecs();
+  if (EndMSecs - StartMSecs > TimeOutMSecs) {
+    OnFetchError("Http Error (Timeout)");
+    return;
+  }
   int StatusCd=HttpResp->GetStatusCd();
   if (StatusCd/100==2){ // codes 2XX - ok
     ChangeLastUrlToLc(HttpResp);
