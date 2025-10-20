@@ -1,13 +1,13 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <CustomBuild Include="E:\Development\IJS\Qminer\src\third_party\libuv\build\CMakeFiles\1ee1a139ded87b67123cbc3b112a7ae2\Nightly.rule">
+    <CustomBuild Include="..\build\CMakeFiles\1ee1a139ded87b67123cbc3b112a7ae2\Nightly.rule">
       <Filter>CMake Rules</Filter>
     </CustomBuild>
-    <CustomBuild Include="E:\Development\IJS\Qminer\src\third_party\libuv\CMakeLists.txt" />
+    <CustomBuild Include="..\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="E:\Development\IJS\Qminer\src\third_party\libuv\build\CMakeFiles\Nightly" />
+    <None Include="..\build\CMakeFiles\Nightly" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="CMake Rules">

@@ -1,555 +1,555 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\src\win\snprintf.c">
+    <ClCompile Include="..\src\win\snprintf.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\runner-win.c">
+    <ClCompile Include="..\test\runner-win.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\blackhole-server.c">
+    <ClCompile Include="..\test\blackhole-server.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\echo-server.c">
+    <ClCompile Include="..\test\echo-server.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\run-tests.c">
+    <ClCompile Include="..\test\run-tests.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\runner.c">
+    <ClCompile Include="..\test\runner.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-active.c">
+    <ClCompile Include="..\test\test-active.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-async-null-cb.c">
+    <ClCompile Include="..\test\test-async-null-cb.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-async.c">
+    <ClCompile Include="..\test\test-async.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-barrier.c">
+    <ClCompile Include="..\test\test-barrier.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-callback-stack.c">
+    <ClCompile Include="..\test\test-callback-stack.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-close-fd.c">
+    <ClCompile Include="..\test\test-close-fd.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-close-order.c">
+    <ClCompile Include="..\test\test-close-order.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-condvar.c">
+    <ClCompile Include="..\test\test-condvar.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-connect-unspecified.c">
+    <ClCompile Include="..\test\test-connect-unspecified.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-connection-fail.c">
+    <ClCompile Include="..\test\test-connection-fail.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-cwd-and-chdir.c">
+    <ClCompile Include="..\test\test-cwd-and-chdir.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-default-loop-close.c">
+    <ClCompile Include="..\test\test-default-loop-close.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-delayed-accept.c">
+    <ClCompile Include="..\test\test-delayed-accept.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-dlerror.c">
+    <ClCompile Include="..\test\test-dlerror.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-eintr-handling.c">
+    <ClCompile Include="..\test\test-eintr-handling.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-embed.c">
+    <ClCompile Include="..\test\test-embed.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-emfile.c">
+    <ClCompile Include="..\test\test-emfile.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-env-vars.c">
+    <ClCompile Include="..\test\test-env-vars.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-error.c">
+    <ClCompile Include="..\test\test-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fail-always.c">
+    <ClCompile Include="..\test\test-fail-always.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fork.c">
+    <ClCompile Include="..\test\test-fork.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fs-copyfile.c">
+    <ClCompile Include="..\test\test-fs-copyfile.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fs-event.c">
+    <ClCompile Include="..\test\test-fs-event.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fs-poll.c">
+    <ClCompile Include="..\test\test-fs-poll.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fs.c">
+    <ClCompile Include="..\test\test-fs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fs-readdir.c">
+    <ClCompile Include="..\test\test-fs-readdir.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fs-fd-hash.c">
+    <ClCompile Include="..\test\test-fs-fd-hash.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-fs-open-flags.c">
+    <ClCompile Include="..\test\test-fs-open-flags.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-get-currentexe.c">
+    <ClCompile Include="..\test\test-get-currentexe.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-get-loadavg.c">
+    <ClCompile Include="..\test\test-get-loadavg.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-get-memory.c">
+    <ClCompile Include="..\test\test-get-memory.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-get-passwd.c">
+    <ClCompile Include="..\test\test-get-passwd.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-getaddrinfo.c">
+    <ClCompile Include="..\test\test-getaddrinfo.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-gethostname.c">
+    <ClCompile Include="..\test\test-gethostname.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-getnameinfo.c">
+    <ClCompile Include="..\test\test-getnameinfo.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-getsockname.c">
+    <ClCompile Include="..\test\test-getsockname.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-getters-setters.c">
+    <ClCompile Include="..\test\test-getters-setters.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-gettimeofday.c">
+    <ClCompile Include="..\test\test-gettimeofday.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-handle-fileno.c">
+    <ClCompile Include="..\test\test-handle-fileno.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-homedir.c">
+    <ClCompile Include="..\test\test-homedir.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-hrtime.c">
+    <ClCompile Include="..\test\test-hrtime.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-idle.c">
+    <ClCompile Include="..\test\test-idle.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-idna.c">
+    <ClCompile Include="..\test\test-idna.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-iouring-pollhup.c">
+    <ClCompile Include="..\test\test-iouring-pollhup.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ip4-addr.c">
+    <ClCompile Include="..\test\test-ip4-addr.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ip6-addr.c">
+    <ClCompile Include="..\test\test-ip6-addr.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ip-name.c">
+    <ClCompile Include="..\test\test-ip-name.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ipc-heavy-traffic-deadlock-bug.c">
+    <ClCompile Include="..\test\test-ipc-heavy-traffic-deadlock-bug.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ipc-send-recv.c">
+    <ClCompile Include="..\test\test-ipc-send-recv.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ipc.c">
+    <ClCompile Include="..\test\test-ipc.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-loop-alive.c">
+    <ClCompile Include="..\test\test-loop-alive.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-loop-close.c">
+    <ClCompile Include="..\test\test-loop-close.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-loop-configure.c">
+    <ClCompile Include="..\test\test-loop-configure.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-loop-handles.c">
+    <ClCompile Include="..\test\test-loop-handles.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-loop-oom.c">
+    <ClCompile Include="..\test\test-loop-oom.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-loop-stop.c">
+    <ClCompile Include="..\test\test-loop-stop.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-loop-time.c">
+    <ClCompile Include="..\test\test-loop-time.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-metrics.c">
+    <ClCompile Include="..\test\test-metrics.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-multiple-listen.c">
+    <ClCompile Include="..\test\test-multiple-listen.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-mutexes.c">
+    <ClCompile Include="..\test\test-mutexes.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-not-readable-nor-writable-on-read-error.c">
+    <ClCompile Include="..\test\test-not-readable-nor-writable-on-read-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-not-writable-after-shutdown.c">
+    <ClCompile Include="..\test\test-not-writable-after-shutdown.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-osx-select.c">
+    <ClCompile Include="..\test\test-osx-select.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pass-always.c">
+    <ClCompile Include="..\test\test-pass-always.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ping-pong.c">
+    <ClCompile Include="..\test\test-ping-pong.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-bind-error.c">
+    <ClCompile Include="..\test\test-pipe-bind-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-close-stdout-read-stdin.c">
+    <ClCompile Include="..\test\test-pipe-close-stdout-read-stdin.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-connect-error.c">
+    <ClCompile Include="..\test\test-pipe-connect-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-connect-multiple.c">
+    <ClCompile Include="..\test\test-pipe-connect-multiple.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-connect-prepare.c">
+    <ClCompile Include="..\test\test-pipe-connect-prepare.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-getsockname.c">
+    <ClCompile Include="..\test\test-pipe-getsockname.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-pending-instances.c">
+    <ClCompile Include="..\test\test-pipe-pending-instances.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-sendmsg.c">
+    <ClCompile Include="..\test\test-pipe-sendmsg.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-server-close.c">
+    <ClCompile Include="..\test\test-pipe-server-close.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-set-fchmod.c">
+    <ClCompile Include="..\test\test-pipe-set-fchmod.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-pipe-set-non-blocking.c">
+    <ClCompile Include="..\test\test-pipe-set-non-blocking.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-platform-output.c">
+    <ClCompile Include="..\test\test-platform-output.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-poll-close-doesnt-corrupt-stack.c">
+    <ClCompile Include="..\test\test-poll-close-doesnt-corrupt-stack.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-poll-close.c">
+    <ClCompile Include="..\test\test-poll-close.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-poll-closesocket.c">
+    <ClCompile Include="..\test\test-poll-closesocket.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-poll-multiple-handles.c">
+    <ClCompile Include="..\test\test-poll-multiple-handles.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-poll-oob.c">
+    <ClCompile Include="..\test\test-poll-oob.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-poll.c">
+    <ClCompile Include="..\test\test-poll.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-process-priority.c">
+    <ClCompile Include="..\test\test-process-priority.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-process-title-threadsafe.c">
+    <ClCompile Include="..\test\test-process-title-threadsafe.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-process-title.c">
+    <ClCompile Include="..\test\test-process-title.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-queue-foreach-delete.c">
+    <ClCompile Include="..\test\test-queue-foreach-delete.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-random.c">
+    <ClCompile Include="..\test\test-random.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-readable-on-eof.c">
+    <ClCompile Include="..\test\test-readable-on-eof.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-ref.c">
+    <ClCompile Include="..\test\test-ref.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-run-nowait.c">
+    <ClCompile Include="..\test\test-run-nowait.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-run-once.c">
+    <ClCompile Include="..\test\test-run-once.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-semaphore.c">
+    <ClCompile Include="..\test\test-semaphore.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-shutdown-close.c">
+    <ClCompile Include="..\test\test-shutdown-close.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-shutdown-eof.c">
+    <ClCompile Include="..\test\test-shutdown-eof.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-shutdown-simultaneous.c">
+    <ClCompile Include="..\test\test-shutdown-simultaneous.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-shutdown-twice.c">
+    <ClCompile Include="..\test\test-shutdown-twice.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-signal-multiple-loops.c">
+    <ClCompile Include="..\test\test-signal-multiple-loops.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-signal-pending-on-close.c">
+    <ClCompile Include="..\test\test-signal-pending-on-close.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-signal.c">
+    <ClCompile Include="..\test\test-signal.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-socket-buffer-size.c">
+    <ClCompile Include="..\test\test-socket-buffer-size.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-spawn.c">
+    <ClCompile Include="..\test\test-spawn.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-stdio-over-pipes.c">
+    <ClCompile Include="..\test\test-stdio-over-pipes.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-strscpy.c">
+    <ClCompile Include="..\test\test-strscpy.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-strtok.c">
+    <ClCompile Include="..\test\test-strtok.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-alloc-cb-fail.c">
+    <ClCompile Include="..\test\test-tcp-alloc-cb-fail.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-bind-error.c">
+    <ClCompile Include="..\test\test-tcp-bind-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-bind6-error.c">
+    <ClCompile Include="..\test\test-tcp-bind6-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-close-accept.c">
+    <ClCompile Include="..\test\test-tcp-close-accept.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-close-after-read-timeout.c">
+    <ClCompile Include="..\test\test-tcp-close-after-read-timeout.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-close-while-connecting.c">
+    <ClCompile Include="..\test\test-tcp-close-while-connecting.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-close.c">
+    <ClCompile Include="..\test\test-tcp-close.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-close-reset.c">
+    <ClCompile Include="..\test\test-tcp-close-reset.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-connect-error-after-write.c">
+    <ClCompile Include="..\test\test-tcp-connect-error-after-write.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-connect-error.c">
+    <ClCompile Include="..\test\test-tcp-connect-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-connect-timeout.c">
+    <ClCompile Include="..\test\test-tcp-connect-timeout.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-connect6-error.c">
+    <ClCompile Include="..\test\test-tcp-connect6-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-create-socket-early.c">
+    <ClCompile Include="..\test\test-tcp-create-socket-early.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-flags.c">
+    <ClCompile Include="..\test\test-tcp-flags.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-oob.c">
+    <ClCompile Include="..\test\test-tcp-oob.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-open.c">
+    <ClCompile Include="..\test\test-tcp-open.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-read-stop.c">
+    <ClCompile Include="..\test\test-tcp-read-stop.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-reuseport.c">
+    <ClCompile Include="..\test\test-tcp-reuseport.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-read-stop-start.c">
+    <ClCompile Include="..\test\test-tcp-read-stop-start.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-rst.c">
+    <ClCompile Include="..\test\test-tcp-rst.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-shutdown-after-write.c">
+    <ClCompile Include="..\test\test-tcp-shutdown-after-write.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-try-write.c">
+    <ClCompile Include="..\test\test-tcp-try-write.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-write-in-a-row.c">
+    <ClCompile Include="..\test\test-tcp-write-in-a-row.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-try-write-error.c">
+    <ClCompile Include="..\test\test-tcp-try-write-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-unexpected-read.c">
+    <ClCompile Include="..\test\test-tcp-unexpected-read.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-write-after-connect.c">
+    <ClCompile Include="..\test\test-tcp-write-after-connect.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-write-fail.c">
+    <ClCompile Include="..\test\test-tcp-write-fail.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-write-queue-order.c">
+    <ClCompile Include="..\test\test-tcp-write-queue-order.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-write-to-half-open-connection.c">
+    <ClCompile Include="..\test\test-tcp-write-to-half-open-connection.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tcp-writealot.c">
+    <ClCompile Include="..\test\test-tcp-writealot.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-test-macros.c">
+    <ClCompile Include="..\test\test-test-macros.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-thread-affinity.c">
+    <ClCompile Include="..\test\test-thread-affinity.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-thread-equal.c">
+    <ClCompile Include="..\test\test-thread-equal.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-thread.c">
+    <ClCompile Include="..\test\test-thread.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-thread-name.c">
+    <ClCompile Include="..\test\test-thread-name.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-thread-priority.c">
+    <ClCompile Include="..\test\test-thread-priority.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-threadpool-cancel.c">
+    <ClCompile Include="..\test\test-threadpool-cancel.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-threadpool.c">
+    <ClCompile Include="..\test\test-threadpool.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-timer-again.c">
+    <ClCompile Include="..\test\test-timer-again.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-timer-from-check.c">
+    <ClCompile Include="..\test\test-timer-from-check.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-timer.c">
+    <ClCompile Include="..\test\test-timer.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tmpdir.c">
+    <ClCompile Include="..\test\test-tmpdir.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tty-duplicate-key.c">
+    <ClCompile Include="..\test\test-tty-duplicate-key.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tty-escape-sequence-processing.c">
+    <ClCompile Include="..\test\test-tty-escape-sequence-processing.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-tty.c">
+    <ClCompile Include="..\test\test-tty.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-alloc-cb-fail.c">
+    <ClCompile Include="..\test\test-udp-alloc-cb-fail.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-bind.c">
+    <ClCompile Include="..\test\test-udp-bind.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-connect.c">
+    <ClCompile Include="..\test\test-udp-connect.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-connect6.c">
+    <ClCompile Include="..\test\test-udp-connect6.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-create-socket-early.c">
+    <ClCompile Include="..\test\test-udp-create-socket-early.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-dgram-too-big.c">
+    <ClCompile Include="..\test\test-udp-dgram-too-big.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-ipv6.c">
+    <ClCompile Include="..\test\test-udp-ipv6.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-mmsg.c">
+    <ClCompile Include="..\test\test-udp-mmsg.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-multicast-interface.c">
+    <ClCompile Include="..\test\test-udp-multicast-interface.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-multicast-interface6.c">
+    <ClCompile Include="..\test\test-udp-multicast-interface6.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-multicast-join.c">
+    <ClCompile Include="..\test\test-udp-multicast-join.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-multicast-join6.c">
+    <ClCompile Include="..\test\test-udp-multicast-join6.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-multicast-ttl.c">
+    <ClCompile Include="..\test\test-udp-multicast-ttl.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-open.c">
+    <ClCompile Include="..\test\test-udp-open.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-options.c">
+    <ClCompile Include="..\test\test-udp-options.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-send-and-recv.c">
+    <ClCompile Include="..\test\test-udp-send-and-recv.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-send-hang-loop.c">
+    <ClCompile Include="..\test\test-udp-send-hang-loop.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-send-immediate.c">
+    <ClCompile Include="..\test\test-udp-send-immediate.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-sendmmsg-error.c">
+    <ClCompile Include="..\test\test-udp-sendmmsg-error.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-send-unreachable.c">
+    <ClCompile Include="..\test\test-udp-send-unreachable.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-try-send.c">
+    <ClCompile Include="..\test\test-udp-try-send.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-recv-in-a-row.c">
+    <ClCompile Include="..\test\test-udp-recv-in-a-row.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-udp-reuseport.c">
+    <ClCompile Include="..\test\test-udp-reuseport.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-uname.c">
+    <ClCompile Include="..\test\test-uname.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-walk-handles.c">
+    <ClCompile Include="..\test\test-walk-handles.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="E:\Development\IJS\Qminer\src\third_party\libuv\test\test-watcher-cross-stop.c">
+    <ClCompile Include="..\test\test-watcher-cross-stop.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <CustomBuild Include="E:\Development\IJS\Qminer\src\third_party\libuv\CMakeLists.txt" />
+    <CustomBuild Include="..\CMakeLists.txt" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Source Files">
