@@ -156,3 +156,10 @@ test*.txt
 /TestStore
 /src/third_party/libuv-ex/
 /src/third_party/libuv/docs/
+
+# Visual Studio Code settings
+.vscode/
+test/cache/data/
+test/cache/test_base/
+test/cache/test_base.zip
+test/cache/test_cache

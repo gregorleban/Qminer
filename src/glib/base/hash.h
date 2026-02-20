@@ -1045,12 +1045,12 @@ typedef TStrHash<TIntV> TStrToIntVSH;
 //     already exists, the trie is not modified.
 // Searching by Prefix is also supported and returns the DatV of all the keys that
 // begin with a given Prefix.    The trie does not guarantee that the DatV are
-// returned in any particular order (in the current implementation, more recently 
+// returned in any particular order (in the current implementation, more recently
 // addes sub-branches of the tree are traversed First).
 // - SearchByPrefixEx allows you to pass a callable object that gets called with each
 //     matching TDat; it should return 'true' to continue searching or 'false' to stop.
 // - SearchByPrefix returns the matching TDat's in a vector.
-// For all these functions, the KeyV (when adding) or Prefix (when searching) 
+// For all these functions, the KeyV (when adding) or Prefix (when searching)
 // can be provided as:
 // - a pair of iterators 'First' and 'Last', such that the KeyV is [First, Last);
 // - a TVec<T> or std::initializer_list<T> - if a TSym can be initialized from a T;
@@ -1072,7 +1072,7 @@ typedef TStrHash<TIntV> TStrToIntVSH;
 //        trie2.AddDat({2, 4, 6}, "even");
 //        trie2.AddDat({4, 9, 16, 25}, "squares");
 //        trie2.AddDat({2, 3, 5, 8, 13, 21}, "fib");
-//        TIntV Prefix; Prefix.Add(2); Prefix.Add(3); 
+//        TIntV Prefix; Prefix.Add(2); Prefix.Add(3);
 //        TStrV results2; trie2.SearchByPrefix(Prefix, results2);
 //        for (const TStr& s2: results2) printf("%s\n", s2.CStr()); // prints 'primes' and 'fib'
 
@@ -1116,7 +1116,7 @@ protected:
     // The following Begin/End functions are used by AddDat, AddIfNew, SearchByPrefix[Ex]
     // to convert a TKey into a pair of iterators.    Why don't we simply use begin(KeyV) and
     // end(KeyV) in every case?    Because then someone would call AddDat("foo", someDat)
-    // and be unpleasantly surprised to discover that his KeyV is a sequence of 
+    // and be unpleasantly surprised to discover that his KeyV is a sequence of
     // 4 characters, {'F', 'o', 'o', '\0'}, rather than a sequence of 3 characters.
     struct TKeyAccess
     {
@@ -1143,13 +1143,13 @@ protected:
     template<typename TIt> TNodeId GetKeyId(TIt First, TIt Last) const;
     template<typename TIt> TNodeId AddKey(TIt First, TIt Last);
 public:
-    // Returns 'true' iff the sequence [First..Last) is present and associated with a 'Dat' 
+    // Returns 'true' iff the sequence [First..Last) is present and associated with a 'Dat'
     // (as opposed to e.g. just being present in the trie because it happens to be a Prefix of some longer KeyV).
     template<typename TIt> bool IsKey(TIt First, TIt Last) const {
         auto KeyId = GetKeyId(First, Last); return KeyId >= 0 && TrieH[KeyId].DatIdx >= 0;
     }
     // If the KeyV is new, AddDat adds it, otherwise it overwrites its existing TDat.
-    // It also returns a reference to the TDat (in 'DatV').    
+    // It also returns a reference to the TDat (in 'DatV').
     // In other words, this works just like THash::AddKey.
     template<typename TIt> TDat& AddDat(TIt First, TIt Last, const TDat& Dat) {
         auto &Node = TrieH[AddKey(First, Last)];
@@ -1166,7 +1166,7 @@ public:
     }
     template<typename TKey> TDat& AddDat(const TKey &Key, const TDat& Dat) { return AddDat(TKeyAccess::Begin(Key), TKeyAccess::End(Key), Dat); }
     template<typename T> TDat& AddDat(const std::initializer_list<T> &KeyV, const TDat& Dat) { return AddDat(KeyV.begin(), KeyV.end(), Dat); }
-    // If the KeyV is new, AddIfNew function adds it and returns true; 
+    // If the KeyV is new, AddIfNew function adds it and returns true;
     // otherwise it returns false and does not change anything.
     template<typename TIt> bool AddIfNew(TIt First, TIt Last, const TDat& Dat) {
         auto &Node = TrieH[AddKey(First, Last)];
@@ -1179,7 +1179,7 @@ public:
     }
     template<typename TKey> bool AddIfNew(const TKey& Key, const TDat& Dat) { using std::begin; using std::end; return AddIfNew(begin(Key), end(Key), Dat); }
 protected:
-    // Traverses all the nodes in the subtree rooted by 'NodeId', 
+    // Traverses all the nodes in the subtree rooted by 'NodeId',
     // calling 'Sink(Dat)' for each of them that has an associated TDat.
     // The Sink should return 'false' to interrupt the traversal, 'true' to continue.
     // TraverseSubtree returns 'false' if it was interrupted by the Sink, 'true' otherwise.
@@ -1197,8 +1197,8 @@ public:
     }
     template<typename TKey, typename TSink> void SearchByPrefixEx(const TKey& Prefix, TSink&& Sink) const { SearchByPrefixEx(TKeyAccess::Begin(Prefix), TKeyAccess::End(Prefix), Sink); }
     template<typename T, typename TSink> void SearchByPrefixEx(const std::initializer_list<T> &Prefix, TSink&& Sink) const { SearchByPrefixEx(Prefix.Begin(), Prefix.End(), Sink); }
-    // SearchByPrefix() adds, to 'DestV', all the TDat's whose KeyV starts with 'Prefix'.    
-    // If MaxResults >= 0, at most MaxResults DatV are added and others are ignored.    
+    // SearchByPrefix() adds, to 'DestV', all the TDat's whose KeyV starts with 'Prefix'.
+    // If MaxResults >= 0, at most MaxResults DatV are added and others are ignored.
     // SearchByPrefix() returns the number of elements added to 'DestV'.
     template<typename TIt> int SearchByPrefix(TIt PrefixFirst, TIt PrefixLast, TDatVec& DestV, int MaxResults = -1, bool ClrDest = true) const;
     template<typename TKey> int SearchByPrefix(const TKey& Prefix, TDatVec& DestV, int MaxResults = -1, bool ClrDest = true) const { return SearchByPrefix(TKeyAccess::Begin(Prefix), TKeyAccess::End(Prefix), DestV, MaxResults, ClrDest); }
@@ -1331,10 +1331,12 @@ public:
 
     TCache& operator=(const TCache&);
     int64 GetMemUsed() const;
+    int64 CalcMemUsed() const;
     int64 GetMxMemUsed() const { return MxMemUsed; }
     bool RefreshMemUsed();
+    void NotifyDataMemeUsedChange(const int64& MemUsedDiff);
 
-    /// put the key to the cache and refresh it's usage timestamp 
+    /// put the key to the cache and refresh it's usage timestamp
     void Put(const TKey& Key, const TDat& Dat);
     /// get the Dat for Key from cache. return true if successful
     bool Get(const TKey& Key, TDat& Dat);
@@ -1360,6 +1362,7 @@ public:
 template <class TKey, class TDat, class THashFunc>
 void TCache<TKey, TDat, THashFunc>::Purge(const int64& MemToPurge){
     const int64 StartMemUsed = CurMemUsed;
+    const int StartKeyDatHLen = KeyDatH.Len();
     while (!TimeKeyL.Empty() && (StartMemUsed - CurMemUsed < MemToPurge)){
         TKey Key = TimeKeyL.Last()->GetVal();
         Del(Key);
@@ -1372,27 +1375,29 @@ int64 TCache<TKey, TDat, THashFunc>::GetMemUsed() const {
         TMemUtils::GetExtraMemberSize(MxMemUsed) +
         TMemUtils::GetExtraMemberSize(CurMemUsed) +
         TMemUtils::GetExtraMemberSize(KeyDatH) +
-        TMemUtils::GetExtraMemberSize(TimeKeyL);
-        /* int64 MemUsed = 2 * sizeof(int64); */
+        TMemUtils::GetExtraMemberSize(TimeKeyL) +
+        CurMemUsed;
+}
 
-        /* MemUsed += KeyDatH.GetMemUsed(false); */
-        /* MemUsed += TimeKeyL.GetMemUsed(); */
-        /* int cnt = 0; */
-        /* int KeyId = KeyDatH.FFirstKeyId(); */
-        /* while (KeyDatH.FNextKeyId(KeyId)) { */
-        /*         const TKeyLNDatPr& KeyLNDatPr = KeyDatH[KeyId]; */
-        /*         TDat Dat = KeyLNDatPr.Val2; */
-        /*         MemUsed += int64(Dat->GetMemUsed()); */
-        /*         cnt++; */
-        /* } */
-        /* EAssert(cnt == KeyDatH.Len()); */
-
-        /* return MemUsed; */
+template <class TKey, class TDat, class THashFunc>
+int64 TCache<TKey, TDat, THashFunc>::CalcMemUsed() const {
+    int64 MemUsed = 2 * sizeof(int64);
+    MemUsed += KeyDatH.GetMemUsed(false);
+    MemUsed += TimeKeyL.GetMemUsed();
+    int cnt = 0;
+    int KeyId = KeyDatH.FFirstKeyId();
+    while (KeyDatH.FNextKeyId(KeyId)) {
+        const TKeyLNDatPr& KeyLNDatPr = KeyDatH[KeyId];
+        TDat Dat = KeyLNDatPr.Val2;
+        MemUsed += int64(Dat->GetMemUsed());
+        cnt++;
+    }
+    EAssert(cnt == KeyDatH.Len());
+    return MemUsed;
 }
 
 template <class TKey, class TDat, class THashFunc>
 bool TCache<TKey, TDat, THashFunc>::RefreshMemUsed(){
-    CurMemUsed=GetMemUsed();
     if (CurMemUsed > MxMemUsed) {
         Purge(CurMemUsed - MxMemUsed);
         return true;
@@ -1401,12 +1406,17 @@ bool TCache<TKey, TDat, THashFunc>::RefreshMemUsed(){
 }
 
 template <class TKey, class TDat, class THashFunc>
+void TCache<TKey, TDat, THashFunc>::NotifyDataMemeUsedChange(const int64& MemUsedDiff) {
+    CurMemUsed = MAX(0, CurMemUsed + MemUsedDiff);
+}
+
+template <class TKey, class TDat, class THashFunc>
 void TCache<TKey, TDat, THashFunc>::Put(const TKey& Key, const TDat& Dat){
     int KeyId=KeyDatH.GetKeyId(Key);
     if (KeyId==-1) {
         const int64 KeyDatMem = int64(Key.GetMemUsed() + Dat->GetMemUsed());
         // if we have too much data in the cache, then purge old items
-        if (CurMemUsed + KeyDatMem > MxMemUsed){
+        if (CurMemUsed + KeyDatMem > MxMemUsed) {
             // clear max 5% of cache or 10.000 items
             const int64 FreeMem = MAX(MIN(10000 * KeyDatMem, int64(MxMemUsed*0.05)), KeyDatMem);
             Purge(FreeMem);
@@ -1415,7 +1425,7 @@ void TCache<TKey, TDat, THashFunc>::Put(const TKey& Key, const TDat& Dat){
         const TKeyLN KeyLN = TimeKeyL.AddFront(Key);
         TKeyLNDatPr KeyLNDatPr(KeyLN, Dat);
         KeyDatH.AddDat(Key, KeyLNDatPr);
-    } 
+    }
     else {
         TKeyLNDatPr& KeyLNDatPr = KeyDatH[KeyId];
         const TKeyLN KeyLN = KeyLNDatPr.Val1;
@@ -1443,7 +1453,7 @@ bool TCache<TKey, TDat, THashFunc>::Get(const TKey& Key, TDat& Dat) {
     const int KeyId = KeyDatH.GetKeyId(Key);
     if (KeyId == -1){
         return false;
-    } 
+    }
     else {
         Dat = KeyDatH[KeyId].Val2;
         return true;
@@ -1460,7 +1470,8 @@ void TCache<TKey, TDat, THashFunc>::Del(const TKey& Key, const bool& DoEventCall
         if (DoEventCall) {
             Dat->OnDelFromCache(Key, RefToBs);
         }
-        CurMemUsed -= int64(Key.GetMemUsed() + Dat->GetMemUsed());
+        const int64 MemUsedDelta = int64(Key.GetMemUsed() + Dat->GetMemUsed());
+        CurMemUsed = MAX(0, CurMemUsed - MemUsedDelta);
         Dat = NULL;
         TimeKeyL.Del(KeyLN);
         KeyDatH.DelKeyId(KeyId);
@@ -1470,7 +1481,7 @@ void TCache<TKey, TDat, THashFunc>::Del(const TKey& Key, const bool& DoEventCall
 template <class TKey, class TDat, class THashFunc>
 void TCache<TKey, TDat, THashFunc>::Flush() {
     if (MxMemUsed > (int64)TInt::Giga) { printf("Flush: 0/%d\r", KeyDatH.Len()); }
-    int KeyId=KeyDatH.FFirstKeyId(); 
+    int KeyId=KeyDatH.FFirstKeyId();
     int Done = 0;
     while (KeyDatH.FNextKeyId(KeyId)) {
         if (Done % 10000 == 0) {
@@ -1510,11 +1521,11 @@ template <class TKey, class TDat, class THashFunc>
 bool TCache<TKey, TDat, THashFunc>::FNextKeyDat(void*& KeyDatP, TKey& Key, TDat& Dat){
     if (KeyDatP==NULL){
         return false;
-    } 
+    }
     else {
-        Key = TKeyLN(KeyDatP)->GetVal(); 
+        Key = TKeyLN(KeyDatP)->GetVal();
         Dat = KeyDatH.GetDat(Key).Val2;
-        KeyDatP = TKeyLN(KeyDatP)->Next(); 
+        KeyDatP = TKeyLN(KeyDatP)->Next();
         return true;
     }
 }
@@ -1523,10 +1534,10 @@ template <class TKey, class TDat, class THashFunc>
 bool TCache<TKey, TDat, THashFunc>::FPrevKeyDat(void*& KeyDatP, TKey& Key, TDat& Dat) {
     if (KeyDatP == NULL) {
         return false;
-    } 
+    }
     else {
         Key = TKeyLN(KeyDatP)->GetVal(); Dat = KeyDatH.GetDat(Key).Val2;
-        KeyDatP = TKeyLN(KeyDatP)->Prev(); 
+        KeyDatP = TKeyLN(KeyDatP)->Prev();
         return true;
     }
 }

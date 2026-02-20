@@ -784,7 +784,6 @@ void TSockSys::OnClose(uv_handle_t* SockHnd)
 
 void TSockSys::OnTimeOut(uv_timer_t* TimerHnd)
 {
-    TNotify::StdNotify->OnStatus("TSockSys::OnTimeOut");
     // check we have timer
     IAssert(SockSys.IsTimer((uint64)TimerHnd));
     // get socket id

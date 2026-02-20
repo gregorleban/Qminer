@@ -6604,7 +6604,8 @@ TBlobBsStats TIndex::GetBlobStats() const {
 }
 
 TGixStats TIndex::GetGixStats(const bool& RefreshP) const {
-    TGixStats Stats = GixFull->GetGixStats(RefreshP);
+    TGixStats Stats = GixPos->GetGixStats(RefreshP);
+    Stats.Add(GixFull->GetGixStats(RefreshP));
     Stats.Add(GixSmall->GetGixStats(RefreshP));
     Stats.Add(GixTiny->GetGixStats(RefreshP));
     return Stats;
@@ -7332,7 +7333,7 @@ PRecSet TBase::Search(const PQuery& Query) {
     if (Query->IsSort()) { Query->Sort(this, RecSet); }
     // trim if necessary
     if (Query->IsLimit()) { RecSet = Query->GetLimit(RecSet); }
-    // return what we have, trimed if necessary
+    // return what we have, trimmed if necessary
     return RecSet;
 }
 
