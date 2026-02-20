@@ -1,0 +1,380 @@
+[
+{
+	"name" : "Article",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+
+		{ "name" : "Url", "type" : "string", "store" : "cache" },
+		{ "name" : "Language", "type" : "string", "codebook" : true },
+		{ "name" : "Title", "type" : "string", "store" : "cache" },
+		{ "name" : "Body", "type" : "string", "store" : "cache" },
+
+		{ "name" : "DateTime", "type" : "datetime" },
+		{ "name" : "DateTimePub", "type" : "datetime", "store" : "cache", "null" : true },
+
+		{ "name" : "FacebookShares", "type" : "int", "default" : 0 },
+		{ "name" : "SocialScore", "type" : "int", "default" : 0 },
+
+		{ "name" : "CosToCentroid", "type" : "byte", "default" : 0 },
+		{ "name" : "Sentiment", "type" : "byte", "null" : true },
+
+		{ "name" : "Image", "type" : "string", "store" : "cache", "null" : true },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null" : true },
+
+		{ "name" : "ExtractedDates", "type" : "string", "store" : "cache", "null" : true },
+		{ "name" : "Date", "type" : "string", "store" : "cache", "default" : "" },
+
+		{ "name" : "Flags", "type" : "byte", "store" : "cache", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasSource", "type" : "field", "store" : "Source", "inverse" : "hasArticle", "storage": "uint-" },
+		{ "name" : "hasStory", "type" : "field", "store" : "Story", "inverse" : "hasArticle", "storage": "uint-" },
+		{ "name" : "hasLocation", "type" : "field", "store" : "Concept", "inverse" : "hasArticleForLocation", "storage": "uint-" },
+
+		{ "name" : "hasAuthor", "type" : "index", "store" : "Author", "inverse" : "hasArticle", "storage": "tiny" },
+		{ "name" : "hasConcept", "type" : "index", "store" : "Concept", "inverse" : "hasArticle", "storage": "small" },
+		{ "name" : "hasCategory", "type": "index", "store" : "Category", "inverse" : "hasArticle", "storage": "small" },
+		{ "name" : "hasDate", "type": "index", "store" : "Date", "inverse" : "hasArticle", "storage": "tiny" },
+
+		{ "name" : "similar_eng", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_spa", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_cat", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_deu", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_por", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_ita", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_fra", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_hrv", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_slv", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_srp", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_rus", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_tur", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "similar_zho", "type" : "index", "store" : "Article", "storage": "small" },
+
+		{ "name" : "hasDuplicate", "type" : "index", "store" : "Article", "inverse" : "isDuplicateOf", "storage": "tiny" },
+		{ "name" : "isDuplicateOf", "type" : "field", "store" : "Article", "inverse" : "hasDuplicate", "storage": "uint-" },
+
+		{ "name" : "isCopiedBy", "type" : "index", "store" : "Article", "storage": "small" }
+	],
+	"keys" : [
+		{ "field" : "Title", "type" : "text_position" },
+		{ "field" : "Body", "type" : "text_position" },
+		{ "field" : "Language", "type" : "value", "storage": "tiny" },
+		{ "field" : "Date", "type" : "value", "storage": "tiny" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "Source",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Title", "type" : "string" },
+
+		{ "name" : "Favicon", "type" : "string", "null" : true },
+		{ "name" : "ThumbImage", "type" : "string", "null" : true },
+		{ "name" : "Image", "type" : "string", "null" : true },
+
+		{ "name" : "Type", "type" : "string", "null" : true },
+		{ "name" : "Description", "type" : "string", "default": "", "store" : "cache" },
+
+		{ "name" : "AlexaGlobal", "type" : "int", "null" : true },
+		{ "name" : "AlexaCountry", "type" : "int", "null" : true },
+		{ "name" : "ImportanceRank", "type" : "int", "default" : 100 },
+		{ "name" : "Details", "type": "string", "store": "cache", "null": true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasArticle", "type" : "index", "store" : "Article", "inverse" : "hasSource", "storage": "tiny" },
+		{ "name" : "hasAuthor", "type" : "index", "store" : "Author", "inverse" : "hasSource", "storage": "tiny" },
+		{ "name" : "hasSourceGroup", "type": "index", "store" : "SourceGroup", "inverse" : "hasSource", "storage": "tiny" },
+
+		{ "name" : "hasLocation", "type" : "field", "store" : "Concept", "storage": "uint-" },
+
+		{ "name" : "hasPermissionGroup", "type" : "index", "store" : "PermissionGroup", "inverse" : "hasSource", "storage": "tiny" }
+	],
+	"keys" : [
+		{ "field" : "Title", "type" : "value", "storage": "small" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "Author",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Name", "type" : "string", "default": "", "store" : "cache" },
+		{ "name" : "PrettyName", "type" : "string", "null": true, "store" : "cache" },
+		{ "name" : "Title", "type" : "string", "default": "", "store" : "cache" },
+		{ "name" : "Description", "type" : "string", "default": "", "store" : "cache" },
+		{ "name" : "Details", "type": "string", "store": "cache", "null": true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasArticle", "type" : "index", "store" : "Article", "inverse" : "hasAuthor", "storage": "tiny" },
+		{ "name" : "hasSource", "type": "index", "store" : "Source", "inverse" : "hasAuthor", "storage": "tiny" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "PermissionGroup",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Label", "type" : "string", "default": "" },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null": true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasSource", "type" : "index", "store" : "Source", "inverse" : "hasPermissionGroup", "storage": "tiny" },
+		{ "name" : "hasUser", "type" : "index", "store" : "User", "inverse" : "hasPermissionGroup", "storage": "tiny" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "Concept",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Type", "type" : "string", "codebook" : true },
+		{ "name" : "Description", "type" : "string", "default" : "", "store" : "cache" },
+		{ "name" : "Image", "type" : "string", "store" : "cache", "null" : true },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null" : true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasArticle", "type" : "index", "store" : "Article", "inverse" : "hasConcept", "storage": "small" },
+		{ "name" : "hasStory", "type": "index", "store" : "Story", "inverse" : "hasConcept", "storage": "small" },
+		{ "name" : "hasEvent", "type": "index", "store" : "Event", "inverse" : "hasConcept", "storage": "small" },
+		{ "name" : "hasArticleForLocation", "type": "index", "store" : "Article", "inverse" : "hasLocation", "storage": "tiny" },
+
+		{ "name" : "isLocationForStory", "type": "index", "store" : "Story", "storage": "tiny" },
+		{ "name" : "isLocationForEvent", "type": "index", "store" : "Event", "storage": "tiny" },
+
+		{ "name" : "isLocationForSource", "type" : "index", "store" : "Source", "storage": "tiny" },
+
+		{ "name" : "hasConceptClass", "type" : "index", "store" : "ConceptClass", "inverse": "hasConcept", "storage": "tiny" }
+	],
+	"keys-disabled": [
+		{ "field" : "Type", "type" : "value" },
+		{ "field" : "Description", "type" : "text", "vocabulary" : "text" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "ConceptFolder",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Definition", "type" : "json", "store" : "cache", "null": true },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null": true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasUser", "type" : "field", "store" : "User", "inverse" : "hasConceptFolder", "storage": "uint-" },
+		{ "name" : "hasUserRead", "type" : "field", "store" : "User", "inverse" : "hasConceptFolderRead", "storage": "tiny" },
+		{ "name" : "hasUserWrite", "type" : "field", "store" : "User", "inverse" : "hasConceptFolderWrite", "storage": "tiny" },
+
+		{ "name" : "hasArticle", "type" : "index", "store" : "Article", "storage": "small" },
+		{ "name" : "hasStory", "type": "index", "store" : "Story", "storage": "small" },
+		{ "name" : "hasEvent", "type": "index", "store" : "Event", "storage": "small" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "ConceptClass",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Type", "type" : "string", "default" : "", "codebook" : true },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null": true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasConcept", "type" : "index", "store" : "Concept", "inverse" : "hasConceptClass", "storage": "tiny" },
+
+		{ "name" : "hasSuperClass", "type" : "field", "store" : "ConceptClass", "inverse" : "hasSubClass", "storage": "uint-" },
+		{ "name" : "hasSubClass", "type" : "index", "store" : "ConceptClass", "inverse" : "hasSuperClass", "storage": "tiny" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "User",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Name", "type" : "string", "default" : "" },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasConceptFolder", "type" : "index", "store" : "ConceptFolder", "inverse" : "hasUser", "storage": "tiny" },
+
+		{ "name" : "hasConceptFolderRead", "type" : "index", "store" : "ConceptFolder", "inverse" : "hasUserRead", "storage": "tiny" },
+		{ "name" : "hasConceptFolderWrite", "type" : "index", "store" : "ConceptFolder", "inverse" : "hasUserWrite", "storage": "tiny" },
+
+
+		{ "name" : "isFollowing", "type" : "index", "store" : "User", "inverse" : "isFollowedBy", "storage": "tiny" },
+		{ "name" : "isFollowedBy", "type" : "index", "store" : "User", "inverse" : "isFollowing", "storage": "tiny" },
+
+		{ "name" : "hasPermissionGroup", "type" : "index", "store" : "PermissionGroup", "inverse" : "hasUser", "storage": "tiny" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "Date",
+	"fields" : [
+		{ "name" : "Date", "type" : "string", "primary" : true }
+	],
+	"joins" : [
+		{ "name" : "hasArticle", "type": "index", "store" : "Article", "inverse" : "hasDate", "storage": "tiny" }
+	]
+},
+{
+	"name" : "SourceGroup",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Label", "type" : "string" },
+		{ "name" : "Type", "type" : "string", "codebook" : true, "store" : "cache", "null" : true },
+		{ "name" : "Description", "type" : "string", "default" : "", "store" : "cache" },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null": true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasSource", "type": "index", "store" : "Source", "inverse" : "hasSourceGroup", "storage": "small" }
+	],
+	"keys" : [
+		{ "field" : "Type", "type" : "value", "small" : true }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "Category",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Label", "type" : "string", "default": "" },
+		{ "name" : "Schema", "type" : "string", "codebook" : true, "default": "dmoz" },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null": true },
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasSubcategory", "type" : "index", "store" : "Category", "inverse" : "hasSupercategory", "storage": "tiny" },
+		{ "name" : "hasSupercategory", "type": "field", "store" : "Category", "inverse" : "hasSubcategory", "storage": "tiny" },
+
+		{ "name" : "hasArticle", "type": "index", "store" : "Article", "inverse" : "hasCategory", "storage": "small" },
+		{ "name" : "hasStory", "type": "index", "store" : "Story", "inverse" : "hasCategory", "storage": "small" },
+		{ "name" : "hasEvent", "type": "index", "store" : "Event", "inverse" : "hasCategory", "storage": "small" }
+	],
+	"keys" : [
+		{ "field" : "Schema", "type" : "value", "small" : true }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name" : "Story",
+	"fields" : [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "Language", "type" : "string", "codebook" : true },
+
+		{ "name" : "AvgCosToCentroid", "type" : "byte", "null": true },
+		{ "name" : "Variance", "type" : "byte", "null": true },
+
+		{ "name" : "Sentiment", "type" : "byte", "null": true },
+		{ "name" : "SocialScore", "type" : "float", "default" : 0 },
+
+		{ "name" : "ArticleCount", "type" : "int", "default": 0 },
+		{ "name" : "ArticleCountKey", "type" : "string", "store" : "cache", "default": "0" },
+
+		{ "name" : "CommonDates", "type" : "string", "default" : "", "store" : "cache" },
+		{ "name" : "ExtractedDate", "type" : "string", "default" : "", "store" : "cache" },
+		{ "name" : "ExtractedDateEnd", "type" : "string", "default" : "", "store" : "cache" },
+		{ "name" : "AverageDate", "type" : "string", "default" : "" },
+
+		{ "name" : "StoryDate", "type" : "string", "default" : "" },
+		{ "name" : "StoryDateEnd", "type" : "string", "default" : "", "store" : "cache" },
+
+		{ "name" : "CustomTitle", "type" : "string", "null": true, "store" : "cache" },
+		{ "name" : "CustomSummary", "type" : "string", "null": true, "store" : "cache" },
+
+		{ "name" : "Image", "type" : "string", "store" : "cache", "default" : "" },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null" : true },
+
+		{ "name" : "SimilarStories", "type" : "string", "store" : "cache", "default" : "" },
+
+		{ "name" : "FirstUpdate", "type" : "datetime", "default": "1970-01-01T00:00:00" },
+		{ "name" : "LastUpdate", "type" : "datetime", "default": "1970-01-01T00:00:00" },
+
+		{ "name" : "Flags", "type" : "int", "store" : "cache", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasMedoid", "type" : "field", "store" : "Article", "storage": "uint-" },
+
+		{ "name" : "hasArticle", "type" : "index", "store" : "Article", "inverse" : "hasStory", "storage": "small" },
+		{ "name" : "hasConcept", "type": "index", "store" : "Concept", "inverse" : "hasStory", "storage": "small" },
+		{ "name" : "hasCategory", "type": "index", "store" : "Category", "inverse" : "hasStory", "storage": "small" },
+
+		{ "name" : "hasLocation", "type": "field", "store" : "Concept", "storage": "tiny" },
+
+		{ "name" : "hasEvent", "type": "field", "store" : "Event", "inverse" : "hasStory", "storage": "uint-byte" },
+
+		{ "name" : "hasInfoArticle", "type" : "field", "store" : "Article", "storage": "uint-" }
+	],
+	"keys" : [
+		{ "field" : "Language", "type" : "value", "storage": "tiny" },
+		{ "field" : "ExtractedDate", "type" : "value", "vocabulary": "DateVoc", "storage": "tiny" },
+		{ "field" : "AverageDate", "type" : "value", "vocabulary": "DateVoc", "storage": "tiny" },
+		{ "field" : "StoryDate", "type" : "value", "vocabulary": "DateVoc", "storage": "tiny" },
+		{ "field" : "StoryDateEnd", "type" : "value", "vocabulary": "DateVoc", "storage": "tiny" },
+		{ "field" : "ArticleCountKey", "type" : "value", "vocabulary": "EventArticleCount", "storage": "tiny" }
+	],
+	"options": {
+		"type": "paged"
+	}
+},
+{
+	"name": "Event",
+	"fields": [
+		{ "name" : "URI", "type" : "string", "primary" : true },
+		{ "name" : "ArticleCount", "type" : "int", "default": 0 },
+		{ "name" : "ArticleCountKey", "type" : "string", "default": "0" },
+
+		{ "name" : "Sentiment", "type" : "byte", "null": true },
+		{ "name" : "SocialScore", "type" : "float", "default" : 0 },
+
+		{ "name" : "EventDate", "type" : "string", "default" : "" },
+		{ "name" : "EventDateEnd", "type" : "string", "default" : "" },
+
+		{ "name" : "Image", "type" : "string", "store" : "cache", "default" : "" },
+		{ "name" : "Details", "type" : "string", "store" : "cache", "null" : true },
+
+		{ "name" : "Flags", "type" : "int", "default" : 0 }
+	],
+	"joins" : [
+		{ "name" : "hasStory", "type": "index", "store" : "Story", "inverse" : "hasEvent", "storage": "small" },
+
+		{ "name" : "hasConcept", "type": "index", "store" : "Concept", "inverse" : "hasEvent", "storage": "small" },
+		{ "name" : "hasCategory", "type": "index", "store" : "Category", "inverse" : "hasEvent", "storage": "small" },
+
+		{ "name" : "hasLocation", "type": "field", "store" : "Concept", "storage": "tiny" }
+	],
+	"keys" : [
+		{ "field" : "EventDate", "type" : "value", "vocabulary": "DateVoc", "storage": "small" },
+		{ "field" : "EventDateEnd", "type" : "value", "vocabulary": "DateVoc", "storage": "small" },
+		{ "field" : "ArticleCountKey", "type" : "value", "vocabulary": "EventArticleCount", "storage": "small" }
+	],
+	"options": {
+		"type": "paged"
+	}
+}
+]

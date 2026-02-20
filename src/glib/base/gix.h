@@ -142,9 +142,9 @@ private:
 
 private:
     /// Load single child vector into memory if not present already
-    void LoadChildVector(const int& ChildN) const;
+    void LoadChildVector(const int& ChildN, const bool& ReportMemDiffP) const;
     /// Load all child vectors into memory and get pointers to them
-    void LoadChildVectors() const;
+    void LoadChildVectors(const bool& ReportMemDiffP) const;
     /// Refresh total count
     void RecalcTotalCnt();
     /// Check if there are any dirty child vectors with size outside the tolerance
@@ -251,6 +251,13 @@ public:
     TFlt AvgLen;
     /// memory usage for gix
     TUInt64 MemUsed;
+    /// Memory used by cache
+    TUInt64 CacheMemUsed;
+    /// Number of hits in the cache
+    TInt64 CacheHits;
+    /// Number of misses in the cache
+    TInt64 CacheMisses;
+
 
 public:
 
@@ -268,6 +275,9 @@ public:
             NewStats.CacheDirtyLoadedPerc = (CacheDirty * CacheDirtyLoadedPerc + Stats.CacheDirty * Stats.CacheDirtyLoadedPerc) / NewStats.CacheDirty;
         }
         NewStats.MemUsed = MemUsed + Stats.MemUsed;
+        NewStats.CacheMemUsed = CacheMemUsed + Stats.CacheMemUsed;
+        NewStats.CacheHits = CacheHits + Stats.CacheHits;
+        NewStats.CacheMisses = CacheMisses + Stats.CacheMisses;
         // replace this stats with summed up ones
         *this = NewStats;
     }

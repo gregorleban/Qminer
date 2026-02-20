@@ -1,0 +1,12 @@
+[{
+	"name" : "Test",
+	"fields" : [
+		{ "name" : "Text", "type" : "string", "store" : "cache" }
+	],
+	"keys" : [
+		{ "field" : "Text", "type" : "text_position" }
+	],
+	"options": {
+		"type": "paged"
+	}
+}]

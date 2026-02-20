@@ -28,21 +28,27 @@ uint64 TGixItemSet<TKey, TItem>::TChildInfo::GetMemUsed() const {
 }
 
 template <class TKey, class TItem>
-void TGixItemSet<TKey, TItem>::LoadChildVector(const int& ChildN) const {
+void TGixItemSet<TKey, TItem>::LoadChildVector(const int& ChildN, const bool& ReportMemDiffP) const {
     if (!ChildInfoV[ChildN].LoadedP) {
+        const int64 OldSize = ReportMemDiffP ? GetMemUsed() : 0;
         // load child vector from disk
         Gix->GetChildVector(ChildInfoV[ChildN].Pt, ChildV[ChildN]);
         // mark that it is freshly loaded
         ChildInfoV[ChildN].LoadedP = true;
         ChildInfoV[ChildN].DirtyP = false;
+        // update memory keeping stats
+        if (ReportMemDiffP) { Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed()); }
     }
 }
 
 template <class TKey, class TItem>
-void TGixItemSet<TKey, TItem>::LoadChildVectors() const {
+void TGixItemSet<TKey, TItem>::LoadChildVectors(const bool& ReportMemDiffP) const {
+    const int64 OldSize = ReportMemDiffP ? GetMemUsed() : 0;
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
-        LoadChildVector(ChildN);
+        LoadChildVector(ChildN, false);
     }
+    // update memory keeping stats
+    if (ReportMemDiffP) { Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed()); }
 }
 
 template <class TKey, class TItem>
@@ -134,7 +140,7 @@ void TGixItemSet<TKey, TItem>::InjectWorkBufferToChildren() {
                 break;
             }
             // ok, insert into j-th child
-            LoadChildVector(ChildN);
+            LoadChildVector(ChildN, false);
             ChildV[ChildN].Add(Item);
             ChildInfoV[ChildN].Len = ChildV[ChildN].Len();
             ChildInfoV[ChildN].DirtyP = true;
@@ -158,7 +164,7 @@ void TGixItemSet<TKey, TItem>::InjectWorkBufferToChildren() {
         // go over all the vectors that we modified and merge + update stats for them
         for (int KeyId = TouchedVectorH.FFirstKeyId(); TouchedVectorH.FNextKeyId(KeyId); ) {
             int ind = TouchedVectorH.GetKey(KeyId);
-            LoadChildVector(ind); // just in case - they should be in memory at this point anyway
+            LoadChildVector(ind, false); // just in case - they should be in memory at this point anyway
             TVec<TItem>& cd = ChildV[ind];
             Gix->GetItemHandler()->Merge(cd, false);
             ChildInfoV[ind].Len = cd.Len();
@@ -228,7 +234,7 @@ void TGixItemSet<TKey, TItem>::ProcessDeletes() {
             int ChildN = (ChildInfoV.Len() > 0 && Gix->GetItemHandler()->IsLtE(ValToDel, ChildInfoV[0].MaxItem)) ? 0 : ChildInfoV.Len() - 1;
             while (ChildN >= 0 && Gix->GetItemHandler()->IsLtE(ValToDel, ChildInfoV[ChildN].MaxItem)) {
                 if (Gix->GetItemHandler()->IsLtE(ChildInfoV[ChildN].MinItem, ValToDel)) {
-                    LoadChildVector(ChildN);
+                    LoadChildVector(ChildN, false);
                     Gix->GetItemHandler()->Delete(ValToDel, ChildV[ChildN]);
                     ChildInfoV[ChildN].Len = ChildV[ChildN].Len();
                     ChildInfoV[ChildN].DirtyP = true;
@@ -373,7 +379,7 @@ const TItem& TGixItemSet<TKey, TItem>::GetItem(const int& ItemN) const {
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
         if (Offset < ChildInfoV[ChildN].Len) {
             // load child vector only if needed
-            LoadChildVector(ChildN);
+            LoadChildVector(ChildN, true);
             return ChildV[ChildN][Offset];
         }
         Offset -= ChildInfoV[ChildN].Len;
@@ -388,7 +394,7 @@ void TGixItemSet<TKey, TItem>::GetItemV(TVec<TItem>& _ItemV) {
     // load items
     if (ChildInfoV.Len() > 0) {
         // collect data from child itemsets
-        LoadChildVectors();
+        LoadChildVectors(true);
         for (int i = 0; i < ChildInfoV.Len(); i++) {
             _ItemV.AddV(ChildV[i]);
         }
@@ -401,7 +407,7 @@ template <typename THandler>
 void TGixItemSet<TKey, TItem>::GetItemV(THandler& Handler) {
     if (ChildInfoV.Len() > 0) {
         // collect data from child itemsets
-        LoadChildVectors();
+        LoadChildVectors(true);
         for (int i = 0; i < ChildInfoV.Len(); i++) {
             Handler(ChildV[i]);
         }
@@ -467,7 +473,7 @@ void TGixItemSet<TKey, TItem>::Def() {
             // collect all data from subsequent child vectors and work-buffer
             TVec<TItem> MergedItems;
             for (int i = FirstChildToMerge; i < ChildInfoV.Len(); i++) {
-                LoadChildVector(i);
+                LoadChildVector(i, false);
                 MergedItems.AddV(ChildV[i]);
             }
             MergedItems.AddV(ItemV);
@@ -635,6 +641,8 @@ void TGix<TKey, TItem>::RefreshStats() const {
             Stats.CacheDirtyLoadedPerc /= Stats.CacheDirty;
         }
     }
+
+    Stats.CacheMemUsed = ItemSetCache.GetMemUsed();
 }
 
 template <class TKey, class TItem>
@@ -693,6 +701,11 @@ TPt<TGixItemSet<TKey, TItem> > TGix<TKey, TItem>::GetItemSet(const TBlobPt& KeyI
         // have to load it from the hard drive...
         PSIn ItemSetSIn = ItemSetBlobBs->GetBlob(KeyId);
         ItemSet = TGixItemSet<TKey, TItem>::Load(*ItemSetSIn, this);
+        // mark cache miss
+        Stats.CacheMisses++;
+    } else {
+        // mark cache hit
+        Stats.CacheHits++;
     }
     // bring the itemset to the top of the cache
     ItemSetCache.Put(KeyId, ItemSet);
@@ -919,6 +932,8 @@ void TGix<TKey, TItem>::AddToNewCacheSizeInc(const uint64& OldSize, const uint64
             NewCacheSizeInc = 0;
         }
     }
+    // notify cache of change
+    ItemSetCache.NotifyDataMemeUsedChange(NewSize - OldSize);
 }
 
 template <class TKey, class TItem>

@@ -154,3 +154,10 @@ test*.txt
 # GIT FILES
 *.orig
 /TestStore
+
+# Visual Studio Code settings
+.vscode/
+test/cache/data/
+test/cache/test_base/
+test/cache/test_base.zip
+test/cache/test_cache
