@@ -27,10 +27,10 @@
 #include <string.h>
 
 #define CHECK_HANDLE(handle) \
-  ASSERT_PTR_EQ((uv_udp_t*)(handle), &handle_)
+  ASSERT((uv_udp_t*)(handle) == &handle_)
 
 #define CHECK_REQ(req) \
-  ASSERT_PTR_EQ((req), &req_);
+  ASSERT((req) == &req_);
 
 static uv_udp_t handle_;
 static uv_udp_send_t req_;
@@ -49,7 +49,8 @@ static void send_cb(uv_udp_send_t* req, int status) {
   CHECK_REQ(req);
   CHECK_HANDLE(req->handle);
 
-  ASSERT_EQ(status, UV_EMSGSIZE);
+  ASSERT(status == -1);
+  ASSERT(uv_last_error(uv_default_loop()).code == UV_EMSGSIZE);
 
   uv_close((uv_handle_t*)req->handle, close_cb);
   send_cb_called++;
@@ -65,27 +66,22 @@ TEST_IMPL(udp_dgram_too_big) {
   memset(dgram, 42, sizeof dgram); /* silence valgrind */
 
   r = uv_udp_init(uv_default_loop(), &handle_);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   buf = uv_buf_init(dgram, sizeof dgram);
-  ASSERT_OK(uv_ip4_addr("127.0.0.1", TEST_PORT, &addr));
+  addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
 
-  r = uv_udp_send(&req_,
-                  &handle_,
-                  &buf,
-                  1,
-                  (const struct sockaddr*) &addr,
-                  send_cb);
-  ASSERT_OK(r);
+  r = uv_udp_send(&req_, &handle_, &buf, 1, addr, send_cb);
+  ASSERT(r == 0);
 
-  ASSERT_OK(close_cb_called);
-  ASSERT_OK(send_cb_called);
+  ASSERT(close_cb_called == 0);
+  ASSERT(send_cb_called == 0);
 
   uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 
-  ASSERT_EQ(1, send_cb_called);
-  ASSERT_EQ(1, close_cb_called);
+  ASSERT(send_cb_called == 1);
+  ASSERT(close_cb_called == 1);
 
-  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

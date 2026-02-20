@@ -49,7 +49,7 @@ static void thread_cb(void *arg) {
     }
 
     r = uv_async_send(&async);
-    ASSERT_OK(r);
+    ASSERT(r == 0);
 
     /* Work around a bug in Valgrind.
      *
@@ -70,15 +70,16 @@ static void thread_cb(void *arg) {
 
 
 static void close_cb(uv_handle_t* handle) {
-  ASSERT_NOT_NULL(handle);
+  ASSERT(handle != NULL);
   close_cb_called++;
 }
 
 
-static void async_cb(uv_async_t* handle) {
+static void async_cb(uv_async_t* handle, int status) {
   int n;
 
-  ASSERT_PTR_EQ(handle, &async);
+  ASSERT(handle == &async);
+  ASSERT(status == 0);
 
   uv_mutex_lock(&mutex);
   n = ++async_cb_called;
@@ -91,16 +92,17 @@ static void async_cb(uv_async_t* handle) {
 }
 
 
-static void prepare_cb(uv_prepare_t* handle) {
+static void prepare_cb(uv_prepare_t* handle, int status) {
   int r;
 
-  ASSERT_PTR_EQ(handle, &prepare);
+  ASSERT(handle == &prepare);
+  ASSERT(status == 0);
 
   if (prepare_cb_called++)
     return;
 
   r = uv_thread_create(&thread, thread_cb, NULL);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
   uv_mutex_unlock(&mutex);
 }
 
@@ -109,26 +111,26 @@ TEST_IMPL(async) {
   int r;
 
   r = uv_mutex_init(&mutex);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
   uv_mutex_lock(&mutex);
 
   r = uv_prepare_init(uv_default_loop(), &prepare);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
   r = uv_prepare_start(&prepare, prepare_cb);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   r = uv_async_init(uv_default_loop(), &async, async_cb);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   r = uv_run(uv_default_loop(), UV_RUN_DEFAULT);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
-  ASSERT_GT(prepare_cb_called, 0);
-  ASSERT_EQ(3, async_cb_called);
-  ASSERT_EQ(2, close_cb_called);
+  ASSERT(prepare_cb_called > 0);
+  ASSERT(async_cb_called == 3);
+  ASSERT(close_cb_called == 2);
 
-  ASSERT_OK(uv_thread_join(&thread));
+  ASSERT(0 == uv_thread_join(&thread));
 
-  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

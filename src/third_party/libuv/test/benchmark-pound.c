@@ -75,24 +75,24 @@ static uint64_t start; /* in ms  */
 static int closed_streams;
 static int conns_failed;
 
-static void alloc_cb(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf);
+static uv_buf_t alloc_cb(uv_handle_t* handle, size_t suggested_size);
 static void connect_cb(uv_connect_t* conn_req, int status);
-static void read_cb(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf);
+static void read_cb(uv_stream_t* stream, ssize_t nread, uv_buf_t buf);
 static void close_cb(uv_handle_t* handle);
 
 
-static void alloc_cb(uv_handle_t* handle,
-                     size_t suggested_size,
-                     uv_buf_t* buf) {
+static uv_buf_t alloc_cb(uv_handle_t* handle, size_t suggested_size) {
   static char slab[65536];
-  buf->base = slab;
-  buf->len = sizeof(slab);
+  uv_buf_t buf;
+  buf.base = slab;
+  buf.len = sizeof(slab);
+  return buf;
 }
 
 
 static void after_write(uv_write_t* req, int status) {
   if (status != 0) {
-    fprintf(stderr, "write error %s\n", uv_err_name(status));
+    fprintf(stderr, "write error %s\n", uv_err_name(uv_last_error(loop)));
     uv_close((uv_handle_t*)req->handle, close_cb);
     conns_failed++;
     return;
@@ -107,37 +107,40 @@ static void connect_cb(uv_connect_t* req, int status) {
 
   if (status != 0) {
 #if DEBUG
-    fprintf(stderr, "connect error %s\n", uv_err_name(status));
+    fprintf(stderr,
+            "connect error %s\n",
+            uv_err_name(uv_last_error(uv_default_loop())));
 #endif
     uv_close((uv_handle_t*)req->handle, close_cb);
     conns_failed++;
     return;
   }
 
-  ASSERT_NOT_NULL(req);
-  ASSERT_OK(status);
+  ASSERT(req != NULL);
+  ASSERT(status == 0);
 
   conn = (conn_rec*)req->data;
-  ASSERT_NOT_NULL(conn);
+  ASSERT(conn != NULL);
 
 #if DEBUG
   printf("connect_cb %d\n", conn->i);
 #endif
 
   r = uv_read_start(&conn->stream, alloc_cb, read_cb);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   buf.base = buffer;
   buf.len = sizeof(buffer) - 1;
 
   r = uv_write(&conn->write_req, &conn->stream, &buf, 1, after_write);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 }
 
 
-static void read_cb(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
+static void read_cb(uv_stream_t* stream, ssize_t nread, uv_buf_t buf) {
+  uv_err_t err = uv_last_error(loop);
 
-  ASSERT_NOT_NULL(stream);
+  ASSERT(stream != NULL);
 
 #if DEBUG
   printf("read_cb %d\n", p->i);
@@ -145,13 +148,13 @@ static void read_cb(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
 
   uv_close((uv_handle_t*)stream, close_cb);
 
-  if (nread < 0) {
-    if (nread == UV_EOF) {
+  if (nread == -1) {
+    if (err.code == UV_EOF) {
       ;
-    } else if (nread == UV_ECONNRESET) {
+    } else if (err.code == UV_ECONNRESET) {
       conns_failed++;
     } else {
-      fprintf(stderr, "read error %s\n", uv_err_name(nread));
+      fprintf(stderr, "read error %s\n", uv_err_name(uv_last_error(loop)));
       ASSERT(0);
     }
   }
@@ -161,7 +164,7 @@ static void read_cb(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
 static void close_cb(uv_handle_t* handle) {
   conn_rec* p = (conn_rec*)handle->data;
 
-  ASSERT_NOT_NULL(handle);
+  ASSERT(handle != NULL);
   closed_streams++;
 
 #if DEBUG
@@ -194,22 +197,17 @@ static void pipe_do_setup(int num, void* arg) {
 
 static void tcp_make_connect(conn_rec* p) {
   struct sockaddr_in addr;
-  tcp_conn_rec* tp;
   int r;
 
-  tp = (tcp_conn_rec*) p;
-
   r = uv_tcp_init(loop, (uv_tcp_t*)&p->stream);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
-  ASSERT_OK(uv_ip4_addr("127.0.0.1", TEST_PORT, &addr));
+  addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
 
-  r = uv_tcp_connect(&tp->conn_req,
-                     (uv_tcp_t*) &p->stream,
-                     (const struct sockaddr*) &addr,
-                     connect_cb);
+  r = uv_tcp_connect(&((tcp_conn_rec*)p)->conn_req, (uv_tcp_t*)&p->stream, addr, connect_cb);
   if (r) {
-    fprintf(stderr, "uv_tcp_connect error %s\n", uv_err_name(r));
+    fprintf(stderr, "uv_tcp_connect error %s\n",
+        uv_err_name(uv_last_error(loop)));
     ASSERT(0);
   }
 
@@ -227,12 +225,9 @@ static void pipe_make_connect(conn_rec* p) {
   int r;
 
   r = uv_pipe_init(loop, (uv_pipe_t*)&p->stream, 0);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
-  uv_pipe_connect(&((pipe_conn_rec*) p)->conn_req,
-                  (uv_pipe_t*) &p->stream,
-                  TEST_PIPENAME,
-                  connect_cb);
+  uv_pipe_connect(&((pipe_conn_rec*)p)->conn_req, (uv_pipe_t*)&p->stream, TEST_PIPENAME, connect_cb);
 
 #if DEBUG
   printf("make connect %d\n", p->i);
@@ -299,53 +294,32 @@ static int pound_it(int concurrency,
   /* Number of fractional seconds it took to run the benchmark. */
   secs = (double)(end_time - start_time) / NANOSEC;
 
-  fprintf(stderr, "%s-conn-pound-%d: %.0f accepts/s (%d failed)\n",
-          type,
-          concurrency,
-          closed_streams / secs,
-          conns_failed);
-  fflush(stderr);
+  LOGF("%s-conn-pound-%d: %.0f accepts/s (%d failed)\n",
+       type,
+       concurrency,
+       closed_streams / secs,
+       conns_failed);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }
 
 
 BENCHMARK_IMPL(tcp4_pound_100) {
-  return pound_it(100,
-                  "tcp",
-                  tcp_do_setup,
-                  tcp_do_connect,
-                  tcp_make_connect,
-                  NULL);
+  return pound_it(100, "tcp", tcp_do_setup, tcp_do_connect, tcp_make_connect, NULL);
 }
 
 
 BENCHMARK_IMPL(tcp4_pound_1000) {
-  return pound_it(1000,
-                  "tcp",
-                  tcp_do_setup,
-                  tcp_do_connect,
-                  tcp_make_connect,
-                  NULL);
+  return pound_it(1000, "tcp", tcp_do_setup, tcp_do_connect, tcp_make_connect, NULL);
 }
 
 
 BENCHMARK_IMPL(pipe_pound_100) {
-  return pound_it(100,
-                  "pipe",
-                  pipe_do_setup,
-                  pipe_do_connect,
-                  pipe_make_connect,
-                  NULL);
+  return pound_it(100, "pipe", pipe_do_setup, pipe_do_connect, pipe_make_connect, NULL);
 }
 
 
 BENCHMARK_IMPL(pipe_pound_1000) {
-  return pound_it(1000,
-                  "pipe",
-                  pipe_do_setup,
-                  pipe_do_connect,
-                  pipe_make_connect,
-                  NULL);
+  return pound_it(1000, "pipe", pipe_do_setup, pipe_do_connect, pipe_make_connect, NULL);
 }

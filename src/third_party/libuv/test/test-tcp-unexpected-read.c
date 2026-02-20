@@ -33,12 +33,12 @@ static uv_connect_t connect_req;
 static unsigned long ticks; /* event loop ticks */
 
 
-static void check_cb(uv_check_t* handle) {
+static void check_cb(uv_check_t* handle, int status) {
   ticks++;
 }
 
 
-static void timer_cb(uv_timer_t* handle) {
+static void timer_cb(uv_timer_t* handle, int status) {
   uv_close((uv_handle_t*) &check_handle, NULL);
   uv_close((uv_handle_t*) &timer_handle, NULL);
   uv_close((uv_handle_t*) &server_handle, NULL);
@@ -47,27 +47,27 @@ static void timer_cb(uv_timer_t* handle) {
 }
 
 
-static void alloc_cb(uv_handle_t* handle,
-                     size_t suggested_size,
-                     uv_buf_t* buf) {
+static uv_buf_t alloc_cb(uv_handle_t* handle, size_t suggested_size) {
   ASSERT(0 && "alloc_cb should not have been called");
+  /* Satisfy the compiler. */
+  return uv_buf_init(NULL, 0);
 }
 
 
-static void read_cb(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf) {
+static void read_cb(uv_stream_t* handle, ssize_t nread, uv_buf_t buf) {
   ASSERT(0 && "read_cb should not have been called");
 }
 
 
 static void connect_cb(uv_connect_t* req, int status) {
-  ASSERT_PTR_EQ(req->handle, (uv_stream_t*) &client_handle);
-  ASSERT_OK(status);
+  ASSERT(req->handle == (uv_stream_t*) &client_handle);
+  ASSERT(0 == status);
 }
 
 
 static void write_cb(uv_write_t* req, int status) {
-  ASSERT_PTR_EQ(req->handle, (uv_stream_t*) &peer_handle);
-  ASSERT_OK(status);
+  ASSERT(req->handle == (uv_stream_t*) &peer_handle);
+  ASSERT(0 == status);
 }
 
 
@@ -76,11 +76,11 @@ static void connection_cb(uv_stream_t* handle, int status) {
 
   buf = uv_buf_init("PING", 4);
 
-  ASSERT_OK(status);
-  ASSERT_OK(uv_accept(handle, (uv_stream_t*) &peer_handle));
-  ASSERT_OK(uv_read_start((uv_stream_t*) &peer_handle, alloc_cb, read_cb));
-  ASSERT_OK(uv_write(&write_req, (uv_stream_t*) &peer_handle,
-                     &buf, 1, write_cb));
+  ASSERT(0 == status);
+  ASSERT(0 == uv_accept(handle, (uv_stream_t*) &peer_handle));
+  ASSERT(0 == uv_read_start((uv_stream_t*) &peer_handle, alloc_cb, read_cb));
+  ASSERT(0 == uv_write(&write_req, (uv_stream_t*) &peer_handle,
+                       &buf, 1, write_cb));
 }
 
 
@@ -88,30 +88,27 @@ TEST_IMPL(tcp_unexpected_read) {
   struct sockaddr_in addr;
   uv_loop_t* loop;
 
-  ASSERT_OK(uv_ip4_addr("127.0.0.1", TEST_PORT, &addr));
+  addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
   loop = uv_default_loop();
 
-  ASSERT_OK(uv_timer_init(loop, &timer_handle));
-  ASSERT_OK(uv_timer_start(&timer_handle, timer_cb, 1000, 0));
-  ASSERT_OK(uv_check_init(loop, &check_handle));
-  ASSERT_OK(uv_check_start(&check_handle, check_cb));
-  ASSERT_OK(uv_tcp_init(loop, &server_handle));
-  ASSERT_OK(uv_tcp_init(loop, &client_handle));
-  ASSERT_OK(uv_tcp_init(loop, &peer_handle));
-  ASSERT_OK(uv_tcp_bind(&server_handle, (const struct sockaddr*) &addr, 0));
-  ASSERT_OK(uv_listen((uv_stream_t*) &server_handle, 1, connection_cb));
-  ASSERT_OK(uv_tcp_connect(&connect_req,
-                           &client_handle,
-                           (const struct sockaddr*) &addr,
-                           connect_cb));
-  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT(0 == uv_timer_init(loop, &timer_handle));
+  ASSERT(0 == uv_timer_start(&timer_handle, timer_cb, 1000, 0));
+  ASSERT(0 == uv_check_init(loop, &check_handle));
+  ASSERT(0 == uv_check_start(&check_handle, check_cb));
+  ASSERT(0 == uv_tcp_init(loop, &server_handle));
+  ASSERT(0 == uv_tcp_init(loop, &client_handle));
+  ASSERT(0 == uv_tcp_init(loop, &peer_handle));
+  ASSERT(0 == uv_tcp_bind(&server_handle, addr));
+  ASSERT(0 == uv_listen((uv_stream_t*) &server_handle, 1, connection_cb));
+  ASSERT(0 == uv_tcp_connect(&connect_req, &client_handle, addr, connect_cb));
+  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
 
   /* This is somewhat inexact but the idea is that the event loop should not
    * start busy looping when the server sends a message and the client isn't
    * reading.
    */
-  ASSERT_LE(ticks, 20);
+  ASSERT(ticks <= 20);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

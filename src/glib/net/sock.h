@@ -11,12 +11,8 @@
 ClassHdTP(TSock, PSock);
 ClassHdTP(TSockHost, PSockHost);
 typedef struct uv_async_s uv_async_t;
-typedef void (*uv_async_cb)(uv_async_t* handle);
+typedef void (*uv_async_cb)(uv_async_t* handle, int status);
 
-#ifdef _WIN32
-#pragma comment(lib, "DbgHelp.lib")
-#pragma comment(lib, "Userenv.lib")
-#endif
 
 /////////////////////////////////////////////////
 // Event-Loop

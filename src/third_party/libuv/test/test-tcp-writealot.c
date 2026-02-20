@@ -26,11 +26,7 @@
 
 
 #define WRITES            3
-#if defined(__arm__) /* Decrease the chunks so the test passes on arm CI bots */
-#define CHUNKS_PER_WRITE  2048
-#else
 #define CHUNKS_PER_WRITE  4096
-#endif
 #define CHUNK_SIZE        10024 /* 10 kb */
 
 #define TOTAL_BYTES       (WRITES * CHUNKS_PER_WRITE * CHUNK_SIZE)
@@ -50,14 +46,13 @@ static uv_shutdown_t shutdown_req;
 static uv_write_t write_reqs[WRITES];
 
 
-static void alloc_cb(uv_handle_t* handle, size_t size, uv_buf_t* buf) {
-  buf->base = malloc(size);
-  buf->len = size;
+static uv_buf_t alloc_cb(uv_handle_t* handle, size_t size) {
+  return uv_buf_init(malloc(size), size);
 }
 
 
 static void close_cb(uv_handle_t* handle) {
-  ASSERT_NOT_NULL(handle);
+  ASSERT(handle != NULL);
   close_cb_called++;
 }
 
@@ -65,43 +60,44 @@ static void close_cb(uv_handle_t* handle) {
 static void shutdown_cb(uv_shutdown_t* req, int status) {
   uv_tcp_t* tcp;
 
-  ASSERT_PTR_EQ(req, &shutdown_req);
-  ASSERT_OK(status);
+  ASSERT(req == &shutdown_req);
+  ASSERT(status == 0);
 
   tcp = (uv_tcp_t*)(req->handle);
 
   /* The write buffer should be empty by now. */
-  ASSERT_OK(tcp->write_queue_size);
+  ASSERT(tcp->write_queue_size == 0);
 
   /* Now we wait for the EOF */
   shutdown_cb_called++;
 
   /* We should have had all the writes called already. */
-  ASSERT_EQ(write_cb_called, WRITES);
+  ASSERT(write_cb_called == WRITES);
 }
 
 
-static void read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf) {
-  ASSERT_NOT_NULL(tcp);
+static void read_cb(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf) {
+  ASSERT(tcp != NULL);
 
   if (nread >= 0) {
     bytes_received_done += nread;
   }
   else {
-    ASSERT_EQ(nread, UV_EOF);
+    ASSERT(uv_last_error(uv_default_loop()).code == UV_EOF);
     printf("GOT EOF\n");
     uv_close((uv_handle_t*)tcp, close_cb);
   }
 
-  free(buf->base);
+  free(buf.base);
 }
 
 
 static void write_cb(uv_write_t* req, int status) {
-  ASSERT_NOT_NULL(req);
+  ASSERT(req != NULL);
 
   if (status) {
-    fprintf(stderr, "uv_write error: %s\n", uv_strerror(status));
+    uv_err_t err = uv_last_error(uv_default_loop());
+    fprintf(stderr, "uv_write error: %s\n", uv_strerror(err));
     ASSERT(0);
   }
 
@@ -115,8 +111,8 @@ static void connect_cb(uv_connect_t* req, int status) {
   uv_stream_t* stream;
   int i, j, r;
 
-  ASSERT_PTR_EQ(req, &connect_req);
-  ASSERT_OK(status);
+  ASSERT(req == &connect_req);
+  ASSERT(status == 0);
 
   stream = req->handle;
   connect_cb_called++;
@@ -131,55 +127,45 @@ static void connect_cb(uv_connect_t* req, int status) {
     }
 
     r = uv_write(write_req, stream, send_bufs, CHUNKS_PER_WRITE, write_cb);
-    ASSERT_OK(r);
+    ASSERT(r == 0);
   }
 
   /* Shutdown on drain. */
   r = uv_shutdown(&shutdown_req, stream, shutdown_cb);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   /* Start reading */
   r = uv_read_start(stream, alloc_cb, read_cb);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 }
 
 
 TEST_IMPL(tcp_writealot) {
-  struct sockaddr_in addr;
+  struct sockaddr_in addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
   uv_tcp_t client;
   int r;
 
-#if defined(__MSAN__) || defined(__TSAN__)
-  RETURN_SKIP("Test is too slow to run under "
-              "MemorySanitizer or ThreadSanitizer");
-#endif
-
-  ASSERT_OK(uv_ip4_addr("127.0.0.1", TEST_PORT, &addr));
-
   send_buffer = calloc(1, TOTAL_BYTES);
-  ASSERT_NOT_NULL(send_buffer);
+  ASSERT(send_buffer != NULL);
 
   r = uv_tcp_init(uv_default_loop(), &client);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
-  r = uv_tcp_connect(&connect_req,
-                     &client,
-                     (const struct sockaddr*) &addr,
-                     connect_cb);
-  ASSERT_OK(r);
+  r = uv_tcp_connect(&connect_req, &client, addr, connect_cb);
+  ASSERT(r == 0);
 
   uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 
-  ASSERT_EQ(1, shutdown_cb_called);
-  ASSERT_EQ(1, connect_cb_called);
-  ASSERT_EQ(write_cb_called, WRITES);
-  ASSERT_EQ(1, close_cb_called);
-  ASSERT_EQ(bytes_sent, TOTAL_BYTES);
-  ASSERT_EQ(bytes_sent_done, TOTAL_BYTES);
-  ASSERT_EQ(bytes_received_done, TOTAL_BYTES);
+  ASSERT(shutdown_cb_called == 1);
+  ASSERT(connect_cb_called == 1);
+  ASSERT(write_cb_called == WRITES);
+  ASSERT(close_cb_called == 1);
+  ASSERT(bytes_sent == TOTAL_BYTES);
+  ASSERT(bytes_sent_done == TOTAL_BYTES);
+  ASSERT(bytes_received_done == TOTAL_BYTES);
 
   free(send_buffer);
 
-  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

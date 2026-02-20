@@ -83,22 +83,19 @@ static void ipc_connection_cb(uv_stream_t* ipc_pipe, int status);
 static void ipc_write_cb(uv_write_t* req, int status);
 static void ipc_close_cb(uv_handle_t* handle);
 static void ipc_connect_cb(uv_connect_t* req, int status);
-static void ipc_read_cb(uv_stream_t* handle,
-                        ssize_t nread,
-                        const uv_buf_t* buf);
-static void ipc_alloc_cb(uv_handle_t* handle,
-                         size_t suggested_size,
-                         uv_buf_t* buf);
+static void ipc_read2_cb(uv_pipe_t* ipc_pipe,
+                         ssize_t nread,
+                         uv_buf_t buf,
+                         uv_handle_type type);
+static uv_buf_t ipc_alloc_cb(uv_handle_t* handle, size_t suggested_size);
 
-static void sv_async_cb(uv_async_t* handle);
+static void sv_async_cb(uv_async_t* handle, int status);
 static void sv_connection_cb(uv_stream_t* server_handle, int status);
-static void sv_read_cb(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
-static void sv_alloc_cb(uv_handle_t* handle,
-                        size_t suggested_size,
-                        uv_buf_t* buf);
+static void sv_read_cb(uv_stream_t* handle, ssize_t nread, uv_buf_t buf);
+static uv_buf_t sv_alloc_cb(uv_handle_t* handle, size_t suggested_size);
 
 static void cl_connect_cb(uv_connect_t* req, int status);
-static void cl_idle_cb(uv_idle_t* handle);
+static void cl_idle_cb(uv_idle_t* handle, int status);
 static void cl_close_cb(uv_handle_t* handle);
 
 static struct sockaddr_in listen_addr;
@@ -114,22 +111,22 @@ static void ipc_connection_cb(uv_stream_t* ipc_pipe, int status) {
   buf = uv_buf_init("PING", 4);
   sc = container_of(ipc_pipe, struct ipc_server_ctx, ipc_pipe);
   pc = calloc(1, sizeof(*pc));
-  ASSERT_NOT_NULL(pc);
+  ASSERT(pc != NULL);
 
   if (ipc_pipe->type == UV_TCP)
-    ASSERT_OK(uv_tcp_init(loop, (uv_tcp_t*) &pc->peer_handle));
+    ASSERT(0 == uv_tcp_init(loop, (uv_tcp_t*) &pc->peer_handle));
   else if (ipc_pipe->type == UV_NAMED_PIPE)
-    ASSERT_OK(uv_pipe_init(loop, (uv_pipe_t*) &pc->peer_handle, 1));
+    ASSERT(0 == uv_pipe_init(loop, (uv_pipe_t*) &pc->peer_handle, 1));
   else
     ASSERT(0);
 
-  ASSERT_OK(uv_accept(ipc_pipe, (uv_stream_t*) &pc->peer_handle));
-  ASSERT_OK(uv_write2(&pc->write_req,
-                      (uv_stream_t*) &pc->peer_handle,
-                      &buf,
-                      1,
-                      (uv_stream_t*) &sc->server_handle,
-                      ipc_write_cb));
+  ASSERT(0 == uv_accept(ipc_pipe, (uv_stream_t*) &pc->peer_handle));
+  ASSERT(0 == uv_write2(&pc->write_req,
+                        (uv_stream_t*) &pc->peer_handle,
+                        &buf,
+                        1,
+                        (uv_stream_t*) &sc->server_handle,
+                        ipc_write_cb));
 
   if (--sc->num_connects == 0)
     uv_close((uv_handle_t*) ipc_pipe, NULL);
@@ -153,45 +150,38 @@ static void ipc_close_cb(uv_handle_t* handle) {
 static void ipc_connect_cb(uv_connect_t* req, int status) {
   struct ipc_client_ctx* ctx;
   ctx = container_of(req, struct ipc_client_ctx, connect_req);
-  ASSERT_OK(status);
-  ASSERT_OK(uv_read_start((uv_stream_t*) &ctx->ipc_pipe,
-                          ipc_alloc_cb,
-                          ipc_read_cb));
+  ASSERT(0 == status);
+  ASSERT(0 == uv_read2_start((uv_stream_t*) &ctx->ipc_pipe,
+                             ipc_alloc_cb,
+                             ipc_read2_cb));
 }
 
 
-static void ipc_alloc_cb(uv_handle_t* handle,
-                         size_t suggested_size,
-                         uv_buf_t* buf) {
+static uv_buf_t ipc_alloc_cb(uv_handle_t* handle, size_t suggested_size) {
   struct ipc_client_ctx* ctx;
   ctx = container_of(handle, struct ipc_client_ctx, ipc_pipe);
-  buf->base = ctx->scratch;
-  buf->len = sizeof(ctx->scratch);
+  return uv_buf_init(ctx->scratch, sizeof(ctx->scratch));
 }
 
 
-static void ipc_read_cb(uv_stream_t* handle,
-                        ssize_t nread,
-                        const uv_buf_t* buf) {
+static void ipc_read2_cb(uv_pipe_t* ipc_pipe,
+                         ssize_t nread,
+                         uv_buf_t buf,
+                         uv_handle_type type) {
   struct ipc_client_ctx* ctx;
   uv_loop_t* loop;
-  uv_handle_type type;
-  uv_pipe_t* ipc_pipe;
 
-  ipc_pipe = (uv_pipe_t*) handle;
   ctx = container_of(ipc_pipe, struct ipc_client_ctx, ipc_pipe);
   loop = ipc_pipe->loop;
 
-  ASSERT_EQ(1, uv_pipe_pending_count(ipc_pipe));
-  type = uv_pipe_pending_type(ipc_pipe);
   if (type == UV_TCP)
-    ASSERT_OK(uv_tcp_init(loop, (uv_tcp_t*) ctx->server_handle));
+    ASSERT(0 == uv_tcp_init(loop, (uv_tcp_t*) ctx->server_handle));
   else if (type == UV_NAMED_PIPE)
-    ASSERT_OK(uv_pipe_init(loop, (uv_pipe_t*) ctx->server_handle, 0));
+    ASSERT(0 == uv_pipe_init(loop, (uv_pipe_t*) ctx->server_handle, 0));
   else
     ASSERT(0);
 
-  ASSERT_OK(uv_accept(handle, ctx->server_handle));
+  ASSERT(0 == uv_accept((uv_stream_t*) &ctx->ipc_pipe, ctx->server_handle));
   uv_close((uv_handle_t*) &ctx->ipc_pipe, NULL);
 }
 
@@ -211,28 +201,22 @@ static void send_listen_handles(uv_handle_type type,
   ctx.num_connects = num_servers;
 
   if (type == UV_TCP) {
-    ASSERT_OK(uv_tcp_init(loop, (uv_tcp_t*) &ctx.server_handle));
-    ASSERT_OK(uv_tcp_bind((uv_tcp_t*) &ctx.server_handle,
-                          (const struct sockaddr*) &listen_addr,
-                          0));
+    ASSERT(0 == uv_tcp_init(loop, (uv_tcp_t*) &ctx.server_handle));
+    ASSERT(0 == uv_tcp_bind((uv_tcp_t*) &ctx.server_handle, listen_addr));
   }
   else
     ASSERT(0);
-  /* We need to initialize this pipe with ipc=0 - this is not a uv_pipe we'll
-   * be sending handles over, it's just for listening for new connections.
-   * If we accept a connection then the connected pipe must be initialized
-   * with ipc=1.
-   */
-  ASSERT_OK(uv_pipe_init(loop, &ctx.ipc_pipe, 0));
-  ASSERT_OK(uv_pipe_bind(&ctx.ipc_pipe, IPC_PIPE_NAME));
-  ASSERT_OK(uv_listen((uv_stream_t*) &ctx.ipc_pipe, 128, ipc_connection_cb));
+
+  ASSERT(0 == uv_pipe_init(loop, &ctx.ipc_pipe, 1));
+  ASSERT(0 == uv_pipe_bind(&ctx.ipc_pipe, IPC_PIPE_NAME));
+  ASSERT(0 == uv_listen((uv_stream_t*) &ctx.ipc_pipe, 128, ipc_connection_cb));
 
   for (i = 0; i < num_servers; i++)
     uv_sem_post(&servers[i].semaphore);
 
-  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
   uv_close((uv_handle_t*) &ctx.server_handle, NULL);
-  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
 
   for (i = 0; i < num_servers; i++)
     uv_sem_wait(&servers[i].semaphore);
@@ -245,41 +229,42 @@ static void get_listen_handle(uv_loop_t* loop, uv_stream_t* server_handle) {
   ctx.server_handle = server_handle;
   ctx.server_handle->data = "server handle";
 
-  ASSERT_OK(uv_pipe_init(loop, &ctx.ipc_pipe, 1));
+  ASSERT(0 == uv_pipe_init(loop, &ctx.ipc_pipe, 1));
   uv_pipe_connect(&ctx.connect_req,
                   &ctx.ipc_pipe,
                   IPC_PIPE_NAME,
                   ipc_connect_cb);
-  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
 }
 
 
 static void server_cb(void *arg) {
   struct server_ctx *ctx;
-  uv_loop_t loop;
+  uv_loop_t* loop;
 
   ctx = arg;
-  ASSERT_OK(uv_loop_init(&loop));
+  loop = uv_loop_new();
+  ASSERT(loop != NULL);
 
-  ASSERT_OK(uv_async_init(&loop, &ctx->async_handle, sv_async_cb));
+  ASSERT(0 == uv_async_init(loop, &ctx->async_handle, sv_async_cb));
   uv_unref((uv_handle_t*) &ctx->async_handle);
 
   /* Wait until the main thread is ready. */
   uv_sem_wait(&ctx->semaphore);
-  get_listen_handle(&loop, (uv_stream_t*) &ctx->server_handle);
+  get_listen_handle(loop, (uv_stream_t*) &ctx->server_handle);
   uv_sem_post(&ctx->semaphore);
 
   /* Now start the actual benchmark. */
-  ASSERT_OK(uv_listen((uv_stream_t*) &ctx->server_handle,
-                      128,
-                      sv_connection_cb));
-  ASSERT_OK(uv_run(&loop, UV_RUN_DEFAULT));
+  ASSERT(0 == uv_listen((uv_stream_t*) &ctx->server_handle,
+                        128,
+                        sv_connection_cb));
+  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
 
-  uv_loop_close(&loop);
+  uv_loop_delete(loop);
 }
 
 
-static void sv_async_cb(uv_async_t* handle) {
+static void sv_async_cb(uv_async_t* handle, int status) {
   struct server_ctx* ctx;
   ctx = container_of(handle, struct server_ctx, async_handle);
   uv_close((uv_handle_t*) &ctx->server_handle, NULL);
@@ -292,37 +277,33 @@ static void sv_connection_cb(uv_stream_t* server_handle, int status) {
   struct server_ctx* ctx;
 
   ctx = container_of(server_handle, struct server_ctx, server_handle);
-  ASSERT_OK(status);
+  ASSERT(status == 0);
 
   storage = malloc(sizeof(*storage));
-  ASSERT_NOT_NULL(storage);
+  ASSERT(storage != NULL);
 
   if (server_handle->type == UV_TCP)
-    ASSERT_OK(uv_tcp_init(server_handle->loop, (uv_tcp_t*) storage));
+    ASSERT(0 == uv_tcp_init(server_handle->loop, (uv_tcp_t*) storage));
   else if (server_handle->type == UV_NAMED_PIPE)
-    ASSERT_OK(uv_pipe_init(server_handle->loop, (uv_pipe_t*) storage, 0));
+    ASSERT(0 == uv_pipe_init(server_handle->loop, (uv_pipe_t*) storage, 0));
   else
     ASSERT(0);
 
-  ASSERT_OK(uv_accept(server_handle, (uv_stream_t*) storage));
-  ASSERT_OK(uv_read_start((uv_stream_t*) storage, sv_alloc_cb, sv_read_cb));
+  ASSERT(0 == uv_accept(server_handle, (uv_stream_t*) storage));
+  ASSERT(0 == uv_read_start((uv_stream_t*) storage, sv_alloc_cb, sv_read_cb));
   ctx->num_connects++;
 }
 
 
-static void sv_alloc_cb(uv_handle_t* handle,
-                        size_t suggested_size,
-                        uv_buf_t* buf) {
-  static char slab[32];
-  buf->base = slab;
-  buf->len = sizeof(slab);
+static uv_buf_t sv_alloc_cb(uv_handle_t* handle, size_t suggested_size) {
+  static char buf[32];
+  return uv_buf_init(buf, sizeof(buf));
 }
 
 
-static void sv_read_cb(uv_stream_t* handle,
-                       ssize_t nread,
-                       const uv_buf_t* buf) {
-  ASSERT_EQ(nread, UV_EOF);
+static void sv_read_cb(uv_stream_t* handle, ssize_t nread, uv_buf_t buf) {
+  ASSERT(nread == -1);
+  ASSERT(uv_last_error(handle->loop).code == UV_EOF);
   uv_close((uv_handle_t*) handle, (uv_close_cb) free);
 }
 
@@ -330,11 +311,11 @@ static void sv_read_cb(uv_stream_t* handle,
 static void cl_connect_cb(uv_connect_t* req, int status) {
   struct client_ctx* ctx = container_of(req, struct client_ctx, connect_req);
   uv_idle_start(&ctx->idle_handle, cl_idle_cb);
-  ASSERT_OK(status);
+  ASSERT(0 == status);
 }
 
 
-static void cl_idle_cb(uv_idle_t* handle) {
+static void cl_idle_cb(uv_idle_t* handle, int status) {
   struct client_ctx* ctx = container_of(handle, struct client_ctx, idle_handle);
   uv_close((uv_handle_t*) &ctx->client_handle, cl_close_cb);
   uv_idle_stop(&ctx->idle_handle);
@@ -351,11 +332,11 @@ static void cl_close_cb(uv_handle_t* handle) {
     return;
   }
 
-  ASSERT_OK(uv_tcp_init(handle->loop, (uv_tcp_t*) &ctx->client_handle));
-  ASSERT_OK(uv_tcp_connect(&ctx->connect_req,
-                           (uv_tcp_t*) &ctx->client_handle,
-                           (const struct sockaddr*) &listen_addr,
-                           cl_connect_cb));
+  ASSERT(0 == uv_tcp_init(handle->loop, (uv_tcp_t*) &ctx->client_handle));
+  ASSERT(0 == uv_tcp_connect(&ctx->connect_req,
+                             (uv_tcp_t*) &ctx->client_handle,
+                             listen_addr,
+                             cl_connect_cb));
 }
 
 
@@ -367,13 +348,13 @@ static int test_tcp(unsigned int num_servers, unsigned int num_clients) {
   unsigned int i;
   double time;
 
-  ASSERT_OK(uv_ip4_addr("127.0.0.1", TEST_PORT, &listen_addr));
+  listen_addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
   loop = uv_default_loop();
 
   servers = calloc(num_servers, sizeof(servers[0]));
   clients = calloc(num_clients, sizeof(clients[0]));
-  ASSERT_NOT_NULL(servers);
-  ASSERT_NOT_NULL(clients);
+  ASSERT(servers != NULL);
+  ASSERT(clients != NULL);
 
   /* We're making the assumption here that from the perspective of the
    * OS scheduler, threads are functionally equivalent to and interchangeable
@@ -381,8 +362,8 @@ static int test_tcp(unsigned int num_servers, unsigned int num_clients) {
    */
   for (i = 0; i < num_servers; i++) {
     struct server_ctx* ctx = servers + i;
-    ASSERT_OK(uv_sem_init(&ctx->semaphore, 0));
-    ASSERT_OK(uv_thread_create(&ctx->thread_id, server_cb, ctx));
+    ASSERT(0 == uv_sem_init(&ctx->semaphore, 0));
+    ASSERT(0 == uv_thread_create(&ctx->thread_id, server_cb, ctx));
   }
 
   send_listen_handles(UV_TCP, num_servers, servers);
@@ -392,17 +373,17 @@ static int test_tcp(unsigned int num_servers, unsigned int num_clients) {
     ctx->num_connects = NUM_CONNECTS / num_clients;
     handle = (uv_tcp_t*) &ctx->client_handle;
     handle->data = "client handle";
-    ASSERT_OK(uv_tcp_init(loop, handle));
-    ASSERT_OK(uv_tcp_connect(&ctx->connect_req,
-                             handle,
-                             (const struct sockaddr*) &listen_addr,
-                             cl_connect_cb));
-    ASSERT_OK(uv_idle_init(loop, &ctx->idle_handle));
+    ASSERT(0 == uv_tcp_init(loop, handle));
+    ASSERT(0 == uv_tcp_connect(&ctx->connect_req,
+                               handle,
+                               listen_addr,
+                               cl_connect_cb));
+    ASSERT(0 == uv_idle_init(loop, &ctx->idle_handle));
   }
 
   {
     uint64_t t = uv_hrtime();
-    ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+    ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
     t = uv_hrtime() - t;
     time = t / 1e9;
   }
@@ -410,7 +391,7 @@ static int test_tcp(unsigned int num_servers, unsigned int num_clients) {
   for (i = 0; i < num_servers; i++) {
     struct server_ctx* ctx = servers + i;
     uv_async_send(&ctx->async_handle);
-    ASSERT_OK(uv_thread_join(&ctx->thread_id));
+    ASSERT(0 == uv_thread_join(&ctx->thread_id));
     uv_sem_destroy(&ctx->semaphore);
   }
 
@@ -431,7 +412,7 @@ static int test_tcp(unsigned int num_servers, unsigned int num_clients) {
   free(clients);
   free(servers);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }
 

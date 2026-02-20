@@ -58,42 +58,42 @@ static void maybe_spawn(void) {
 
 
 static void process_close_cb(uv_handle_t* handle) {
-  ASSERT_EQ(1, process_open);
+  ASSERT(process_open == 1);
   process_open = 0;
   maybe_spawn();
 }
 
 
-static void exit_cb(uv_process_t* process,
-                    int64_t exit_status,
-                    int term_signal) {
-  ASSERT_EQ(42, exit_status);
-  ASSERT_OK(term_signal);
+static void exit_cb(uv_process_t* process, int exit_status, int term_signal) {
+  ASSERT(exit_status == 42);
+  ASSERT(term_signal == 0);
   uv_close((uv_handle_t*)process, process_close_cb);
 }
 
 
-static void on_alloc(uv_handle_t* handle,
-                     size_t suggested_size,
-                     uv_buf_t* buf) {
-  buf->base = output + output_used;
-  buf->len = OUTPUT_SIZE - output_used;
+static uv_buf_t on_alloc(uv_handle_t* handle, size_t suggested_size) {
+  uv_buf_t buf;
+  buf.base = output + output_used;
+  buf.len = OUTPUT_SIZE - output_used;
+  return buf;
 }
 
 
 static void pipe_close_cb(uv_handle_t* pipe) {
-  ASSERT_EQ(1, pipe_open);
+  ASSERT(pipe_open == 1);
   pipe_open = 0;
   maybe_spawn();
 }
 
 
-static void on_read(uv_stream_t* pipe, ssize_t nread, const uv_buf_t* buf) {
+static void on_read(uv_stream_t* pipe, ssize_t nread, uv_buf_t buf) {
+  uv_err_t err = uv_last_error(loop);
+
   if (nread > 0) {
-    ASSERT_EQ(1, pipe_open);
+    ASSERT(pipe_open == 1);
     output_used += nread;
   } else if (nread < 0) {
-    if (nread == UV_EOF) {
+    if (err.code == UV_EOF) {
       uv_close((uv_handle_t*)pipe, pipe_close_cb);
     }
   }
@@ -104,8 +104,8 @@ static void spawn(void) {
   uv_stdio_container_t stdio[2];
   int r;
 
-  ASSERT_OK(process_open);
-  ASSERT_OK(pipe_open);
+  ASSERT(process_open == 0);
+  ASSERT(pipe_open == 0);
 
   args[0] = exepath;
   args[1] = "spawn_helper";
@@ -122,15 +122,15 @@ static void spawn(void) {
   options.stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
   options.stdio[1].data.stream = (uv_stream_t*)&out;
 
-  r = uv_spawn(loop, &process, &options);
-  ASSERT_OK(r);
+  r = uv_spawn(loop, &process, options);
+  ASSERT(r == 0);
 
   process_open = 1;
   pipe_open = 1;
   output_used = 0;
 
   r = uv_read_start((uv_stream_t*) &out, on_alloc, on_read);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 }
 
 
@@ -141,7 +141,7 @@ BENCHMARK_IMPL(spawn) {
   loop = uv_default_loop();
 
   r = uv_exepath(exepath, &exepath_size);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
   exepath[exepath_size] = '\0';
 
   uv_update_time(loop);
@@ -150,15 +150,14 @@ BENCHMARK_IMPL(spawn) {
   spawn();
 
   r = uv_run(loop, UV_RUN_DEFAULT);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   uv_update_time(loop);
   end_time = uv_now(loop);
 
-  fprintf(stderr, "spawn: %.0f spawns/s\n",
-          (double) N / (double) (end_time - start_time) * 1000.0);
-  fflush(stderr);
+  LOGF("spawn: %.0f spawns/s\n",
+       (double) N / (double) (end_time - start_time) * 1000.0);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define EXPECTED "RANG TANG DING DONG I AM THE JAPANESE SANDMAN"
+#define EXPECTED "RANG TANG DING DONG I AM THE JAPANESE SANDMAN" /* "Take eight!" */
 
 #define TEST_DURATION 5000 /* ms */
 
@@ -59,23 +59,21 @@ static int timed;
 static int exiting;
 
 
-static void alloc_cb(uv_handle_t* handle,
-                     size_t suggested_size,
-                     uv_buf_t* buf) {
+static uv_buf_t alloc_cb(uv_handle_t* handle, size_t suggested_size) {
   static char slab[65536];
-  ASSERT_LE(suggested_size, sizeof(slab));
-  buf->base = slab;
-  buf->len = sizeof(slab);
+  ASSERT(suggested_size <= sizeof slab);
+  return uv_buf_init(slab, sizeof slab);
 }
 
 
 static void send_cb(uv_udp_send_t* req, int status) {
   struct sender_state* s;
 
-  ASSERT_NOT_NULL(req);
+  ASSERT(req != NULL);
 
   if (status != 0) {
-    ASSERT_EQ(status, UV_ECANCELED);
+    ASSERT(status == -1);
+    ASSERT(uv_last_error(req->handle->loop).code == UV_ECANCELED);
     return;
   }
 
@@ -83,7 +81,7 @@ static void send_cb(uv_udp_send_t* req, int status) {
     return;
 
   s = container_of(req, struct sender_state, send_req);
-  ASSERT_PTR_EQ(req->handle, &s->udp_handle);
+  ASSERT(req->handle == &s->udp_handle);
 
   if (timed)
     goto send;
@@ -96,43 +94,43 @@ static void send_cb(uv_udp_send_t* req, int status) {
   packet_counter--;
 
 send:
-  ASSERT_OK(uv_udp_send(&s->send_req,
-                        &s->udp_handle,
-                        bufs,
-                        ARRAY_SIZE(bufs),
-                        (const struct sockaddr*) &s->addr,
-                        send_cb));
+  ASSERT(0 == uv_udp_send(&s->send_req,
+                          &s->udp_handle,
+                          bufs,
+                          ARRAY_SIZE(bufs),
+                          s->addr,
+                          send_cb));
   send_cb_called++;
 }
 
 
 static void recv_cb(uv_udp_t* handle,
                     ssize_t nread,
-                    const uv_buf_t* buf,
-                    const struct sockaddr* addr,
+                    uv_buf_t buf,
+                    struct sockaddr* addr,
                     unsigned flags) {
   if (nread == 0)
     return;
 
-  if (nread < 0) {
-    ASSERT_EQ(nread, UV_ECANCELED);
+  if (nread == -1) {
+    ASSERT(uv_last_error(handle->loop).code == UV_ECANCELED);
     return;
   }
 
-  ASSERT_EQ(addr->sa_family, AF_INET);
-  ASSERT(!memcmp(buf->base, EXPECTED, nread));
+  ASSERT(addr->sa_family == AF_INET);
+  ASSERT(!memcmp(buf.base, EXPECTED, nread));
 
   recv_cb_called++;
 }
 
 
 static void close_cb(uv_handle_t* handle) {
-  ASSERT_NOT_NULL(handle);
+  ASSERT(handle != NULL);
   close_cb_called++;
 }
 
 
-static void timeout_cb(uv_timer_t* timer) {
+static void timeout_cb(uv_timer_t* timer, int status) {
   int i;
 
   exiting = 1;
@@ -153,8 +151,8 @@ static int pummel(unsigned int n_senders,
   uv_loop_t* loop;
   unsigned int i;
 
-  ASSERT_LE(n_senders, ARRAY_SIZE(senders));
-  ASSERT_LE(n_receivers, ARRAY_SIZE(receivers));
+  ASSERT(n_senders <= ARRAY_SIZE(senders));
+  ASSERT(n_receivers <= ARRAY_SIZE(receivers));
 
   loop = uv_default_loop();
 
@@ -162,8 +160,8 @@ static int pummel(unsigned int n_senders,
   n_receivers_ = n_receivers;
 
   if (timeout) {
-    ASSERT_OK(uv_timer_init(loop, &timer_handle));
-    ASSERT_OK(uv_timer_start(&timer_handle, timeout_cb, timeout, 0));
+    ASSERT(0 == uv_timer_init(loop, &timer_handle));
+    ASSERT(0 == uv_timer_start(&timer_handle, timeout_cb, timeout, 0));
     /* Timer should not keep loop alive. */
     uv_unref((uv_handle_t*)&timer_handle);
     timed = 1;
@@ -171,36 +169,33 @@ static int pummel(unsigned int n_senders,
 
   for (i = 0; i < n_receivers; i++) {
     struct receiver_state* s = receivers + i;
-    struct sockaddr_in addr;
-    ASSERT_OK(uv_ip4_addr("0.0.0.0", BASE_PORT + i, &addr));
-    ASSERT_OK(uv_udp_init(loop, &s->udp_handle));
-    ASSERT_OK(uv_udp_bind(&s->udp_handle, (const struct sockaddr*) &addr, 0));
-    ASSERT_OK(uv_udp_recv_start(&s->udp_handle, alloc_cb, recv_cb));
+    struct sockaddr_in addr = uv_ip4_addr("0.0.0.0", BASE_PORT + i);
+    ASSERT(0 == uv_udp_init(loop, &s->udp_handle));
+    ASSERT(0 == uv_udp_bind(&s->udp_handle, addr, 0));
+    ASSERT(0 == uv_udp_recv_start(&s->udp_handle, alloc_cb, recv_cb));
     uv_unref((uv_handle_t*)&s->udp_handle);
   }
 
-  bufs[0] = uv_buf_init(&EXPECTED[0],  10);
-  bufs[1] = uv_buf_init(&EXPECTED[10], 10);
-  bufs[2] = uv_buf_init(&EXPECTED[20], 10);
-  bufs[3] = uv_buf_init(&EXPECTED[30], 10);
-  bufs[4] = uv_buf_init(&EXPECTED[40], 5);
+  bufs[0] = uv_buf_init(EXPECTED + 0,  10);
+  bufs[1] = uv_buf_init(EXPECTED + 10, 10);
+  bufs[2] = uv_buf_init(EXPECTED + 20, 10);
+  bufs[3] = uv_buf_init(EXPECTED + 30, 10);
+  bufs[4] = uv_buf_init(EXPECTED + 40, 5);
 
   for (i = 0; i < n_senders; i++) {
     struct sender_state* s = senders + i;
-    ASSERT_OK(uv_ip4_addr("127.0.0.1",
-                          BASE_PORT + (i % n_receivers),
-                          &s->addr));
-    ASSERT_OK(uv_udp_init(loop, &s->udp_handle));
-    ASSERT_OK(uv_udp_send(&s->send_req,
-                          &s->udp_handle,
-                          bufs,
-                          ARRAY_SIZE(bufs),
-                          (const struct sockaddr*) &s->addr,
-                          send_cb));
+    s->addr = uv_ip4_addr("127.0.0.1", BASE_PORT + (i % n_receivers));
+    ASSERT(0 == uv_udp_init(loop, &s->udp_handle));
+    ASSERT(0 == uv_udp_send(&s->send_req,
+                            &s->udp_handle,
+                            bufs,
+                            ARRAY_SIZE(bufs),
+                            s->addr,
+                            send_cb));
   }
 
   duration = uv_hrtime();
-  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
   duration = uv_hrtime() - duration;
   /* convert from nanoseconds to milliseconds */
   duration = duration / (uint64_t) 1e6;
@@ -215,7 +210,7 @@ static int pummel(unsigned int n_senders,
          send_cb_called,
          duration / 1000.0);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }
 

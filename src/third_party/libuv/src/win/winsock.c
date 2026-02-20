@@ -20,7 +20,6 @@
  */
 
 #include <assert.h>
-#include <stdlib.h>
 
 #include "uv.h"
 #include "internal.h"
@@ -38,10 +37,9 @@ struct sockaddr_in6 uv_addr_ip6_any_;
 /*
  * Retrieves the pointer to a winsock extension function.
  */
-static BOOL uv__get_extension_function(SOCKET socket, GUID guid,
+static BOOL uv_get_extension_function(SOCKET socket, GUID guid,
     void **target) {
-  int result;
-  DWORD bytes;
+  DWORD result, bytes;
 
   result = WSAIoctl(socket,
                     SIO_GET_EXTENSION_FUNCTION_POINTER,
@@ -62,37 +60,30 @@ static BOOL uv__get_extension_function(SOCKET socket, GUID guid,
 }
 
 
-BOOL uv__get_acceptex_function(SOCKET socket, LPFN_ACCEPTEX* target) {
+BOOL uv_get_acceptex_function(SOCKET socket, LPFN_ACCEPTEX* target) {
   const GUID wsaid_acceptex = WSAID_ACCEPTEX;
-  return uv__get_extension_function(socket, wsaid_acceptex, (void**)target);
+  return uv_get_extension_function(socket, wsaid_acceptex, (void**)target);
 }
 
 
-BOOL uv__get_connectex_function(SOCKET socket, LPFN_CONNECTEX* target) {
+BOOL uv_get_connectex_function(SOCKET socket, LPFN_CONNECTEX* target) {
   const GUID wsaid_connectex = WSAID_CONNECTEX;
-  return uv__get_extension_function(socket, wsaid_connectex, (void**)target);
+  return uv_get_extension_function(socket, wsaid_connectex, (void**)target);
 }
 
 
+static int error_means_no_support(DWORD error) {
+  return error == WSAEPROTONOSUPPORT || error == WSAESOCKTNOSUPPORT ||
+         error == WSAEPFNOSUPPORT || error == WSAEAFNOSUPPORT;
+}
 
-void uv__winsock_init(void) {
+
+void uv_winsock_init() {
   WSADATA wsa_data;
   int errorno;
   SOCKET dummy;
   WSAPROTOCOL_INFOW protocol_info;
   int opt_len;
-
-  /* Set implicit binding address used by connectEx */
-  if (uv_ip4_addr("0.0.0.0", 0, &uv_addr_ip4_any_)) {
-    abort();
-  }
-
-  if (uv_ip6_addr("::", 0, &uv_addr_ip6_any_)) {
-    abort();
-  }
-
-  /* Skip initialization in safe mode without network support */
-  if (1 == GetSystemMetrics(SM_CLEANBOOT)) return;
 
   /* Initialize winsock */
   errorno = WSAStartup(MAKEWORD(2, 2), &wsa_data);
@@ -100,41 +91,59 @@ void uv__winsock_init(void) {
     uv_fatal_error(errorno, "WSAStartup");
   }
 
-  /* Try to detect non-IFS LSPs */
-  uv_tcp_non_ifs_lsp_ipv4 = 1;
+  /* Set implicit binding address used by connectEx */
+  uv_addr_ip4_any_ = uv_ip4_addr("0.0.0.0", 0);
+  uv_addr_ip6_any_ = uv_ip6_addr("::", 0);
+
+  /* Detect non-IFS LSPs */
   dummy = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+
   if (dummy != INVALID_SOCKET) {
     opt_len = (int) sizeof protocol_info;
-    if (getsockopt(dummy,
-                   SOL_SOCKET,
-                   SO_PROTOCOL_INFOW,
-                   (char*) &protocol_info,
-                   &opt_len) == 0) {
-      if (protocol_info.dwServiceFlags1 & XP1_IFS_HANDLES)
-        uv_tcp_non_ifs_lsp_ipv4 = 0;
-    }
-    closesocket(dummy);
+    if (!getsockopt(dummy,
+                    SOL_SOCKET,
+                    SO_PROTOCOL_INFOW,
+                    (char*) &protocol_info,
+                    &opt_len) == SOCKET_ERROR)
+      uv_fatal_error(WSAGetLastError(), "getsockopt");
+
+    if (!(protocol_info.dwServiceFlags1 & XP1_IFS_HANDLES))
+      uv_tcp_non_ifs_lsp_ipv4 = 1;
+
+    if (closesocket(dummy) == SOCKET_ERROR)
+      uv_fatal_error(WSAGetLastError(), "closesocket");
+
+  } else if (!error_means_no_support(WSAGetLastError())) {
+    /* Any error other than "socket type not supported" is fatal. */
+    uv_fatal_error(WSAGetLastError(), "socket");
   }
 
-  /* Try to detect IPV6 support and non-IFS LSPs */
-  uv_tcp_non_ifs_lsp_ipv6 = 1;
+  /* Detect IPV6 support and non-IFS LSPs */
   dummy = socket(AF_INET6, SOCK_STREAM, IPPROTO_IP);
+
   if (dummy != INVALID_SOCKET) {
     opt_len = (int) sizeof protocol_info;
-    if (getsockopt(dummy,
-                   SOL_SOCKET,
-                   SO_PROTOCOL_INFOW,
-                   (char*) &protocol_info,
-                   &opt_len) == 0) {
-      if (protocol_info.dwServiceFlags1 & XP1_IFS_HANDLES)
-        uv_tcp_non_ifs_lsp_ipv6 = 0;
-    }
-    closesocket(dummy);
+    if (!getsockopt(dummy,
+                    SOL_SOCKET,
+                    SO_PROTOCOL_INFOW,
+                    (char*) &protocol_info,
+                    &opt_len) == SOCKET_ERROR)
+      uv_fatal_error(WSAGetLastError(), "getsockopt");
+
+    if (!(protocol_info.dwServiceFlags1 & XP1_IFS_HANDLES))
+      uv_tcp_non_ifs_lsp_ipv6 = 1;
+
+    if (closesocket(dummy) == SOCKET_ERROR)
+      uv_fatal_error(WSAGetLastError(), "closesocket");
+
+  } else if (!error_means_no_support(WSAGetLastError())) {
+    /* Any error other than "socket type not supported" is fatal. */
+    uv_fatal_error(WSAGetLastError(), "socket");
   }
 }
 
 
-int uv__ntstatus_to_winsock_error(NTSTATUS status) {
+int uv_ntstatus_to_winsock_error(NTSTATUS status) {
   switch (status) {
     case STATUS_SUCCESS:
       return ERROR_SUCCESS;
@@ -151,12 +160,13 @@ int uv__ntstatus_to_winsock_error(NTSTATUS status) {
     case STATUS_COMMITMENT_LIMIT:
     case STATUS_WORKING_SET_QUOTA:
     case STATUS_NO_MEMORY:
+    case STATUS_CONFLICTING_ADDRESSES:
     case STATUS_QUOTA_EXCEEDED:
     case STATUS_TOO_MANY_PAGING_FILES:
     case STATUS_REMOTE_RESOURCES:
+    case STATUS_TOO_MANY_ADDRESSES:
       return WSAENOBUFS;
 
-    case STATUS_TOO_MANY_ADDRESSES:
     case STATUS_SHARING_VIOLATION:
     case STATUS_ADDRESS_ALREADY_EXISTS:
       return WSAEADDRINUSE;
@@ -225,7 +235,6 @@ int uv__ntstatus_to_winsock_error(NTSTATUS status) {
     case STATUS_PIPE_DISCONNECTED:
       return WSAESHUTDOWN;
 
-    case STATUS_CONFLICTING_ADDRESSES:
     case STATUS_INVALID_ADDRESS:
     case STATUS_INVALID_ADDRESS_COMPONENT:
       return WSAEADDRNOTAVAIL;
@@ -240,8 +249,8 @@ int uv__ntstatus_to_winsock_error(NTSTATUS status) {
     default:
       if ((status & (FACILITY_NTWIN32 << 16)) == (FACILITY_NTWIN32 << 16) &&
           (status & (ERROR_SEVERITY_ERROR | ERROR_SEVERITY_WARNING))) {
-        /* It's a windows error that has been previously mapped to an ntstatus
-         * code. */
+        /* It's a windows error that has been previously mapped to an */
+        /* ntstatus code. */
         return (DWORD) (status & 0xffff);
       } else {
         /* The default fallback for unmappable ntstatus codes. */
@@ -267,7 +276,7 @@ int uv__ntstatus_to_winsock_error(NTSTATUS status) {
  * the user to use the default msafd driver, doesn't work when other LSPs are
  * stacked on top of it.
  */
-int WSAAPI uv__wsarecv_workaround(SOCKET socket, WSABUF* buffers,
+int WSAAPI uv_wsarecv_workaround(SOCKET socket, WSABUF* buffers,
     DWORD buffer_count, DWORD* bytes, DWORD* flags, WSAOVERLAPPED *overlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) {
   NTSTATUS status;
@@ -346,7 +355,7 @@ int WSAAPI uv__wsarecv_workaround(SOCKET socket, WSABUF* buffers,
       break;
 
     default:
-      error = uv__ntstatus_to_winsock_error(status);
+      error = uv_ntstatus_to_winsock_error(status);
       break;
   }
 
@@ -360,8 +369,8 @@ int WSAAPI uv__wsarecv_workaround(SOCKET socket, WSABUF* buffers,
 }
 
 
-/* See description of uv__wsarecv_workaround. */
-int WSAAPI uv__wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
+/* See description of uv_wsarecv_workaround. */
+int WSAAPI uv_wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
     DWORD buffer_count, DWORD* bytes, DWORD* flags, struct sockaddr* addr,
     int* addr_len, WSAOVERLAPPED *overlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE completion_routine) {
@@ -444,7 +453,7 @@ int WSAAPI uv__wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
       break;
 
     default:
-      error = uv__ntstatus_to_winsock_error(status);
+      error = uv_ntstatus_to_winsock_error(status);
       break;
   }
 
@@ -458,8 +467,8 @@ int WSAAPI uv__wsarecvfrom_workaround(SOCKET socket, WSABUF* buffers,
 }
 
 
-int WSAAPI uv__msafd_poll(SOCKET socket, AFD_POLL_INFO* info_in,
-    AFD_POLL_INFO* info_out, OVERLAPPED* overlapped) {
+int WSAAPI uv_msafd_poll(SOCKET socket, AFD_POLL_INFO* info,
+    OVERLAPPED* overlapped) {
   IO_STATUS_BLOCK iosb;
   IO_STATUS_BLOCK* iosb_ptr;
   HANDLE event = NULL;
@@ -497,14 +506,14 @@ int WSAAPI uv__msafd_poll(SOCKET socket, AFD_POLL_INFO* info_in,
                                   apc_context,
                                   iosb_ptr,
                                   IOCTL_AFD_POLL,
-                                  info_in,
-                                  sizeof *info_in,
-                                  info_out,
-                                  sizeof *info_out);
+                                  info,
+                                  sizeof *info,
+                                  info,
+                                  sizeof *info);
 
   if (overlapped == NULL) {
-    /* If this is a blocking operation, wait for the event to become signaled,
-     * and then grab the real status from the io status block. */
+    /* If this is a blocking operation, wait for the event to become */
+    /* signaled, and then grab the real status from the io status block. */
     if (status == STATUS_PENDING) {
       DWORD r = WaitForSingleObject(event, INFINITE);
 
@@ -531,7 +540,7 @@ int WSAAPI uv__msafd_poll(SOCKET socket, AFD_POLL_INFO* info_in,
       break;
 
     default:
-      error = uv__ntstatus_to_winsock_error(status);
+      error = uv_ntstatus_to_winsock_error(status);
       break;
   }
 
@@ -541,35 +550,5 @@ int WSAAPI uv__msafd_poll(SOCKET socket, AFD_POLL_INFO* info_in,
     return 0;
   } else {
     return SOCKET_ERROR;
-  }
-}
-
-int uv__convert_to_localhost_if_unspecified(const struct sockaddr* addr,
-                                            struct sockaddr_storage* storage) {
-  struct sockaddr_in* dest4;
-  struct sockaddr_in6* dest6;
-
-  if (addr == NULL)
-    return UV_EINVAL;
-
-  switch (addr->sa_family) {
-  case AF_INET:
-    dest4 = (struct sockaddr_in*) storage;
-    memcpy(dest4, addr, sizeof(*dest4));
-    if (dest4->sin_addr.s_addr == 0)
-      dest4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    return 0;
-  case AF_INET6:
-    dest6 = (struct sockaddr_in6*) storage;
-    memcpy(dest6, addr, sizeof(*dest6));
-    if (memcmp(&dest6->sin6_addr,
-               &uv_addr_ip6_any_.sin6_addr,
-               sizeof(uv_addr_ip6_any_.sin6_addr)) == 0) {
-      struct in6_addr init_sin6_addr = IN6ADDR_LOOPBACK_INIT;
-      dest6->sin6_addr = init_sin6_addr;
-    }
-    return 0;
-  default:
-    return UV_EINVAL;
   }
 }

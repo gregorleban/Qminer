@@ -55,31 +55,31 @@ static void connect_cb(uv_connect_t* req, int status) {
   int i;
   int r;
 
-  ASSERT_PTR_EQ(req->handle, (uv_stream_t*)&tcp_client);
+  ASSERT(req->handle == (uv_stream_t*)&tcp_client);
 
   for (i = 0; i < NUM_WRITE_REQS; i++) {
     w = &write_reqs[i];
     r = uv_write(&w->req, req->handle, &w->buf, 1, write_cb);
-    ASSERT_OK(r);
+    ASSERT(r == 0);
   }
 
   r = uv_shutdown(&shutdown_req, req->handle, shutdown_cb);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   connect_cb_called++;
 }
 
 
 static void write_cb(uv_write_t* req, int status) {
-  ASSERT_NOT_NULL(req);
-  ASSERT_OK(status);
+  ASSERT(req != NULL);
+  ASSERT(status == 0);
   write_cb_called++;
 }
 
 
 static void shutdown_cb(uv_shutdown_t* req, int status) {
-  ASSERT_PTR_EQ(req->handle, (uv_stream_t*)&tcp_client);
-  ASSERT_OK(req->handle->write_queue_size);
+  ASSERT(req->handle == (uv_stream_t*)&tcp_client);
+  ASSERT(req->handle->write_queue_size == 0);
 
   uv_close((uv_handle_t*)req->handle, close_cb);
   free(write_reqs);
@@ -89,7 +89,7 @@ static void shutdown_cb(uv_shutdown_t* req, int status) {
 
 
 static void close_cb(uv_handle_t* handle) {
-  ASSERT_PTR_EQ(handle, (uv_handle_t*)&tcp_client);
+  ASSERT(handle == (uv_handle_t*)&tcp_client);
   close_cb_called++;
 }
 
@@ -103,7 +103,7 @@ BENCHMARK_IMPL(tcp_write_batch) {
   int r;
 
   write_reqs = malloc(sizeof(*write_reqs) * NUM_WRITE_REQS);
-  ASSERT_NOT_NULL(write_reqs);
+  ASSERT(write_reqs != NULL);
 
   /* Prepare the data to write out. */
   for (i = 0; i < NUM_WRITE_REQS; i++) {
@@ -112,33 +112,30 @@ BENCHMARK_IMPL(tcp_write_batch) {
   }
 
   loop = uv_default_loop();
-  ASSERT_OK(uv_ip4_addr("127.0.0.1", TEST_PORT, &addr));
+  addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
 
   r = uv_tcp_init(loop, &tcp_client);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
-  r = uv_tcp_connect(&connect_req,
-                     &tcp_client,
-                     (const struct sockaddr*) &addr,
-                     connect_cb);
-  ASSERT_OK(r);
+  r = uv_tcp_connect(&connect_req, &tcp_client, addr, connect_cb);
+  ASSERT(r == 0);
 
   start = uv_hrtime();
 
   r = uv_run(loop, UV_RUN_DEFAULT);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   stop = uv_hrtime();
 
-  ASSERT_EQ(1, connect_cb_called);
-  ASSERT_EQ(write_cb_called, NUM_WRITE_REQS);
-  ASSERT_EQ(1, shutdown_cb_called);
-  ASSERT_EQ(1, close_cb_called);
+  ASSERT(connect_cb_called == 1);
+  ASSERT(write_cb_called == NUM_WRITE_REQS);
+  ASSERT(shutdown_cb_called == 1);
+  ASSERT(close_cb_called == 1);
 
   printf("%ld write requests in %.2fs.\n",
          (long)NUM_WRITE_REQS,
          (stop - start) / 1e9);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

@@ -33,42 +33,20 @@ TEST_IMPL(tcp_flags) {
 
   loop = uv_default_loop();
 
-  /* Use _ex to make sure the socket is created. */
-  r = uv_tcp_init_ex(loop, &handle, AF_INET);
-  ASSERT_OK(r);
+  r = uv_tcp_init(loop, &handle);
+  ASSERT(r == 0);
 
   r = uv_tcp_nodelay(&handle, 1);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
   r = uv_tcp_keepalive(&handle, 1, 60);
-  ASSERT_OK(r);
-
-  r = uv_tcp_keepalive(&handle, 0, 0);
-  ASSERT_OK(r);
-
-  r = uv_tcp_keepalive(&handle, 1, 0);
-  ASSERT_EQ(r, UV_EINVAL);
-
-  r = uv_tcp_keepalive_ex(&handle, 1, 60, 60, 60);
-  ASSERT_OK(r);
-
-  r = uv_tcp_keepalive_ex(&handle, 0, 0, 0, 0);
-  ASSERT_OK(r);
-
-  r = uv_tcp_keepalive_ex(&handle, 1, 0, 10, 10);
-  ASSERT_EQ(r, UV_EINVAL);
-
-  r = uv_tcp_keepalive_ex(&handle, 1, 10, 0, 10);
-  ASSERT_EQ(r, UV_EINVAL);
-
-  r = uv_tcp_keepalive_ex(&handle, 1, 10, 10, 0);
-  ASSERT_EQ(r, UV_EINVAL);
+  ASSERT(r == 0);
 
   uv_close((uv_handle_t*)&handle, NULL);
 
   r = uv_run(loop, UV_RUN_DEFAULT);
-  ASSERT_OK(r);
+  ASSERT(r == 0);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

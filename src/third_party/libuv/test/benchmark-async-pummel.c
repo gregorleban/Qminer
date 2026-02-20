@@ -36,12 +36,12 @@ static const char stop[]    = "stop";
 static const char stopped[] = "stopped";
 
 
-static void async_cb(uv_async_t* handle) {
+static void async_cb(uv_async_t* handle, int status) {
   if (++callbacks == NUM_PINGS) {
     /* Tell the pummel thread to stop. */
     ACCESS_ONCE(const char*, handle->data) = stop;
 
-    /* Wait for the pummel thread to acknowledge that it has stoppped. */
+    /* Wait for for the pummel thread to acknowledge that it has stoppped. */
     while (ACCESS_ONCE(const char*, handle->data) != stopped)
       uv_sleep(0);
 
@@ -62,40 +62,39 @@ static void pummel(void* arg) {
 
 
 static int test_async_pummel(int nthreads) {
-  char fmtbuf[2][32];
   uv_thread_t* tids;
   uv_async_t handle;
   uint64_t time;
   int i;
 
   tids = calloc(nthreads, sizeof(tids[0]));
-  ASSERT_NOT_NULL(tids);
+  ASSERT(tids != NULL);
 
-  ASSERT_OK(uv_async_init(uv_default_loop(), &handle, async_cb));
+  ASSERT(0 == uv_async_init(uv_default_loop(), &handle, async_cb));
   ACCESS_ONCE(const char*, handle.data) = running;
 
   for (i = 0; i < nthreads; i++)
-    ASSERT_OK(uv_thread_create(tids + i, pummel, &handle));
+    ASSERT(0 == uv_thread_create(tids + i, pummel, &handle));
 
   time = uv_hrtime();
 
-  ASSERT_OK(uv_run(uv_default_loop(), UV_RUN_DEFAULT));
+  ASSERT(0 == uv_run(uv_default_loop(), UV_RUN_DEFAULT));
 
   time = uv_hrtime() - time;
   done = 1;
 
   for (i = 0; i < nthreads; i++)
-    ASSERT_OK(uv_thread_join(tids + i));
+    ASSERT(0 == uv_thread_join(tids + i));
 
   printf("async_pummel_%d: %s callbacks in %.2f seconds (%s/sec)\n",
          nthreads,
-         fmt(&fmtbuf[0], callbacks),
+         fmt(callbacks),
          time / 1e9,
-         fmt(&fmtbuf[1], callbacks / (time / 1e9)));
+         fmt(callbacks / (time / 1e9)));
 
   free(tids);
 
-  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }
 

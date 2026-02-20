@@ -270,6 +270,7 @@ void TSock::UnregisterAsyncCallback(uv_async_t* AsyncHandle)
     SockSys.UnregisterAsyncCallback(AsyncHandle);
 }
 
+
 /////////////////////////////////////////////////
 // Timer
 
@@ -280,7 +281,7 @@ typedef struct {
 } uv_timer_req_t;
 
 // declaration of callback, since sock.h is not aware of libuv
-void TTTimer_OnTimeOut(uv_timer_t* TimerHnd)
+void TTTimer_OnTimeOut(uv_timer_t* TimerHnd, int Status)
 {
     uv_timer_req_t* _TimerHnd = (uv_timer_req_t*)TimerHnd;
     _TimerHnd->Timer->OnTimeOut();
@@ -291,16 +292,9 @@ TTTimer::TTTimer(const int& _TimeOutMSecs, const bool& _Repeat)
 {
     // create new timer
     uv_timer_req_t* _TimerHnd = (uv_timer_req_t*)malloc(sizeof(uv_timer_req_t));
-    if (!_TimerHnd) {
-        throw TExcept::New("TTTimer: Failed to allocate memory for timer");
-    }
     // initialize
     _TimerHnd->Timer = this;
-    int InitResCd = uv_timer_init(SockSys.Loop, (uv_timer_t*)_TimerHnd);
-    if (InitResCd != 0) {
-        free(_TimerHnd);
-        throw TExcept::New("TTTimer: Error initializing timer: " + TInt::GetStr(InitResCd));
-    }
+    uv_timer_init(SockSys.Loop, (uv_timer_t*)_TimerHnd);
     // remember handle
     TimerHnd = (uint64)_TimerHnd;
     // start if needed
@@ -332,13 +326,8 @@ void TTTimer::StartTimer(const int& _TimeOutMSecs)
     // start new if non-zero timeout
     if (_TimeOutMSecs > 0) {
         uv_timer_t* _TimerHnd = (uv_timer_t*)TimerHnd.Val;
-        // CHANGE: uv_timer_start now returns int, should check for errors
-        int ResCd = uv_timer_start(_TimerHnd, TTTimer_OnTimeOut, (uint64)TimeOutMSecs,
-                                   Repeat ? (uint64)TimeOutMSecs : 0);
-        if (ResCd != 0) {
-            // Handle error appropriately
-            throw TExcept::New("TTTimer.StartTimer: Error starting timer: " + TInt::GetStr(ResCd));
-        }
+        uv_timer_start(_TimerHnd, TTTimer_OnTimeOut, (uint64)TimeOutMSecs,
+                       Repeat ? (uint64)TimeOutMSecs : 0);
     }
 }
 

@@ -26,8 +26,9 @@ static uv_timer_t timer_handle;
 static int timer_called = 0;
 
 
-static void timer_cb(uv_timer_t* handle) {
-  ASSERT_PTR_EQ(handle, &timer_handle);
+static void timer_cb(uv_timer_t* handle, int status) {
+  ASSERT(handle == &timer_handle);
+  ASSERT(status == 0);
   timer_called = 1;
 }
 
@@ -38,9 +39,8 @@ TEST_IMPL(run_nowait) {
   uv_timer_start(&timer_handle, timer_cb, 100, 100);
 
   r = uv_run(uv_default_loop(), UV_RUN_NOWAIT);
-  ASSERT(r);
-  ASSERT_OK(timer_called);
+  ASSERT(r != 0);
+  ASSERT(timer_called == 0);
 
-  MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }

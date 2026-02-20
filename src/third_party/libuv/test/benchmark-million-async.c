@@ -50,17 +50,17 @@ static void thread_cb(void* arg) {
 }
 
 
-static void async_cb(uv_async_t* handle) {
+static void async_cb(uv_async_t* handle, int status) {
   container->async_events++;
   handle->data = handle;
 }
 
 
-static void timer_cb(uv_timer_t* handle) {
+static void timer_cb(uv_timer_t* handle, int status) {
   unsigned i;
 
   done = 1;
-  ASSERT_OK(uv_thread_join(&thread_id));
+  ASSERT(0 == uv_thread_join(&thread_id));
 
   for (i = 0; i < ARRAY_SIZE(container->async_handles); i++) {
     uv_async_t* handle = container->async_handles + i;
@@ -76,7 +76,6 @@ static void timer_cb(uv_timer_t* handle) {
 
 
 BENCHMARK_IMPL(million_async) {
-  char fmtbuf[3][32];
   uv_timer_t timer_handle;
   uv_async_t* handle;
   uv_loop_t* loop;
@@ -87,27 +86,27 @@ BENCHMARK_IMPL(million_async) {
   timeout = 5000;
 
   container = malloc(sizeof(*container));
-  ASSERT_NOT_NULL(container);
+  ASSERT(container != NULL);
   container->async_events = 0;
   container->handles_seen = 0;
 
   for (i = 0; i < ARRAY_SIZE(container->async_handles); i++) {
     handle = container->async_handles + i;
-    ASSERT_OK(uv_async_init(loop, handle, async_cb));
+    ASSERT(0 == uv_async_init(loop, handle, async_cb));
     handle->data = NULL;
   }
 
-  ASSERT_OK(uv_timer_init(loop, &timer_handle));
-  ASSERT_OK(uv_timer_start(&timer_handle, timer_cb, timeout, 0));
-  ASSERT_OK(uv_thread_create(&thread_id, thread_cb, NULL));
-  ASSERT_OK(uv_run(loop, UV_RUN_DEFAULT));
+  ASSERT(0 == uv_timer_init(loop, &timer_handle));
+  ASSERT(0 == uv_timer_start(&timer_handle, timer_cb, timeout, 0));
+  ASSERT(0 == uv_thread_create(&thread_id, thread_cb, NULL));
+  ASSERT(0 == uv_run(loop, UV_RUN_DEFAULT));
   printf("%s async events in %.1f seconds (%s/s, %s unique handles seen)\n",
-          fmt(&fmtbuf[0], container->async_events),
+          fmt(container->async_events),
           timeout / 1000.,
-          fmt(&fmtbuf[1], container->async_events / (timeout / 1000.)),
-          fmt(&fmtbuf[2], container->handles_seen));
+          fmt(container->async_events / (timeout / 1000.)),
+          fmt(container->handles_seen));
   free(container);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }

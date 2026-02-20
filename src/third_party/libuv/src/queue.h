@@ -16,75 +16,77 @@
 #ifndef QUEUE_H_
 #define QUEUE_H_
 
-#include <stddef.h>
+typedef void *QUEUE[2];
 
-#define uv__queue_data(pointer, type, field)                                  \
-  ((type*) ((char*) (pointer) - offsetof(type, field)))
+/* Private macros. */
+#define QUEUE_NEXT(q)       ((*(q))[0])
+#define QUEUE_PREV(q)       ((*(q))[1])
+#define QUEUE_PREV_NEXT(q)  (QUEUE_NEXT((QUEUE *) QUEUE_PREV(q)))
+#define QUEUE_NEXT_PREV(q)  (QUEUE_PREV((QUEUE *) QUEUE_NEXT(q)))
 
-#define uv__queue_foreach(q, h)                                               \
-  for ((q) = (h)->next; (q) != (h); (q) = (q)->next)
+/* Public macros. */
+#define QUEUE_DATA(ptr, type, field)                                          \
+  ((type *) ((char *) (ptr) - ((long) &((type *) 0)->field)))
 
-static inline void uv__queue_init(struct uv__queue* q) {
-  q->next = q;
-  q->prev = q;
-}
+#define QUEUE_FOREACH(q, h)                                                   \
+  for ((q) = (*(h))[0]; (q) != (h); (q) = (*(q))[0])
 
-static inline int uv__queue_empty(const struct uv__queue* q) {
-  return q == q->next;
-}
+#define QUEUE_EMPTY(q)                                                        \
+  (QUEUE_NEXT(q) == (q))
 
-static inline struct uv__queue* uv__queue_head(const struct uv__queue* q) {
-  return q->next;
-}
+#define QUEUE_HEAD(q)                                                         \
+  (QUEUE_NEXT(q))
 
-static inline struct uv__queue* uv__queue_next(const struct uv__queue* q) {
-  return q->next;
-}
+#define QUEUE_INIT(q)                                                         \
+  do {                                                                        \
+    QUEUE_NEXT(q) = (q);                                                      \
+    QUEUE_PREV(q) = (q);                                                      \
+  }                                                                           \
+  while (0)
 
-static inline void uv__queue_add(struct uv__queue* h, struct uv__queue* n) {
-  h->prev->next = n->next;
-  n->next->prev = h->prev;
-  h->prev = n->prev;
-  h->prev->next = h;
-}
+#define QUEUE_ADD(h, n)                                                       \
+  do {                                                                        \
+    QUEUE_PREV_NEXT(h) = QUEUE_NEXT(n);                                       \
+    QUEUE_NEXT_PREV(n) = QUEUE_PREV(h);                                       \
+    QUEUE_PREV(h) = QUEUE_PREV(n);                                            \
+    QUEUE_PREV_NEXT(h) = (h);                                                 \
+  }                                                                           \
+  while (0)
 
-static inline void uv__queue_split(struct uv__queue* h,
-                                   struct uv__queue* q,
-                                   struct uv__queue* n) {
-  n->prev = h->prev;
-  n->prev->next = n;
-  n->next = q;
-  h->prev = q->prev;
-  h->prev->next = h;
-  q->prev = n;
-}
+#define QUEUE_SPLIT(h, q, n)                                                  \
+  do {                                                                        \
+    QUEUE_PREV(n) = QUEUE_PREV(h);                                            \
+    QUEUE_PREV_NEXT(n) = (n);                                                 \
+    QUEUE_NEXT(n) = (q);                                                      \
+    QUEUE_PREV(h) = QUEUE_PREV(q);                                            \
+    QUEUE_PREV_NEXT(h) = (h);                                                 \
+    QUEUE_PREV(q) = (n);                                                      \
+  }                                                                           \
+  while (0)
 
-static inline void uv__queue_move(struct uv__queue* h, struct uv__queue* n) {
-  if (uv__queue_empty(h))
-    uv__queue_init(n);
-  else
-    uv__queue_split(h, h->next, n);
-}
+#define QUEUE_INSERT_HEAD(h, q)                                               \
+  do {                                                                        \
+    QUEUE_NEXT(q) = QUEUE_NEXT(h);                                            \
+    QUEUE_PREV(q) = (h);                                                      \
+    QUEUE_NEXT_PREV(q) = (q);                                                 \
+    QUEUE_NEXT(h) = (q);                                                      \
+  }                                                                           \
+  while (0)
 
-static inline void uv__queue_insert_head(struct uv__queue* h,
-                                         struct uv__queue* q) {
-  q->next = h->next;
-  q->prev = h;
-  q->next->prev = q;
-  h->next = q;
-}
+#define QUEUE_INSERT_TAIL(h, q)                                               \
+  do {                                                                        \
+    QUEUE_NEXT(q) = (h);                                                      \
+    QUEUE_PREV(q) = QUEUE_PREV(h);                                            \
+    QUEUE_PREV_NEXT(q) = (q);                                                 \
+    QUEUE_PREV(h) = (q);                                                      \
+  }                                                                           \
+  while (0)
 
-static inline void uv__queue_insert_tail(struct uv__queue* h,
-                                         struct uv__queue* q) {
-  q->next = h;
-  q->prev = h->prev;
-  q->prev->next = q;
-  h->prev = q;
-}
-
-static inline void uv__queue_remove(struct uv__queue* q) {
-  q->prev->next = q->next;
-  q->next->prev = q->prev;
-}
+#define QUEUE_REMOVE(q)                                                       \
+  do {                                                                        \
+    QUEUE_PREV_NEXT(q) = QUEUE_NEXT(q);                                       \
+    QUEUE_NEXT_PREV(q) = QUEUE_PREV(q);                                       \
+  }                                                                           \
+  while (0)
 
 #endif /* QUEUE_H_ */

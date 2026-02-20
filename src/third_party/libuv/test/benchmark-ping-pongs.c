@@ -53,24 +53,27 @@ static int completed_pingers = 0;
 static int64_t start_time;
 
 
-static void buf_alloc(uv_handle_t* tcp, size_t size, uv_buf_t* buf) {
+static uv_buf_t buf_alloc(uv_handle_t* tcp, size_t size) {
   buf_t* ab;
 
   ab = buf_freelist;
-  if (ab != NULL)
+
+  if (ab != NULL) {
     buf_freelist = ab->next;
-  else {
-    ab = malloc(size + sizeof(*ab));
-    ab->uv_buf_t.len = size;
-    ab->uv_buf_t.base = (char*) (ab + 1);
+    return ab->uv_buf_t;
   }
 
-  *buf = ab->uv_buf_t;
+  ab = (buf_t*) malloc(size + sizeof *ab);
+  ab->uv_buf_t.len = size;
+  ab->uv_buf_t.base = ((char*) ab) + sizeof *ab;
+
+  return ab->uv_buf_t;
 }
 
 
-static void buf_free(const uv_buf_t* buf) {
-  buf_t* ab = (buf_t*) buf->base - 1;
+static void buf_free(uv_buf_t uv_buf_t) {
+  buf_t* ab = (buf_t*) (uv_buf_t.base - sizeof *ab);
+
   ab->next = buf_freelist;
   buf_freelist = ab;
 }
@@ -80,8 +83,7 @@ static void pinger_close_cb(uv_handle_t* handle) {
   pinger_t* pinger;
 
   pinger = (pinger_t*)handle->data;
-  fprintf(stderr, "ping_pongs: %d roundtrips/s\n", (1000 * pinger->pongs) / TIME);
-  fflush(stderr);
+  LOGF("ping_pongs: %d roundtrips/s\n", (1000 * pinger->pongs) / TIME);
 
   free(pinger);
 
@@ -90,7 +92,7 @@ static void pinger_close_cb(uv_handle_t* handle) {
 
 
 static void pinger_write_cb(uv_write_t* req, int status) {
-  ASSERT_OK(status);
+  ASSERT(status == 0);
 
   free(req);
 }
@@ -110,33 +112,31 @@ static void pinger_write_ping(pinger_t* pinger) {
 
 
 static void pinger_shutdown_cb(uv_shutdown_t* req, int status) {
-  ASSERT_OK(status);
+  ASSERT(status == 0);
   pinger_shutdown_cb_called++;
 
   /*
    * The close callback has not been triggered yet. We must wait for EOF
    * until we close the connection.
    */
-  ASSERT_OK(completed_pingers);
+  ASSERT(completed_pingers == 0);
 }
 
 
-static void pinger_read_cb(uv_stream_t* tcp,
-                           ssize_t nread,
-                           const uv_buf_t* buf) {
+static void pinger_read_cb(uv_stream_t* tcp, ssize_t nread, uv_buf_t buf) {
   ssize_t i;
   pinger_t* pinger;
 
   pinger = (pinger_t*)tcp->data;
 
   if (nread < 0) {
-    ASSERT_EQ(nread, UV_EOF);
+    ASSERT(uv_last_error(loop).code == UV_EOF);
 
-    if (buf->base) {
+    if (buf.base) {
       buf_free(buf);
     }
 
-    ASSERT_EQ(1, pinger_shutdown_cb_called);
+    ASSERT(pinger_shutdown_cb_called == 1);
     uv_close((uv_handle_t*)tcp, pinger_close_cb);
 
     return;
@@ -144,14 +144,12 @@ static void pinger_read_cb(uv_stream_t* tcp,
 
   /* Now we count the pings */
   for (i = 0; i < nread; i++) {
-    ASSERT_EQ(buf->base[i], PING[pinger->state]);
+    ASSERT(buf.base[i] == PING[pinger->state]);
     pinger->state = (pinger->state + 1) % (sizeof(PING) - 1);
     if (pinger->state == 0) {
       pinger->pongs++;
       if (uv_now(loop) - start_time > TIME) {
-        uv_shutdown(&pinger->shutdown_req,
-                    (uv_stream_t*) tcp,
-                    pinger_shutdown_cb);
+        uv_shutdown(&pinger->shutdown_req, (uv_stream_t*) tcp, pinger_shutdown_cb);
         break;
       } else {
         pinger_write_ping(pinger);
@@ -166,7 +164,7 @@ static void pinger_read_cb(uv_stream_t* tcp,
 static void pinger_connect_cb(uv_connect_t* req, int status) {
   pinger_t *pinger = (pinger_t*)req->handle->data;
 
-  ASSERT_OK(status);
+  ASSERT(status == 0);
 
   pinger_write_ping(pinger);
 
@@ -177,14 +175,12 @@ static void pinger_connect_cb(uv_connect_t* req, int status) {
 
 
 static void pinger_new(void) {
-  struct sockaddr_in client_addr;
-  struct sockaddr_in server_addr;
-  pinger_t *pinger;
   int r;
+  struct sockaddr_in client_addr = uv_ip4_addr("0.0.0.0", 0);
+  struct sockaddr_in server_addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
+  pinger_t *pinger;
 
-  ASSERT_OK(uv_ip4_addr("0.0.0.0", 0, &client_addr));
-  ASSERT_OK(uv_ip4_addr("127.0.0.1", TEST_PORT, &server_addr));
-  pinger = malloc(sizeof(*pinger));
+  pinger = (pinger_t*)malloc(sizeof(*pinger));
   pinger->state = 0;
   pinger->pongs = 0;
 
@@ -194,14 +190,9 @@ static void pinger_new(void) {
 
   pinger->tcp.data = pinger;
 
-  ASSERT_OK(uv_tcp_bind(&pinger->tcp,
-                        (const struct sockaddr*) &client_addr,
-                        0));
+  uv_tcp_bind(&pinger->tcp, client_addr);
 
-  r = uv_tcp_connect(&pinger->connect_req,
-                     &pinger->tcp,
-                     (const struct sockaddr*) &server_addr,
-                     pinger_connect_cb);
+  r = uv_tcp_connect(&pinger->connect_req, &pinger->tcp, server_addr, pinger_connect_cb);
   ASSERT(!r);
 }
 
@@ -214,8 +205,8 @@ BENCHMARK_IMPL(ping_pongs) {
   pinger_new();
   uv_run(loop, UV_RUN_DEFAULT);
 
-  ASSERT_EQ(1, completed_pingers);
+  ASSERT(completed_pingers == 1);
 
-  MAKE_VALGRIND_HAPPY(loop);
+  MAKE_VALGRIND_HAPPY();
   return 0;
 }
