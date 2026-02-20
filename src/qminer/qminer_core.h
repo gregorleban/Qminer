@@ -2424,7 +2424,10 @@ public:
     /// Get number of words in the vocabulary
     uint64 GetWords() const { return (uint64)WordH.Len(); }
     /// Get ID of a given word
-    uint64 GetWordId(const TStr& WordStr) const { return (uint64)WordH.GetKeyId(WordStr); }
+    uint64 GetWordId(const TStr& WordStr) const { 
+        const int WId = WordH.GetKeyId(WordStr);
+        return (WId != -1) ? WId : TUInt64::Mx; 
+    }
     /// Get word corresponding to the given ID
     TStr GetWordStr(const uint64& WordId) const { return WordH.GetKey((int)WordId); }
     /// Get number of time given word was indexed so far

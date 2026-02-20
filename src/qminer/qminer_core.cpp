@@ -4468,13 +4468,8 @@ void TIndexVoc::GetWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& Word
     WordIdV.Gen(TokV.Len(), 0);
     for (int TokN = 0; TokN < TokV.Len(); TokN++) {
         const TStr& Tok = TokV[TokN];
-        if (IsWordStr(KeyId, Tok)) {
-            // known word
-            WordIdV.Add(GetWordId(KeyId, Tok));
-        } else {
-            // unknown word
-            WordIdV.Add(TUInt64::Mx);
-        }
+        // in case of unknown word, GetWordId will return TUInt64::Mx
+        WordIdV.Add(GetWordId(KeyId, Tok));
     }
 }
 
@@ -6158,7 +6153,7 @@ void TIndex::IndexTextPos(const int& KeyId, const TUInt64V& WordIdV, const uint6
 
 void TIndex::DeleteTextPos(const int& KeyId, const TStr& TextStr, const uint64& RecId) {
     // tokenize string
-    TUInt64V WordIdV; IndexVoc->AddWordIdV(KeyId, TextStr, WordIdV);
+    TUInt64V WordIdV; IndexVoc->GetWordIdV(KeyId, TextStr, WordIdV);
     // index tokens
     DeleteTextPos(KeyId, WordIdV, RecId);
 }
