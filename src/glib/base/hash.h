@@ -571,7 +571,7 @@ void THash<TKey, TDat, THashFunc>::Swap(THash& Hash) {
 template<class TKey, class TDat, class THashFunc>
 void THash<TKey, TDat, THashFunc>::Defrag(){
     if (!IsKeyIdEqKeyN()){
-        THash<TKey, TDat, THashFunc> Hash(PortV.Len());
+        THash<TKey, TDat, THashFunc> Hash;
         int KeyId=FFirstKeyId(); TKey Key; TDat Dat;
         while (FNextKeyId(KeyId)){
             GetKeyDat(KeyId, Key, Dat);
