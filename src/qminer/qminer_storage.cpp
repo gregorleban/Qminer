@@ -2717,6 +2717,26 @@ void TRecIndexer::DeindexRec(const TMemBase& RecMem, const uint64& RecId, TRecSe
     }
 }
 
+void TRecIndexer::GetGixKeyIdSet(TIntSet& KeyIdSet) const {
+    for (int N = 0; N < FieldIndexKeyV.Len(); N++) {
+        const TFieldIndexKey& Key = FieldIndexKeyV[N];
+        if (Key.IsValue() || Key.IsText() || Key.IsTextPos()) {
+            KeyIdSet.AddKey(Key.KeyId);
+        }
+    }
+}
+
+void TRecIndexer::DeindexRecNonGix(const TMemBase& RecMem, const uint64& RecId,
+        TRecSerializator& Serializator) {
+    for (int N = 0; N < FieldIndexKeyV.Len(); N++) {
+        const TFieldIndexKey& Key = FieldIndexKeyV[N];
+        if (Key.IsValue() || Key.IsText() || Key.IsTextPos()) { continue; }
+        if (!Serializator.IsFieldId(Key.FieldId)) { continue; }
+        if (Serializator.IsFieldNull(RecMem, Key.FieldId)) { continue; }
+        DeindexKey(Key, RecMem, RecId, Serializator);
+    }
+}
+
 void TRecIndexer::UpdateRec(const TMemBase& OldRecMem, const TMemBase& NewRecMem,
         const uint64& RecId, const int& ChangedFieldId, TRecSerializator& Serializator) {
 
@@ -3501,6 +3521,44 @@ void TStoreImpl::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs, c
     if (DelRecIdV.Len() > 1000) {
         TEnv::Logger->OnStatusFmt("  %s records at end", TUInt64::GetStr(GetRecs()).CStr());
     }
+}
+
+void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
+    if (DelRecIdV.Empty()) { return; }
+
+    TUInt64H RecIdSet(DelRecIdV.Len());
+    for (int N = 0; N < DelRecIdV.Len(); N++) { RecIdSet.AddKey(DelRecIdV[N]); }
+
+    TIntSet KeyIdSet;
+    RecIndexer.GetGixKeyIdSet(KeyIdSet);
+    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet);
+
+    int DeletedRecs = 0;
+    for (int N = 0; N < DelRecIdV.Len(); N++) {
+        const uint64 DelRecId = DelRecIdV[N];
+        if (!IsRecId(DelRecId)) { continue; }
+        OnDelete(DelRecId);
+        if (IsPrimaryField()) { DelPrimaryField(DelRecId); }
+        if (DataCacheP) {
+            TMem RecMem; DataCache.GetVal(DelRecId, RecMem);
+            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorCache);
+        }
+        if (DataMemP) {
+            TMem RecMem; DataMem.GetVal(DelRecId, RecMem);
+            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorMem);
+        }
+        TRec Rec(this, DelRecId);
+        for (int JoinN = 0; JoinN < GetJoins(); JoinN++) {
+            TJoinDesc JoinDesc = GetJoinDesc(JoinN);
+            PRecSet JoinRecSet = Rec.DoJoin(GetBase(), JoinDesc.GetJoinId());
+            for (int JoinRecN = 0; JoinRecN < JoinRecSet->GetRecs(); JoinRecN++) {
+                DelJoin(JoinDesc.GetJoinId(), DelRecId, JoinRecSet->GetRecId(JoinRecN));
+            }
+        }
+        DeletedRecs++;
+    }
+    if (DataCacheP) { DataCache.DelVals(DeletedRecs); }
+    if (DataMemP)   { DataMem.DelVals(DeletedRecs); }
 }
 
 bool TStoreImpl::IsFieldNull(const uint64& RecId, const int& FieldId) const {
@@ -5165,6 +5223,53 @@ void TStorePbBlob::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs,
     }
 
     // report success :-)
+    if (DelRecIdV.Len() > 1000) {
+        TEnv::Logger->OnStatusFmt("  %s records at end", TUInt64::GetStr(GetRecs()).CStr());
+    }
+}
+
+void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
+    if (DelRecIdV.Empty()) { return; }
+
+    TUInt64H RecIdSet(DelRecIdV.Len());
+    for (int N = 0; N < DelRecIdV.Len(); N++) { RecIdSet.AddKey(DelRecIdV[N]); }
+
+    TIntSet KeyIdSet;
+    RecIndexer.GetGixKeyIdSet(KeyIdSet);
+    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet);
+
+    for (int N = 0; N < DelRecIdV.Len(); N++) {
+        const uint64 DelRecId = DelRecIdV[N];
+        if (!IsRecId(DelRecId)) { 
+            continue; 
+        }
+        OnDelete(DelRecId);
+        if (IsPrimaryField()) { DelPrimaryField(DelRecId); }
+        TRec Rec(this, DelRecId);
+        for (int JoinN = 0; JoinN < GetJoins(); JoinN++) {
+            TJoinDesc JoinDesc = GetJoinDesc(JoinN);
+            PRecSet JoinRecSet = Rec.DoJoin(GetBase(), JoinDesc.GetJoinId());
+            for (int JoinRecN = 0; JoinRecN < JoinRecSet->GetRecs(); JoinRecN++) {
+                DelJoin(JoinDesc.GetJoinId(), DelRecId, JoinRecSet->GetRecId(JoinRecN));
+            }
+        }
+        if (DataBlobP) {
+            TPgBlobPt Pt = RecIdBlobPtH.GetDat(DelRecId);
+            TMemBase RecMem = DataBlob->GetMemBase(Pt);
+            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorCache);
+            SerializatorCache->DeleteToast(RecMem);
+            DataBlob->Del(Pt);
+            RecIdBlobPtH.DelKey(DelRecId);
+        }
+        if (DataMemP) {
+            TPgBlobPt Pt = RecIdBlobPtHMem.GetDat(DelRecId);
+            TMemBase RecMem = DataMem->GetMemBase(Pt);
+            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorMem);
+            SerializatorMem->DeleteToast(RecMem);
+            DataMem->Del(Pt);
+            RecIdBlobPtHMem.DelKey(DelRecId);
+        }
+    }
     if (DelRecIdV.Len() > 1000) {
         TEnv::Logger->OnStatusFmt("  %s records at end", TUInt64::GetStr(GetRecs()).CStr());
     }

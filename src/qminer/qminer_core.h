@@ -824,6 +824,9 @@ public:
     virtual void DeleteFirstRecs(const int& DelRecs) = 0;
     /// Delete specific records. If given a max time delete stops when time limit reached.
     virtual void DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs = -1, const bool& AssertOK = true) = 0;
+    /// Batch-delete records by scanning the GIX index directly instead of per-record deindexing.
+    /// Avoids re-tokenizing text fields; efficient for large batches.
+    virtual void BatchDeleteRecs(const TUInt64V& DelRecIdV) { DeleteRecs(DelRecIdV, -1, false); }
 
     /// Check if the value of given field for a given record is NULL
     virtual bool IsFieldNull(const uint64& RecId, const int& FieldId) const { return false; }
@@ -3380,6 +3383,9 @@ public:
         const uint64& RecId, const uint64& JoinRecId, const int& JoinFq = TInt::Mx);
     // Delete record from inverted index
     void DeleteGix(const int& KeyId, const uint64& WordId, const uint64& RecId, const int& RecFq);
+    /// Scan all GIX types (Full, Small, Tiny, Pos) and remove entries for RecIds in RecIdSet,
+    /// restricted to the KeyIds listed in KeyIdSet. Does not handle BTree or Geo indices.
+    void BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet);
 
     /// Index RecId using given keys and words. Words are extracted by tokenizing the given string.
     void IndexTextPos(const int& KeyId, const TStr& TextStr, const uint64& RecId);

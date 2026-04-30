@@ -803,6 +803,11 @@ public:
     void IndexRecField(const TMemBase& RecMem, const uint64& RecId, const int& FieldId, TRecSerializator& Serializator);
 
     bool HasIndexKey(const int& FieldId) { return FieldIdToKeyN.IsKey(FieldId); }
+
+    /// Populate KeyIdSet with all GIX-based KeyIds (value, text, textpos) used by this store.
+    void GetGixKeyIdSet(TIntSet& KeyIdSet) const;
+    /// Deindex only non-GIX fields (linear, geo) for one record; used after BatchDeleteFromGix.
+    void DeindexRecNonGix(const TMemBase& RecMem, const uint64& RecId, TRecSerializator& Serializator);
 };
 
 ///////////////////////////////
@@ -1047,6 +1052,8 @@ public:
     void DeleteFirstRecs(const int& Recs);
     /// Delete specific record.
     void DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs = -1, const bool& AssertOK = true);
+    /// Batch-delete by scanning GIX directly; avoids re-tokenizing text fields.
+    void BatchDeleteRecs(const TUInt64V& DelRecIdV) override;
 
     /// Check if the value of given field for a given record is NULL
     bool IsFieldNull(const uint64& RecId, const int& FieldId) const;
@@ -1339,6 +1346,8 @@ public:
     void DeleteAllRecs();
     void DeleteFirstRecs(const int& Recs);
     void DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs = -1, const bool& AssertOK = true);
+    /// Batch-delete by scanning GIX directly; avoids re-tokenizing text fields.
+    void BatchDeleteRecs(const TUInt64V& DelRecIdV) override;
 
     /// Check if the value of given field for a given record is NULL
     bool IsFieldNull(const uint64& RecId, const int& FieldId) const;

@@ -6081,6 +6081,68 @@ void TIndex::DeleteGix(const int& KeyId, const uint64& WordId, const uint64& Rec
     }
 }
 
+void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet) {
+    QmAssertR(!IsReadOnly(), "Cannot edit read-only index!");
+    if (KeyIdSet.Empty() || RecIdSet.Empty()) { return; }
+
+    if (!GixFull.Empty()) {
+        int GixKeyId = GixFull->FFirstKeyId();
+        while (GixFull->FNextKeyId(GixKeyId)) {
+            const TQmGixKey& Key = GixFull->GetKey(GixKeyId);
+            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
+            TVec<TQmGixItemFull> ItemV;
+            GixFull->GetItemV(Key, ItemV);
+            for (int N = 0; N < ItemV.Len(); N++) {
+                if (RecIdSet.IsKey(ItemV[N].Key)) {
+                    GixFull->DelItem(Key, ItemV[N]);
+                }
+            }
+        }
+    }
+    if (!GixSmall.Empty()) {
+        int GixKeyId = GixSmall->FFirstKeyId();
+        while (GixSmall->FNextKeyId(GixKeyId)) {
+            const TQmGixKey& Key = GixSmall->GetKey(GixKeyId);
+            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
+            TVec<TQmGixItemSmall> ItemV;
+            GixSmall->GetItemV(Key, ItemV);
+            for (int N = 0; N < ItemV.Len(); N++) {
+                if (RecIdSet.IsKey((uint64)ItemV[N].Key)) {
+                    GixSmall->DelItem(Key, ItemV[N]);
+                }
+            }
+        }
+    }
+    if (!GixTiny.Empty()) {
+        int GixKeyId = GixTiny->FFirstKeyId();
+        while (GixTiny->FNextKeyId(GixKeyId)) {
+            const TQmGixKey& Key = GixTiny->GetKey(GixKeyId);
+            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
+            TVec<TQmGixItemTiny> ItemV;
+            GixTiny->GetItemV(Key, ItemV);
+            for (int N = 0; N < ItemV.Len(); N++) {
+                if (RecIdSet.IsKey((uint64)ItemV[N])) {
+                    GixTiny->DelItem(Key, ItemV[N]);
+                }
+            }
+        }
+    }
+    if (!GixPos.Empty()) {
+        int GixKeyId = GixPos->FFirstKeyId();
+        while (GixPos->FNextKeyId(GixKeyId)) {
+            const TQmGixKey& Key = GixPos->GetKey(GixKeyId);
+            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
+            TVec<TQmGixItemPos> ItemV;
+            GixPos->GetItemV(Key, ItemV);
+            for (int N = 0; N < ItemV.Len(); N++) {
+                if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) {
+                    GixPos->DelItem(Key, ItemV[N]);
+                }
+            }
+        }
+    }
+}
+
 void TIndex::ComputeWordItemPos(const int& KeyId, const TUInt64V& WordIdV, const uint64& RecId, TVec<TPair<TUInt64, TQmGixItemPos>>& WordIdPosPrV) {
     // create a vector of positions computed by modulo
     typedef TPair<TInt, TUInt64> TPosWordIdPr;
