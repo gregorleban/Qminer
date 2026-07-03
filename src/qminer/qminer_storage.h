@@ -1053,7 +1053,9 @@ public:
     /// Delete specific record.
     void DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs = -1, const bool& AssertOK = true);
     /// Batch-delete by scanning GIX directly; avoids re-tokenizing text fields.
-    void BatchDeleteRecs(const TUInt64V& DelRecIdV) override;
+    /// If OnProgress is provided, it is called during deletion with the number of items processed so far
+    /// and a short description of the current phase.
+    void BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress = nullptr) override;
 
     /// Check if the value of given field for a given record is NULL
     bool IsFieldNull(const uint64& RecId, const int& FieldId) const;
@@ -1347,7 +1349,9 @@ public:
     void DeleteFirstRecs(const int& Recs);
     void DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs = -1, const bool& AssertOK = true);
     /// Batch-delete by scanning GIX directly; avoids re-tokenizing text fields.
-    void BatchDeleteRecs(const TUInt64V& DelRecIdV) override;
+    /// If OnProgress is provided, it is called during deletion with the number of items processed so far
+    /// and a short description of the current phase.
+    void BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress = nullptr) override;
 
     /// Check if the value of given field for a given record is NULL
     bool IsFieldNull(const uint64& RecId, const int& FieldId) const;

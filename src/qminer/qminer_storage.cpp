@@ -3523,7 +3523,7 @@ void TStoreImpl::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs, c
     }
 }
 
-void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
+void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress) {
     if (DelRecIdV.Empty()) { return; }
 
     TUInt64H RecIdSet(DelRecIdV.Len());
@@ -3531,7 +3531,7 @@ void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
 
     TIntSet KeyIdSet;
     RecIndexer.GetGixKeyIdSet(KeyIdSet);
-    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet);
+    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, OnProgress);
 
     int DeletedRecs = 0;
     for (int N = 0; N < DelRecIdV.Len(); N++) {
@@ -3556,6 +3556,8 @@ void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
             }
         }
         DeletedRecs++;
+        // report progress to the caller after each deleted record
+        if (OnProgress) { OnProgress(DeletedRecs, "5/5 Store"); }
     }
     if (DataCacheP) { DataCache.DelVals(DeletedRecs); }
     if (DataMemP)   { DataMem.DelVals(DeletedRecs); }
@@ -5228,7 +5230,7 @@ void TStorePbBlob::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs,
     }
 }
 
-void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
+void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress) {
     if (DelRecIdV.Empty()) { return; }
 
     TUInt64H RecIdSet(DelRecIdV.Len());
@@ -5236,12 +5238,13 @@ void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
 
     TIntSet KeyIdSet;
     RecIndexer.GetGixKeyIdSet(KeyIdSet);
-    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet);
+    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, OnProgress);
 
+    int DeletedRecs = 0;
     for (int N = 0; N < DelRecIdV.Len(); N++) {
         const uint64 DelRecId = DelRecIdV[N];
-        if (!IsRecId(DelRecId)) { 
-            continue; 
+        if (!IsRecId(DelRecId)) {
+            continue;
         }
         OnDelete(DelRecId);
         if (IsPrimaryField()) { DelPrimaryField(DelRecId); }
@@ -5269,6 +5272,9 @@ void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV) {
             DataMem->Del(Pt);
             RecIdBlobPtHMem.DelKey(DelRecId);
         }
+        DeletedRecs++;
+        // report progress to the caller after each deleted record
+        if (OnProgress) { OnProgress(DeletedRecs, "deleting records"); }
     }
     if (DelRecIdV.Len() > 1000) {
         TEnv::Logger->OnStatusFmt("  %s records at end", TUInt64::GetStr(GetRecs()).CStr());

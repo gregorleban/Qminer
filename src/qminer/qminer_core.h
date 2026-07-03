@@ -826,7 +826,9 @@ public:
     virtual void DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs = -1, const bool& AssertOK = true) = 0;
     /// Batch-delete records by scanning the GIX index directly instead of per-record deindexing.
     /// Avoids re-tokenizing text fields; efficient for large batches.
-    virtual void BatchDeleteRecs(const TUInt64V& DelRecIdV) { DeleteRecs(DelRecIdV, -1, false); }
+    /// If OnProgress is provided, it is called during deletion with the number of items processed so far
+    /// and a short description of the current phase.
+    virtual void BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress = nullptr) { DeleteRecs(DelRecIdV, -1, false); }
 
     /// Check if the value of given field for a given record is NULL
     virtual bool IsFieldNull(const uint64& RecId, const int& FieldId) const { return false; }
@@ -3385,7 +3387,9 @@ public:
     void DeleteGix(const int& KeyId, const uint64& WordId, const uint64& RecId, const int& RecFq);
     /// Scan all GIX types (Full, Small, Tiny, Pos) and remove entries for RecIds in RecIdSet,
     /// restricted to the KeyIds listed in KeyIdSet. Does not handle BTree or Geo indices.
-    void BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet);
+    /// If OnProgress is provided, it is called after each processed index key with the number of keys
+    /// processed so far and a short description of the current phase.
+    void BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const std::function<void(int, const TStr&)>& OnProgress = nullptr);
 
     /// Index RecId using given keys and words. Words are extracted by tokenizing the given string.
     void IndexTextPos(const int& KeyId, const TStr& TextStr, const uint64& RecId);

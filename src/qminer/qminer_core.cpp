@@ -6081,10 +6081,11 @@ void TIndex::DeleteGix(const int& KeyId, const uint64& WordId, const uint64& Rec
     }
 }
 
-void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet) {
+void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const std::function<void(int, const TStr&)>& OnProgress) {
     QmAssertR(!IsReadOnly(), "Cannot edit read-only index!");
     if (KeyIdSet.Empty() || RecIdSet.Empty()) { return; }
 
+    if (OnProgress) { OnProgress(0, "1/5 removing from GixFull"); }
     if (!GixFull.Empty()) {
         int GixKeyId = GixFull->FFirstKeyId();
         while (GixFull->FNextKeyId(GixKeyId)) {
@@ -6099,6 +6100,7 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             }
         }
     }
+    if (OnProgress) { OnProgress(0, "2/5 removing from GixSmall"); }
     if (!GixSmall.Empty()) {
         int GixKeyId = GixSmall->FFirstKeyId();
         while (GixSmall->FNextKeyId(GixKeyId)) {
@@ -6113,6 +6115,7 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             }
         }
     }
+    if (OnProgress) { OnProgress(0, "3/5 removing from GixTiny"); }
     if (!GixTiny.Empty()) {
         int GixKeyId = GixTiny->FFirstKeyId();
         while (GixTiny->FNextKeyId(GixKeyId)) {
@@ -6127,6 +6130,7 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             }
         }
     }
+    if (OnProgress) { OnProgress(0, "4/5 removing from GixPos"); }
     if (!GixPos.Empty()) {
         int GixKeyId = GixPos->FFirstKeyId();
         while (GixPos->FNextKeyId(GixKeyId)) {
