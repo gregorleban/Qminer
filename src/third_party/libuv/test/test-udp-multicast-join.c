@@ -27,24 +27,28 @@
 #include <string.h>
 
 #define CHECK_HANDLE(handle) \
-  ASSERT((uv_udp_t*)(handle) == &server || (uv_udp_t*)(handle) == &client)
+  ASSERT_NE((uv_udp_t*)(handle) == &server || (uv_udp_t*)(handle) == &client, 0)
+
+#define MULTICAST_ADDR "239.255.0.1"
 
 static uv_udp_t server;
 static uv_udp_t client;
+static uv_udp_send_t req;
+static uv_udp_send_t req_ss;
 
+static int darwin_ebusy_errors;
 static int cl_recv_cb_called;
-
 static int sv_send_cb_called;
-
 static int close_cb_called;
 
-static uv_buf_t alloc_cb(uv_handle_t* handle, size_t suggested_size) {
+static void alloc_cb(uv_handle_t* handle,
+                     size_t suggested_size,
+                     uv_buf_t* buf) {
   static char slab[65536];
-
   CHECK_HANDLE(handle);
-  ASSERT(suggested_size <= sizeof slab);
-
-  return uv_buf_init(slab, sizeof slab);
+  ASSERT_LE(suggested_size, sizeof(slab));
+  buf->base = slab;
+  buf->len = sizeof(slab);
 }
 
 
@@ -55,86 +59,143 @@ static void close_cb(uv_handle_t* handle) {
 
 
 static void sv_send_cb(uv_udp_send_t* req, int status) {
-  ASSERT(req != NULL);
-  ASSERT(status == 0);
+  ASSERT_NOT_NULL(req);
+  ASSERT_OK(status);
   CHECK_HANDLE(req->handle);
 
   sv_send_cb_called++;
 
-  uv_close((uv_handle_t*) req->handle, close_cb);
+  if (sv_send_cb_called == 2)
+    uv_close((uv_handle_t*) req->handle, close_cb);
+}
+
+
+static int do_send(uv_udp_send_t* send_req) {
+  uv_buf_t buf;
+  struct sockaddr_in addr;
+  
+  buf = uv_buf_init("PING", 4);
+
+  ASSERT_OK(uv_ip4_addr(MULTICAST_ADDR, TEST_PORT, &addr));
+
+  /* client sends "PING" */
+  return uv_udp_send(send_req,
+                     &client,
+                     &buf,
+                     1,
+                     (const struct sockaddr*) &addr,
+                     sv_send_cb);
 }
 
 
 static void cl_recv_cb(uv_udp_t* handle,
                        ssize_t nread,
-                       uv_buf_t buf,
-                       struct sockaddr* addr,
+                       const uv_buf_t* buf,
+                       const struct sockaddr* addr,
                        unsigned flags) {
   CHECK_HANDLE(handle);
-  ASSERT(flags == 0);
-
-  cl_recv_cb_called++;
+  ASSERT_OK(flags);
 
   if (nread < 0) {
     ASSERT(0 && "unexpected error");
   }
 
   if (nread == 0) {
-    /* Returning unused buffer */
-    /* Don't count towards cl_recv_cb_called */
-    ASSERT(addr == NULL);
+    /* Returning unused buffer. Don't count towards cl_recv_cb_called */
+    ASSERT_NULL(addr);
     return;
   }
 
-  ASSERT(addr != NULL);
-  ASSERT(nread == 4);
-  ASSERT(!memcmp("PING", buf.base, nread));
+  ASSERT_NOT_NULL(addr);
+  ASSERT_EQ(4, nread);
+  ASSERT(!memcmp("PING", buf->base, nread));
 
-  /* we are done with the client handle, we can close it */
-  uv_close((uv_handle_t*) &client, close_cb);
+  cl_recv_cb_called++;
+
+  if (cl_recv_cb_called == 2) {
+    /* we are done with the server handle, we can close it */
+    uv_close((uv_handle_t*) &server, close_cb);
+  } else {
+    int r;
+    char source_addr[64];
+
+    r = uv_ip4_name((const struct sockaddr_in*)addr, source_addr, sizeof(source_addr));
+    ASSERT_OK(r);
+
+    r = uv_udp_set_membership(&server, MULTICAST_ADDR, NULL, UV_LEAVE_GROUP);
+    ASSERT_OK(r);
+
+#if !defined(__NetBSD__)
+    r = uv_udp_set_source_membership(&server, MULTICAST_ADDR, NULL, source_addr, UV_JOIN_GROUP);
+#if defined(__APPLE__)
+    if (r == UV_EBUSY) {
+      uv_close((uv_handle_t*) &server, close_cb);
+      darwin_ebusy_errors++;
+      return;
+    }
+#endif
+    ASSERT_OK(r);
+#endif
+
+    r = do_send(&req_ss);
+    ASSERT_OK(r);
+  }
 }
 
 
 TEST_IMPL(udp_multicast_join) {
+#if defined(__OpenBSD__) || defined(QNX_IOPKT)
+  RETURN_SKIP("Test does not currently work in OpenBSD or QNX");
+#endif
   int r;
-  uv_udp_send_t req;
-  uv_buf_t buf;
-  struct sockaddr_in addr = uv_ip4_addr("127.0.0.1", TEST_PORT);
+  struct sockaddr_in addr;
+
+  ASSERT_OK(uv_ip4_addr("0.0.0.0", TEST_PORT, &addr));
 
   r = uv_udp_init(uv_default_loop(), &server);
-  ASSERT(r == 0);
+  ASSERT_OK(r);
 
   r = uv_udp_init(uv_default_loop(), &client);
-  ASSERT(r == 0);
+  ASSERT_OK(r);
 
   /* bind to the desired port */
-  r = uv_udp_bind(&client, addr, 0);
-  ASSERT(r == 0);
+  r = uv_udp_bind(&server, (const struct sockaddr*) &addr, 0);
+  ASSERT_OK(r);
 
   /* join the multicast channel */
-  r = uv_udp_set_membership(&client, "239.255.0.1", NULL, UV_JOIN_GROUP);
-  ASSERT(r == 0);
+  r = uv_udp_set_membership(&server, MULTICAST_ADDR, NULL, UV_JOIN_GROUP);
+  if (r == UV_ENODEV)
+    RETURN_SKIP("No multicast support.");
+  if (r == UV_ENOEXEC)
+    RETURN_SKIP("No multicast support (likely a firewall issue).");
+  if (r == UV_ENOSYS)
+    RETURN_SKIP("No multicast support (likely a platform issue).");
+  ASSERT_OK(r);
+#if defined(__ANDROID__)
+  /* It returns an ENOSYS error */
+  RETURN_SKIP("Test does not currently work in ANDROID");
+#endif
 
-  r = uv_udp_recv_start(&client, alloc_cb, cl_recv_cb);
-  ASSERT(r == 0);
+  r = uv_udp_recv_start(&server, alloc_cb, cl_recv_cb);
+  ASSERT_OK(r);
 
-  buf = uv_buf_init("PING", 4);
+  r = do_send(&req);
+  ASSERT_OK(r);
 
-  /* server sends "PING" */
-  r = uv_udp_send(&req, &server, &buf, 1, addr, sv_send_cb);
-  ASSERT(r == 0);
-
-  ASSERT(close_cb_called == 0);
-  ASSERT(cl_recv_cb_called == 0);
-  ASSERT(sv_send_cb_called == 0);
+  ASSERT_OK(close_cb_called);
+  ASSERT_OK(cl_recv_cb_called);
+  ASSERT_OK(sv_send_cb_called);
 
   /* run the loop till all events are processed */
   uv_run(uv_default_loop(), UV_RUN_DEFAULT);
 
-  ASSERT(cl_recv_cb_called == 1);
-  ASSERT(sv_send_cb_called == 1);
-  ASSERT(close_cb_called == 2);
+  if (darwin_ebusy_errors > 0)
+    RETURN_SKIP("Unexplained macOS IP_ADD_SOURCE_MEMBERSHIP EBUSY bug");
 
-  MAKE_VALGRIND_HAPPY();
+  ASSERT_EQ(2, cl_recv_cb_called);
+  ASSERT_EQ(2, sv_send_cb_called);
+  ASSERT_EQ(2, close_cb_called);
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }

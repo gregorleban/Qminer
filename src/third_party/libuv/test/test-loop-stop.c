@@ -29,18 +29,16 @@ static int timer_called = 0;
 static int num_ticks = 10;
 
 
-static void prepare_cb(uv_prepare_t* handle, int status) {
-  ASSERT(handle == &prepare_handle);
-  ASSERT(status == 0);
+static void prepare_cb(uv_prepare_t* handle) {
+  ASSERT_PTR_EQ(handle, &prepare_handle);
   prepare_called++;
   if (prepare_called == num_ticks)
     uv_prepare_stop(handle);
 }
 
 
-static void timer_cb(uv_timer_t* handle, int status) {
-  ASSERT(handle == &timer_handle);
-  ASSERT(status == 0);
+static void timer_cb(uv_timer_t* handle) {
+  ASSERT_PTR_EQ(handle, &timer_handle);
   timer_called++;
   if (timer_called == 1)
     uv_stop(uv_default_loop());
@@ -57,17 +55,29 @@ TEST_IMPL(loop_stop) {
   uv_timer_start(&timer_handle, timer_cb, 100, 100);
 
   r = uv_run(uv_default_loop(), UV_RUN_DEFAULT);
-  ASSERT(r != 0);
-  ASSERT(timer_called == 1);
+  ASSERT(r);
+  ASSERT_EQ(1, timer_called);
 
   r = uv_run(uv_default_loop(), UV_RUN_NOWAIT);
-  ASSERT(r != 0);
-  ASSERT(prepare_called == 3);
+  ASSERT(r);
+  ASSERT_GT(prepare_called, 1);
 
   r = uv_run(uv_default_loop(), UV_RUN_DEFAULT);
-  ASSERT(r == 0);
-  ASSERT(timer_called == 10);
-  ASSERT(prepare_called == 10);
+  ASSERT_OK(r);
+  ASSERT_EQ(10, timer_called);
+  ASSERT_EQ(10, prepare_called);
 
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
+
+
+TEST_IMPL(loop_stop_before_run) {
+  ASSERT_OK(uv_timer_init(uv_default_loop(), &timer_handle));
+  ASSERT_OK(uv_timer_start(&timer_handle, (uv_timer_cb) abort, 0, 0));
+  uv_stop(uv_default_loop());
+  ASSERT_NE(0, uv_run(uv_default_loop(), UV_RUN_DEFAULT));
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }

@@ -1,122 +1,355 @@
-# libuv
+![libuv][libuv_banner]
 
-libuv is a new platform layer for Node. Its purpose is to abstract IOCP on
-Windows and epoll/kqueue/event ports/etc. on Unix systems. We intend to
-eventually contain all platform differences in this library.
+## Overview
 
-http://nodejs.org/
+libuv is a multi-platform support library with a focus on asynchronous I/O. It
+was primarily developed for use by [Node.js][], but it's also
+used by [Luvit](http://luvit.io/), [Julia](http://julialang.org/),
+[uvloop](https://github.com/MagicStack/uvloop), and [others](https://github.com/libuv/libuv/blob/v1.x/LINKS.md).
 
-## Features
+## Feature highlights
 
- * Non-blocking TCP sockets
+ * Full-featured event loop backed by epoll, kqueue, IOCP, event ports.
 
- * Non-blocking named pipes
+ * Asynchronous TCP and UDP sockets
 
- * UDP
+ * Asynchronous DNS resolution
 
- * Timers
+ * Asynchronous file and file system operations
 
- * Child process spawning
+ * File system events
 
- * Asynchronous DNS via `uv_getaddrinfo`.
+ * ANSI escape code controlled TTY
 
- * Asynchronous file system APIs `uv_fs_*`
+ * IPC with socket sharing, using Unix domain sockets or named pipes (Windows)
 
- * High resolution time `uv_hrtime`
+ * Child processes
 
- * Current executable path look up `uv_exepath`
+ * Thread pool
 
- * Thread pool scheduling `uv_queue_work`
+ * Signal handling
 
- * ANSI escape code controlled TTY `uv_tty_t`
+ * High resolution clock
 
- * File system events Currently supports inotify, `ReadDirectoryChangesW`
-   and kqueue. Event ports in the near future.
-   `uv_fs_event_t`
+ * Threading and synchronization primitives
 
- * IPC and socket sharing between processes `uv_write2`
+## Versioning
+
+Starting with version 1.0.0 libuv follows the [semantic versioning](http://semver.org/)
+scheme. The API change and backwards compatibility rules are those indicated by
+SemVer. libuv will keep a stable ABI across major releases.
+
+The ABI/API changes can be tracked [here](http://abi-laboratory.pro/tracker/timeline/libuv/).
+
+## Licensing
+
+libuv is licensed under the MIT license. Check the [LICENSE](LICENSE) and
+[LICENSE-extra](LICENSE-extra) files.
+
+The documentation is licensed under the CC BY 4.0 license. Check the
+[LICENSE-docs file](LICENSE-docs).
 
 ## Community
 
+ * [Support](https://github.com/libuv/libuv/discussions)
  * [Mailing list](http://groups.google.com/group/libuv)
 
 ## Documentation
 
- * [include/uv.h](https://github.com/joyent/libuv/blob/master/include/uv.h)
-   &mdash; API documentation in the form of detailed header comments.
- * [An Introduction to libuv](http://nikhilm.github.com/uvbook/) &mdash; An
-   overview of libuv with tutorials.
- * [LXJS 2012 talk](http://www.youtube.com/watch?v=nGn60vDSxQ4) - High-level
-   introductory talk about libuv.
- * [Tests and benchmarks](https://github.com/joyent/libuv/tree/master/test) -
-   API specification and usage examples.
+### Official documentation
+
+Located in the docs/ subdirectory. It uses the [Sphinx](http://sphinx-doc.org/)
+framework, which makes it possible to build the documentation in multiple
+formats.
+
+Show different supported building options:
+
+```bash
+$ make help
+```
+
+Build documentation as HTML:
+
+```bash
+$ make html
+```
+
+Build documentation as HTML and live reload it when it changes (this requires
+sphinx-autobuild to be installed and is only supported on Unix):
+
+```bash
+$ make livehtml
+```
+
+Build documentation as man pages:
+
+```bash
+$ make man
+```
+
+Build documentation as ePub:
+
+```bash
+$ make epub
+```
+
+NOTE: Windows users need to use make.bat instead of plain 'make'.
+
+Documentation can be browsed online [here](http://docs.libuv.org).
+
+The [tests and benchmarks](https://github.com/libuv/libuv/tree/master/test)
+also serve as API specification and usage examples.
+
+### Other resources
+
+ * [LXJS 2012 talk](http://www.youtube.com/watch?v=nGn60vDSxQ4)
+   &mdash; High-level introductory talk about libuv.
+ * [libuv-dox](https://github.com/thlorenz/libuv-dox)
+   &mdash; Documenting types and methods of libuv, mostly by reading uv.h.
+ * [learnuv](https://github.com/thlorenz/learnuv)
+   &mdash; Learn uv for fun and profit, a self guided workshop to libuv.
+
+These resources are not handled by libuv maintainers and might be out of
+date. Please verify it before opening new issues.
+
+## Downloading
+
+libuv can be downloaded either from the
+[GitHub repository](https://github.com/libuv/libuv)
+or from the [downloads site](http://dist.libuv.org/dist/).
+
+Before verifying the git tags or signature files, importing the relevant keys
+is necessary. Key IDs are listed in the
+[MAINTAINERS](https://github.com/libuv/libuv/blob/master/MAINTAINERS.md)
+file, but are also available as git blob objects for easier use.
+
+Importing a key the usual way:
+
+```bash
+$ gpg --keyserver pool.sks-keyservers.net --recv-keys AE9BC059
+```
+
+Importing a key from a git blob object:
+
+```bash
+$ git show pubkey-saghul | gpg --import
+```
+
+### Verifying releases
+
+Git tags are signed with the developer's key, they can be verified as follows:
+
+```bash
+$ git verify-tag v1.6.1
+```
+
+Starting with libuv 1.7.0, the tarballs stored in the
+[downloads site](http://dist.libuv.org/dist/) are signed and an accompanying
+signature file sit alongside each. Once both the release tarball and the
+signature file are downloaded, the file can be verified as follows:
+
+```bash
+$ gpg --verify libuv-1.7.0.tar.gz.sign
+```
 
 ## Build Instructions
 
-For GCC (including MinGW) there are two methods building: via normal
-makefiles or via GYP. GYP is a meta-build system which can generate MSVS,
-Makefile, and XCode backends. It is best used for integration into other
-projects.  The old system is using plain GNU Makefiles.
+For UNIX-like platforms, including macOS, there are two build methods:
+autotools or [CMake][].
 
-To build via Makefile simply execute:
+For Windows, [CMake][] is the only supported build method and has the
+following prerequisites:
 
-    make
+<details>
 
-MinGW users should run this instead:
+* One of:
+  * [Visual C++ Build Tools][]
+  * [Visual Studio 2015 Update 3][], all editions
+    including the Community edition (remember to select
+    "Common Tools for Visual C++ 2015" feature during installation).
+  * [Visual Studio 2017][], any edition (including the Build Tools SKU).
+    **Required Components:** "MSbuild", "VC++ 2017 v141 toolset" and one of the
+    Windows SDKs (10 or 8.1).
+* Basic Unix tools required for some tests,
+  [Git for Windows][] includes Git Bash
+  and tools which can be included in the global `PATH`.
 
-    make PLATFORM=mingw
+</details>
 
-Out-of-tree builds are supported:
+To build with autotools:
 
-    make builddir_name=/path/to/builddir
+```bash
+$ sh autogen.sh
+$ ./configure
+$ make
+$ make check
+$ make install
+```
 
-To build with Visual Studio run the vcbuild.bat file which will
-checkout the GYP code into build/gyp and generate the uv.sln and
-related files.
+To build with [CMake][]:
 
-Windows users can also build from cmd-line using msbuild.  This is
-done by running vcbuild.bat from Visual Studio command prompt.
+```bash
+$ cmake -B build -DBUILD_TESTING=ON         # generate project with tests
+$ cmake --build build                       # add `-j <n>` with cmake >= 3.12
 
-To have GYP generate build script for another system, make sure that
-you have Python 2.6 or 2.7 installed, then checkout GYP into the
-project tree manually:
+# Run tests:
+$ (cd build && ctest -C Debug --output-on-failure)
 
-    mkdir -p build
-    svn co http://gyp.googlecode.com/svn/trunk build/gyp
+# Or manually run tests:
+$ build/uv_run_tests                        # shared library build
+$ build/uv_run_tests_a                      # static library build
+```
 
-Or:
+To cross-compile with [CMake][] (unsupported but generally works):
 
-    mkdir -p build
-    git clone https://git.chromium.org/external/gyp.git build/gyp
+```bash
+$ cmake ../..                 \
+  -DCMAKE_SYSTEM_NAME=Windows \
+  -DCMAKE_SYSTEM_VERSION=6.1  \
+  -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc
+```
 
-Unix users run
+### Install with Homebrew
 
-    ./gyp_uv -f make
-    make -C out
+```bash
+$ brew install --HEAD libuv
+```
 
-Macintosh users run
+Note to macOS users:
 
-    ./gyp_uv -f xcode
-    xcodebuild -project uv.xcodeproj -configuration Release -target All
+Make sure that you specify the architecture you wish to build for in the
+"ARCHS" flag. You can specify more than one by delimiting with a space
+(e.g. "x86_64 i386").
 
-Note for UNIX users: compile your project with `-D_LARGEFILE_SOURCE` and
-`-D_FILE_OFFSET_BITS=64`. GYP builds take care of that automatically.
+### Install with vcpkg
 
-Note for Linux users: compile your project with `-D_GNU_SOURCE` when you
-include `uv.h`. GYP builds take care of that automatically. If you use
-autotools, add a `AC_GNU_SOURCE` declaration to your `configure.ac`.
+```bash
+$ git clone https://github.com/microsoft/vcpkg.git
+$ ./bootstrap-vcpkg.bat # for powershell
+$ ./bootstrap-vcpkg.sh # for bash
+$ ./vcpkg install libuv
+```
+
+### Install with Conan
+
+You can install pre-built binaries for libuv or build it from source using [Conan](https://conan.io/). Use the following command:
+
+```bash
+conan install --requires="libuv/[*]" --build=missing
+```
+
+The libuv Conan recipe is kept up to date by Conan maintainers and community contributors.
+If the version is out of date, please [create an issue or pull request](https://github.com/conan-io/conan-center-index) on the ConanCenterIndex repository.
+
+
+### Running tests
+
+Some tests are timing sensitive. Relaxing test timeouts may be necessary
+on slow or overloaded machines:
+
+```bash
+$ env UV_TEST_TIMEOUT_MULTIPLIER=2 build/uv_run_tests # 10s instead of 5s
+```
+
+#### Run one test
+
+The list of all tests is in `test/test-list.h`.
+
+This invocation will cause the test driver to fork and execute `TEST_NAME` in
+a child process:
+
+```bash
+$ build/uv_run_tests_a TEST_NAME
+```
+
+This invocation will cause the test driver to execute the test in
+the same process:
+
+```bash
+$ build/uv_run_tests_a TEST_NAME TEST_NAME
+```
+
+#### Debugging tools
+
+When running the test from within the test driver process
+(`build/uv_run_tests_a TEST_NAME TEST_NAME`), tools like gdb and valgrind
+work normally.
+
+When running the test from a child of the test driver process
+(`build/uv_run_tests_a TEST_NAME`), use these tools in a fork-aware manner.
+
+##### Fork-aware gdb
+
+Use the [follow-fork-mode](https://sourceware.org/gdb/onlinedocs/gdb/Forks.html) setting:
+
+```
+$ gdb --args build/uv_run_tests_a TEST_NAME
+
+(gdb) set follow-fork-mode child
+...
+```
+
+##### Fork-aware valgrind
+
+Use the `--trace-children=yes` parameter:
+
+```bash
+$ valgrind --trace-children=yes -v --tool=memcheck --leak-check=full --track-origins=yes --leak-resolution=high --show-reachable=yes --log-file=memcheck-%p.log build/uv_run_tests_a TEST_NAME
+```
+
+### Running benchmarks
+
+See the section on running tests.
+The benchmark driver is `./uv_run_benchmarks_a` and the benchmarks are
+listed in `test/benchmark-list.h`.
 
 ## Supported Platforms
 
-Microsoft Windows operating systems since Windows XP SP2. It can be built
-with either Visual Studio or MinGW. Consider using
-[Visual Studio Express 2010][] or later if you do not have a full Visual
-Studio license.
+Check the [SUPPORTED_PLATFORMS file](SUPPORTED_PLATFORMS.md).
 
-Linux 2.6 using the GCC toolchain.
+### `-fno-strict-aliasing`
 
-MacOS using the GCC or XCode toolchain.
+It is recommended to turn on the `-fno-strict-aliasing` compiler flag in
+projects that use libuv. The use of ad hoc "inheritance" in the libuv API
+may not be safe in the presence of compiler optimizations that depend on
+strict aliasing.
 
-Solaris 121 and later using GCC toolchain.
+MSVC does not have an equivalent flag but it also does not appear to need it
+at the time of writing (December 2019.)
 
-[Visual Studio Express 2010]: http://www.microsoft.com/visualstudio/eng/products/visual-studio-2010-express
+### AIX Notes
+
+AIX compilation using IBM XL C/C++ requires version 12.1 or greater.
+
+AIX support for filesystem events requires the non-default IBM `bos.ahafs`
+package to be installed.  This package provides the AIX Event Infrastructure
+that is detected by `autoconf`.
+[IBM documentation](http://www.ibm.com/developerworks/aix/library/au-aix_event_infrastructure/)
+describes the package in more detail.
+
+### z/OS Notes
+
+z/OS compilation requires [ZOSLIB](https://github.com/ibmruntimes/zoslib) to be installed. When building with [CMake][], use the flag `-DZOSLIB_DIR` to specify the path to [ZOSLIB](https://github.com/ibmruntimes/zoslib):
+
+```bash
+$ (cd build && cmake .. -DBUILD_TESTING=ON -DZOSLIB_DIR=/path/to/zoslib)
+$ cmake --build build
+```
+
+z/OS creates System V semaphores and message queues. These persist on the system
+after the process terminates unless the event loop is closed.
+
+Use the `ipcrm` command to manually clear up System V resources.
+
+## Patches
+
+See the [guidelines for contributing][].
+
+[CMake]: https://cmake.org/
+[node.js]: http://nodejs.org/
+[guidelines for contributing]: https://github.com/libuv/libuv/blob/master/CONTRIBUTING.md
+[libuv_banner]: https://raw.githubusercontent.com/libuv/libuv/master/img/banner.png
+[Visual C++ Build Tools]: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+[Visual Studio 2015 Update 3]: https://www.visualstudio.com/vs/older-downloads/
+[Visual Studio 2017]: https://www.visualstudio.com/downloads/
+[Git for Windows]: http://git-scm.com/download/win

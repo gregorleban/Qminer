@@ -41,14 +41,25 @@ TEST_IMPL(hrtime) {
 
     diff = b - a;
 
-    /*  printf("i= %d diff = %llu\n", i, (unsigned long long int) diff); */
-
-    /* The windows Sleep() function has only a resolution of 10-20 ms. */
-    /* Check that the difference between the two hrtime values is somewhat in */
-    /* the range we expect it to be. */
-    ASSERT(diff > (uint64_t) 25 * NANOSEC / MILLISEC);
-    ASSERT(diff < (uint64_t) 80 * NANOSEC / MILLISEC);
+    /* The windows Sleep() function has only a resolution of 10-20 ms. Check
+     * that the difference between the two hrtime values has a reasonable
+     * lower bound.
+     */
+    ASSERT_UINT64_GT(diff, (uint64_t) 25 * NANOSEC / MILLISEC);
     --i;
   }
+  return 0;
+}
+
+
+TEST_IMPL(clock_gettime) {
+  uv_timespec64_t t;
+
+  ASSERT_EQ(UV_EINVAL, uv_clock_gettime(1337, &t));
+  ASSERT_EQ(UV_EFAULT, uv_clock_gettime(1337, NULL));
+  ASSERT_OK(uv_clock_gettime(UV_CLOCK_MONOTONIC, &t));
+  ASSERT_OK(uv_clock_gettime(UV_CLOCK_REALTIME, &t));
+  ASSERT_GT(1682500000000ll, t.tv_sec);  /* 2023-04-26T09:06:40.000Z */
+
   return 0;
 }

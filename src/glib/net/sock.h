@@ -11,7 +11,14 @@
 ClassHdTP(TSock, PSock);
 ClassHdTP(TSockHost, PSockHost);
 typedef struct uv_async_s uv_async_t;
-typedef void (*uv_async_cb)(uv_async_t* handle, int status);
+typedef void (*uv_async_cb)(uv_async_t* handle);
+
+// system libraries required by libuv 1.x on windows (the rest are either linked by
+// default or already referenced in net.cpp: psapi, ws2_32, iphlpapi)
+#ifdef _WIN32
+#pragma comment(lib, "DbgHelp.lib")
+#pragma comment(lib, "Userenv.lib")
+#endif
 
 
 /////////////////////////////////////////////////
@@ -22,6 +29,9 @@ public:
 	static void Run();
 	// stop the loop
 	static void Stop();
+	// run a single non-blocking iteration of the loop. call after Stop() during shutdown
+	// so that close callbacks of stopped handles (timers, sockets) get processed
+	static void RunPending();
 	// reset the loop
 	static void Reset();
 	// increase reference count so it doesn't stop the loop when nothing to od
