@@ -5738,6 +5738,26 @@ void TIndex::GetPosItemV(const int& KeyId, const TUInt64& WordId, TVec<TQmGixIte
     GixPos->GetItemV(TQmGixKey(KeyId, WordId), ItemPosV);
 }
 
+// return the first position >= StartN in ItemV (sorted by record id) where GetRecId() >= RecId, or ItemV.Len()
+// uses exponential (galloping) search so that the cost depends on the distance to the target and not on ItemV.Len()
+static int GallopToRecIdPos(const TVec<TIndex::TQmGixItemPos>& ItemV, const uint64& RecId, const int& StartN) {
+    const int Len = ItemV.Len();
+    int Lo = StartN;
+    int Cur = StartN;
+    int Step = 1;
+    while (Cur < Len && ItemV[Cur].GetRecId() < RecId) {
+        Lo = Cur + 1;
+        Cur += Step;
+        Step *= 2;
+    }
+    int Hi = (Cur < Len) ? Cur : Len;
+    while (Lo < Hi) {
+        const int Mid = Lo + (Hi - Lo) / 2;
+        if (ItemV[Mid].GetRecId() < RecId) { Lo = Mid + 1; } else { Hi = Mid; }
+    }
+    return Lo;
+}
+
 void TIndex::DoQueryPos(const int& KeyId, const TUInt64V& WordIdV,
         const TIntV& MaxDiffV, TUInt64IntKdV& RecIdFqV) const {
 
@@ -5764,31 +5784,43 @@ void TIndex::DoQueryPos(const int& KeyId, const TUInt64V& WordIdV,
         TVec<TQmGixItemPos> WordItemV;
         GixPos->GetItemV(TQmGixKey(KeyId, WordIdV[WordN]), WordItemV);
         Assert(WordItemV.IsSorted());
-        // intersect the lists
-        TVec<TQmGixItemPos> _ItemV; int CurrentItemN = 0;
-        for (const TQmGixItemPos& WordItem : WordItemV) {
-            // find next matching items
-            while (CurrentItemN < CurrentItemV.Len() && CurrentItemV[CurrentItemN].GetRecId() < WordItem.GetRecId()) { CurrentItemN++; }
-            // break if we are at the end of running candidate vector
-            if (CurrentItemN == CurrentItemV.Len()) { break; }
-            // skip if we iterated beyond WordItem
-            if (WordItem.GetRecId() < CurrentItemV[CurrentItemN].GetRecId()) { continue; }
-            // if all checks pass, we have a matching positions
-            // since we can have multiple items with same rec id we have to go through all of them. Because next WordItem could have the same recid
-            // we need to keep the CurrentItemN intact and increase a substitute variable
-            int SameRecIdN = CurrentItemN;
-            while (SameRecIdN < CurrentItemV.Len() && CurrentItemV[SameRecIdN].GetRecId() == WordItem.GetRecId()) {
-                const TQmGixItemPos& CurrentItem = CurrentItemV[SameRecIdN];
-                Assert(CurrentItem.GetRecId() == WordItem.GetRecId());
-                // find any intersections of words
-                TQmGixItemPos _Item = CurrentItem.Intersect(WordItem, MaxDiff, MinFoundDist);
-                // keep if there is intersection
-                if (!_Item.Empty()) { _ItemV.Add(_Item); }
-                SameRecIdN++;
+        // intersect the lists. both vectors are sorted by record id so we merge them run by run, using
+        // galloping search to skip the long stretches of the (typically much longer) word vector that
+        // can't match the remaining candidates
+        TVec<TQmGixItemPos> _ItemV;
+        const int CurLen = CurrentItemV.Len();
+        const int WordLen = WordItemV.Len();
+        int CurN = 0, WordItemN = 0;
+        while (CurN < CurLen && WordItemN < WordLen) {
+            const uint64 CurRecId = CurrentItemV[CurN].GetRecId();
+            const uint64 WordRecId = WordItemV[WordItemN].GetRecId();
+            if (WordRecId < CurRecId) {
+                WordItemN = GallopToRecIdPos(WordItemV, CurRecId, WordItemN);
+            }
+            else if (CurRecId < WordRecId) {
+                CurN = GallopToRecIdPos(CurrentItemV, WordRecId, CurN);
+            }
+            else {
+                // matching record: several items can share the record id (positions are split over multiple
+                // items) so intersect each pair of items from the two runs
+                int WordRunEnd = WordItemN;
+                while (WordRunEnd < WordLen && WordItemV[WordRunEnd].GetRecId() == CurRecId) { WordRunEnd++; }
+                int CurRunEnd = CurN;
+                while (CurRunEnd < CurLen && CurrentItemV[CurRunEnd].GetRecId() == CurRecId) { CurRunEnd++; }
+                for (int W = WordItemN; W < WordRunEnd; W++) {
+                    for (int C = CurN; C < CurRunEnd; C++) {
+                        // find any intersections of words
+                        TQmGixItemPos _Item = CurrentItemV[C].Intersect(WordItemV[W], MaxDiff, MinFoundDist);
+                        // keep if there is intersection
+                        if (!_Item.Empty()) { _ItemV.Add(_Item); }
+                    }
+                }
+                WordItemN = WordRunEnd;
+                CurN = CurRunEnd;
             }
         }
-        // update running candidate vector
-        CurrentItemV = _ItemV;
+        // update running candidate vector (take over the data, no need to copy it)
+        CurrentItemV.MoveFrom(_ItemV);
     }
 
     // prepare final results by getting record ids that survived the intersecting.
