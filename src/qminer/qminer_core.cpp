@@ -6085,14 +6085,30 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     QmAssertR(!IsReadOnly(), "Cannot edit read-only index!");
     if (KeyIdSet.Empty() || RecIdSet.Empty()) { return; }
 
+    // find the smallest and largest record id we are about to delete. the gix posting lists are sorted
+    // by record id and split into child vectors, each of which stores its own [min, max] record id. we
+    // only need to load and scan the child vectors that overlap [MinDelRecId, MaxDelRecId] - usually the
+    // deleted records are the oldest (smallest ids) sitting in the first child vector(s), so this avoids
+    // loading the bulk of each (potentially huge) posting list from disk.
+    uint64 MinDelRecId = TUInt64::Mx;
+    uint64 MaxDelRecId = 0;
+    for (int RecKeyId = RecIdSet.FFirstKeyId(); RecIdSet.FNextKeyId(RecKeyId); ) {
+        const uint64 RecId = RecIdSet.GetKey(RecKeyId);
+        if (RecId < MinDelRecId) { MinDelRecId = RecId; }
+        if (RecId > MaxDelRecId) { MaxDelRecId = RecId; }
+    }
+    // the upper bound is exclusive, so use MaxDelRecId + 1 (record ids never reach TUInt64::Mx)
+    const uint64 HiDelRecId = MaxDelRecId + 1;
+
     if (OnProgress) { OnProgress(0, "1/5 removing from GixFull"); }
     if (!GixFull.Empty()) {
+        const TQmGixItemFull LoItem(MinDelRecId, 0), HiItem(HiDelRecId, 0);
         int GixKeyId = GixFull->FFirstKeyId();
         while (GixFull->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixFull->GetKey(GixKeyId);
             if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
             TVec<TQmGixItemFull> ItemV;
-            GixFull->GetItemV(Key, ItemV);
+            GixFull->GetItemVInRange(Key, LoItem, HiItem, ItemV);
             for (int N = 0; N < ItemV.Len(); N++) {
                 if (RecIdSet.IsKey(ItemV[N].Key)) {
                     GixFull->DelItem(Key, ItemV[N]);
@@ -6102,12 +6118,13 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     }
     if (OnProgress) { OnProgress(0, "2/5 removing from GixSmall"); }
     if (!GixSmall.Empty()) {
+        const TQmGixItemSmall LoItem((uint)MinDelRecId, 0), HiItem((uint)HiDelRecId, 0);
         int GixKeyId = GixSmall->FFirstKeyId();
         while (GixSmall->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixSmall->GetKey(GixKeyId);
             if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
             TVec<TQmGixItemSmall> ItemV;
-            GixSmall->GetItemV(Key, ItemV);
+            GixSmall->GetItemVInRange(Key, LoItem, HiItem, ItemV);
             for (int N = 0; N < ItemV.Len(); N++) {
                 if (RecIdSet.IsKey((uint64)ItemV[N].Key)) {
                     GixSmall->DelItem(Key, ItemV[N]);
@@ -6117,12 +6134,13 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     }
     if (OnProgress) { OnProgress(0, "3/5 removing from GixTiny"); }
     if (!GixTiny.Empty()) {
+        const TQmGixItemTiny LoItem((uint)MinDelRecId), HiItem((uint)HiDelRecId);
         int GixKeyId = GixTiny->FFirstKeyId();
         while (GixTiny->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixTiny->GetKey(GixKeyId);
             if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
             TVec<TQmGixItemTiny> ItemV;
-            GixTiny->GetItemV(Key, ItemV);
+            GixTiny->GetItemVInRange(Key, LoItem, HiItem, ItemV);
             for (int N = 0; N < ItemV.Len(); N++) {
                 if (RecIdSet.IsKey((uint64)ItemV[N])) {
                     GixTiny->DelItem(Key, ItemV[N]);
@@ -6132,12 +6150,13 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     }
     if (OnProgress) { OnProgress(0, "4/5 removing from GixPos"); }
     if (!GixPos.Empty()) {
+        const TQmGixItemPos LoItem(MinDelRecId), HiItem(HiDelRecId);
         int GixKeyId = GixPos->FFirstKeyId();
         while (GixPos->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixPos->GetKey(GixKeyId);
             if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
             TVec<TQmGixItemPos> ItemV;
-            GixPos->GetItemV(Key, ItemV);
+            GixPos->GetItemVInRange(Key, LoItem, HiItem, ItemV);
             for (int N = 0; N < ItemV.Len(); N++) {
                 if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) {
                     GixPos->DelItem(Key, ItemV[N]);

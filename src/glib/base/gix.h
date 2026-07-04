@@ -203,6 +203,12 @@ public:
     const TItem& GetItem(const int& ItemN) const;
     /// Get items into vector
     void GetItemV(TVec<TItem>& _ItemV);
+    /// Like GetItemV, but only collects items from child vectors whose stored [MinItem, MaxItem]
+    /// range overlaps the half-open query range [MinItem, MaxItem). Children that lie entirely
+    /// outside the range are skipped without being loaded from disk (they are the expensive part).
+    /// The working buffer is always included. Relies only on the per-child min/max metadata, so it
+    /// is correct regardless of whether children overlap each other.
+    void GetItemVInRange(const TItem& MinItem, const TItem& MaxItem, TVec<TItem>& _ItemV);
     /// Go over all children and working buffer and pass it to HandleItemV function
     template <typename THandler> void GetItemV(THandler& Handler);
     /// Delete specified item from this itemset
@@ -385,6 +391,9 @@ public:
     PGixItemSet GetItemSet(const TBlobPt& Pt) const;
     /// Get items for given key
     void GetItemV(const TKey& Key, TVec<TItem>& ItemV) const;
+    /// Like GetItemV, but only returns items whose value lies in the half-open range [MinItem, MaxItem).
+    /// Uses per-child min/max metadata to avoid loading child vectors that fall entirely outside the range.
+    void GetItemVInRange(const TKey& Key, const TItem& MinItem, const TItem& MaxItem, TVec<TItem>& ItemV) const;
     /// Go over all children and working buffer and pass it to HandleItemV function
     template <typename THandler> void GetItemV(const TKey& Key, THandler& Handler) const;
     /// for storing item sets from cache to blob

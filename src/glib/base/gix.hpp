@@ -397,6 +397,25 @@ void TGixItemSet<TKey, TItem>::GetItemV(TVec<TItem>& _ItemV) {
 }
 
 template <class TKey, class TItem>
+void TGixItemSet<TKey, TItem>::GetItemVInRange(const TItem& MinItem, const TItem& MaxItem, TVec<TItem>& _ItemV) {
+    // collect items only from child vectors whose stored [MinItem, MaxItem] range overlaps the
+    // half-open query range [MinItem, MaxItem). Children fully outside the range are not loaded.
+    if (ChildInfoV.Len() > 0) {
+        for (int i = 0; i < ChildInfoV.Len(); i++) {
+            // skip children that lie entirely below the range (their largest item is < MinItem)
+            if (ChildInfoV[i].MaxItem < MinItem) { continue; }
+            // skip children that lie entirely at or above the (exclusive) upper bound
+            if (!(ChildInfoV[i].MinItem < MaxItem)) { continue; }
+            LoadChildVector(i);
+            _ItemV.AddV(ChildV[i]);
+        }
+    }
+    // the working buffer is small (bounded by the split length) and may hold recently added items
+    // with arbitrary values, so always include it
+    _ItemV.AddV(ItemV);
+}
+
+template <class TKey, class TItem>
 template <typename THandler>
 void TGixItemSet<TKey, TItem>::GetItemV(THandler& Handler) {
     if (ChildInfoV.Len() > 0) {
@@ -706,6 +725,15 @@ void TGix<TKey, TItem>::GetItemV(const TKey& Key, TVec<TItem>& ItemV) const {
     ItemSet->Def();
     // get the items for the key
     return ItemSet->GetItemV(ItemV);
+}
+
+template <class TKey, class TItem>
+void TGix<TKey, TItem>::GetItemVInRange(const TKey& Key, const TItem& MinItem, const TItem& MaxItem, TVec<TItem>& ItemV) const {
+    PGixItemSet ItemSet = GetItemSet(Key);
+    // first call Def() so that we can process some pending actions (like deletes) first
+    ItemSet->Def();
+    // get only the items that fall within the requested range
+    ItemSet->GetItemVInRange(MinItem, MaxItem, ItemV);
 }
 
 template <class TKey, class TItem>
