@@ -28,6 +28,13 @@ uint64 TGixItemSet<TKey, TItem>::TChildInfo::GetMemUsed() const {
 }
 
 template <class TKey, class TItem>
+void TGixItemSet<TKey, TItem>::ResolveSplitLen() {
+    SplitLen = Gix->GetSplitLen(ItemSetKey);
+    SplitLenMin = Gix->GetSplitLenMin(ItemSetKey);
+    SplitLenMax = Gix->GetSplitLenMax(ItemSetKey);
+}
+
+template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::LoadChildVector(const int& ChildN) const {
     if (!ChildInfoV[ChildN].LoadedP) {
         // load child vector from disk
@@ -56,10 +63,10 @@ void TGixItemSet<TKey, TItem>::RecalcTotalCnt() {
 template <class TKey, class TItem>
 int TGixItemSet<TKey, TItem>::FirstDirtyChild() {
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
-        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len < Gix->GetSplitLenMin()) {
+        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len < SplitLenMin) {
             return ChildN;
         }
-        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len > Gix->GetSplitLenMax()) {
+        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len > SplitLenMax) {
             return ChildN;
         }
     }
@@ -75,13 +82,13 @@ int TGixItemSet<TKey, TItem>::GetFirstChildToMerge() {
             continue;
         }
         // if child is not out of the size boundaries it also doesn't need to be merged
-        if (ChildInfoV[ChildN].Len >= Gix->GetSplitLenMin() && ChildInfoV[ChildN].Len <= Gix->GetSplitLenMax()) {
+        if (ChildInfoV[ChildN].Len >= SplitLenMin && ChildInfoV[ChildN].Len <= SplitLenMax) {
             continue;
         }
         // for the first child we might allow it to be extra short, without need for merge
         // when removing oldest items, the first vector will be becoming shorter and shorter
         // and will be removed completely once empty
-        if (ChildN == 0 && Gix->CanFirstChildBeUnfilled() && ChildInfoV[ChildN].Len <= Gix->GetSplitLenMax()) {
+        if (ChildN == 0 && Gix->CanFirstChildBeUnfilled() && ChildInfoV[ChildN].Len <= SplitLenMax) {
             continue;
         }
         // otherwise, yes, it needs to be merged
@@ -93,7 +100,6 @@ int TGixItemSet<TKey, TItem>::GetFirstChildToMerge() {
 template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::PushWorkBufferToChildren() {
     // push work-buffer into children array
-    int SplitLen = Gix->GetSplitLen();
     while (ItemV.Len() >= SplitLen) {
         // create a vector of SplitLen items
         TVec<TItem> SplitItemV;
@@ -179,9 +185,9 @@ void TGixItemSet<TKey, TItem>::PushMergedDataBackToChildren(
     int Remaining = MergedItems.Len() - MergedItemN;
     int ChildN = FirstChildToMerge;
     while (MergedItemN < MergedItems.Len()) {
-        if (ChildN < ChildInfoV.Len() && Remaining > Gix->GetSplitLen()) {
+        if (ChildN < ChildInfoV.Len() && Remaining > SplitLen) {
             ChildV[ChildN].Clr();
-            MergedItems.GetSubValV(MergedItemN, MergedItemN + Gix->GetSplitLen() - 1, ChildV[ChildN]);
+            MergedItems.GetSubValV(MergedItemN, MergedItemN + SplitLen - 1, ChildV[ChildN]);
             ChildInfoV[ChildN].Len = ChildV[ChildN].Len();
             ChildInfoV[ChildN].MinItem = ChildV[ChildN][0];
             ChildInfoV[ChildN].MaxItem = ChildV[ChildN].Last();
@@ -262,6 +268,7 @@ template <class TKey, class TItem>
 TGixItemSet<TKey, TItem>::TGixItemSet(TSIn& SIn, const TGix<TKey, TItem>* _Gix):
     ItemSetKey(SIn), ItemV(SIn), ChildInfoV(SIn), MergedP(true), DirtyP(false), Gix(_Gix) {
 
+    ResolveSplitLen();
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
         ChildV.Add(TVec<TItem>());
     };
@@ -643,7 +650,7 @@ TGix<TKey, TItem>::TGix(const TStr& Nm, const TStr& FPath, const TFAccess& _Acce
     const bool _FirstChildBeUnfilledP, const int _SplitLenMin, const int _SplitLenMax) :
         Access(_Access), ItemHandler(_ItemHandler), ItemSetCache(CacheSize, 1000000, GetVoidThis()),
         SplitLen(_SplitLen), SplitLenMin(_SplitLenMin), SplitLenMax(_SplitLenMax),
-        FirstChildBeUnfilledP(_FirstChildBeUnfilledP) {
+        FirstChildBeUnfilledP(_FirstChildBeUnfilledP), SplitLenProvider(NULL) {
 
     // prepare filenames of the GIX datastore
     GixFNm = TStr::GetNrFPath(FPath) + Nm.GetFBase() + ".Gix";

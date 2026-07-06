@@ -3129,6 +3129,24 @@ private:
     /// Expression for executing gix queries for tiny records
     typedef TGixExpItem<TQmGixKey, TQmGixItemTiny, TQmGixItemFull> TQmGixExpItemTiny;
 
+    /// Per-key split length overrides for the inverted indices.
+    /// Since a gix key is a (KeyId, WordId) pair, all words of one index key
+    /// share the same split length.
+    class TQmGixSplitLenProvider : public TGixSplitLenProvider<TQmGixKey> {
+    private:
+        /// Mapping from index key id to its split length
+        TIntH KeyIdSplitLenH;
+    public:
+        /// Return split length for given gix key, or -1 to use the gix default
+        int GetSplitLen(const TQmGixKey& Key) const {
+            TInt KeySplitLen;
+            if (KeyIdSplitLenH.IsKeyGetDat(Key.Val1, KeySplitLen)) { return KeySplitLen; }
+            return -1;
+        }
+        /// Set split length override for given index key
+        void PutKeySplitLen(const int& KeyId, const int& SplitLen) { KeyIdSplitLenH.AddDat(KeyId, SplitLen); }
+    };
+
     /// Giving pretty names to GIX keys when printing debug statistics
     class TQmGixKeyStr : public TGixKeyStr<TQmGixKey> {
     private:
@@ -3304,6 +3322,9 @@ private:
     const TGixMerger<TQmGixKey, TQmGixItemTiny, TQmGixItemFull>* MergerTiny;
     /// Inverted Index Default Merger Position
     const TGixMerger<TQmGixKey, TQmGixItemPos, TQmGixItemPos>* MergerPos;
+
+    /// Per-key split length overrides, shared by all gix instances
+    TQmGixSplitLenProvider* SplitLenProvider;
 
     /// Determines which Gix should be used for given KeyId
     TIndexKeyGixType GetGixType(const int& KeyId) const { return IndexVoc->GetKey(KeyId).GetGixType(); }
@@ -3498,6 +3519,10 @@ public:
     TGixStats GetGixStats(const bool& RefreshP = true) const;
     /// Get split length of inner Gix
     int GetSplitLen() const;
+    /// Set per-key split length override for given index key. Split lengths are a runtime
+    /// parameter (not persisted), so this must be called each time the index is opened,
+    /// before any data is indexed or queried.
+    void PutKeySplitLen(const int& KeyId, const int& SplitLen);
     /// reset blob stats
     void ResetStats();
 
@@ -3965,6 +3990,11 @@ public:
     int NewFieldIndexKey(const TWPt<TStore>& Store, const TStr& KeyNm, const int& FieldId,
         const int& WordVocId, const TIndexKeyType& Type, const TIndexKeyGixType& GixType,
         const TIndexKeySortType& SortType);
+
+    /// Set per-key split length override for given index key (for index joins the key
+    /// name is "Join" + join name). Split lengths are a runtime parameter (not persisted),
+    /// so this must be called each time the base is opened, before indexing or querying.
+    void PutIndexKeySplitLen(const TStr& StoreNm, const TStr& KeyNm, const int& SplitLen);
 
     /// Add new record to a give store
     uint64 AddRec(const TWPt<TStore>& Store, const PJsonVal& RecVal);

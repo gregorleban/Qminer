@@ -5674,8 +5674,53 @@ TVec<TWPt<TStore> > CreateStoresFromSchema(const TWPt<TBase>& Base, const PJsonV
         }
     }
 
+    // apply per-key split length overrides from the schema
+    ApplyIndexKeySplitLen(Base, SchemaVal);
+
     // done
     return NewStoreV;
+}
+
+void ApplyIndexKeySplitLen(const TWPt<TBase>& Base, const PJsonVal& SchemaVal) {
+    // the schema can be a single store definition or an array of them
+    PJsonVal SchemaArrVal = SchemaVal;
+    if (!SchemaVal->IsArr()) {
+        TJsonValV StoreValV; StoreValV.Add(SchemaVal);
+        SchemaArrVal = TJsonVal::NewArr(StoreValV);
+    }
+    for (int SchemaN = 0; SchemaN < SchemaArrVal->GetArrVals(); SchemaN++) {
+        PJsonVal StoreVal = SchemaArrVal->GetArrVal(SchemaN);
+        QmAssertR(StoreVal->IsObjKey("name"), "Missing store name in schema definition");
+        const TStr StoreNm = StoreVal->GetObjStr("name");
+        // index keys: key name defaults to the indexed field name
+        if (StoreVal->IsObjKey("keys")) {
+            PJsonVal KeyDefsVal = StoreVal->GetObjKey("keys");
+            for (int KeyN = 0; KeyN < KeyDefsVal->GetArrVals(); KeyN++) {
+                PJsonVal KeyVal = KeyDefsVal->GetArrVal(KeyN);
+                const int SplitLen = KeyVal->GetObjInt("splitLen", -1);
+                if (SplitLen > 0) {
+                    const TStr KeyNm = KeyVal->GetObjStr("name", KeyVal->GetObjStr("field", ""));
+                    Base->PutIndexKeySplitLen(StoreNm, KeyNm, SplitLen);
+                    InfoLog("Using split length " + TInt::GetStr(SplitLen) + " for index key " + StoreNm + "." + KeyNm);
+                }
+            }
+        }
+        // index joins: the internal index key is named "Join" + join name
+        if (StoreVal->IsObjKey("joins")) {
+            PJsonVal JoinDefsVal = StoreVal->GetObjKey("joins");
+            for (int JoinN = 0; JoinN < JoinDefsVal->GetArrVals(); JoinN++) {
+                PJsonVal JoinVal = JoinDefsVal->GetArrVal(JoinN);
+                const int SplitLen = JoinVal->GetObjInt("splitLen", -1);
+                if (SplitLen > 0) {
+                    QmAssertR(JoinVal->GetObjStr("type", "index") == "index",
+                        "'splitLen' is only supported on index joins (store " + StoreNm + ")");
+                    const TStr JoinNm = JoinVal->GetObjStr("name");
+                    Base->PutIndexKeySplitLen(StoreNm, "Join" + JoinNm, SplitLen);
+                    InfoLog("Using split length " + TInt::GetStr(SplitLen) + " for join key " + StoreNm + "." + JoinNm);
+                }
+            }
+        }
+    }
 }
 
 ///////////////////////////////

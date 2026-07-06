@@ -5857,25 +5857,31 @@ TIndex::TIndex(const TStr& _IndexFPath, const TFAccess& _Access, const PIndexVoc
 
     IndexFPath = _IndexFPath;
     Access = _Access;
+    // initialize per-key split length overrides, shared by all gix instances
+    SplitLenProvider = new TQmGixSplitLenProvider;
     // initialize full invered index
     SumItemHandlerFull = new TQmGixSumItemHandler<TQmGixItemFull>;
     GixFull = TGix<TQmGixKey, TQmGixItemFull>::New("Index.GixFull",
         IndexFPath, Access, SumItemHandlerFull, CacheSizeFull, SplitLen);
+    GixFull->SetSplitLenProvider(SplitLenProvider);
     SumMergerFull = new TQmGixSumWithFqMerger<TQmGixItemFull>;
     // initialize small inverted index
     SumItemHandlerSmall = new TQmGixSumItemHandler<TQmGixItemSmall>;
     GixSmall = TGix<TQmGixKey, TQmGixItemSmall>::New("Index.GixSmall",
         IndexFPath, Access, SumItemHandlerSmall, CacheSizeSmall, SplitLen);
+    GixSmall->SetSplitLenProvider(SplitLenProvider);
     SumMergerSmall = new TQmGixSumWithFqMerger<TQmGixItemSmall>;
     // initialize tiny inverted index
     ItemHandlerTiny = new TGixDefItemHandler<TQmGixKey, TQmGixItemTiny>;
     GixTiny = TGix<TQmGixKey, TQmGixItemTiny>::New("Index.GixTiny",
         IndexFPath, Access, ItemHandlerTiny, CacheSizeTiny, SplitLen);
+    GixTiny->SetSplitLenProvider(SplitLenProvider);
     MergerTiny = new TQmGixSumWithoutFqMerger<TQmGixItemTiny, TQmGixItemFull>;
     // initialize position inverted index
     ItemHandlerPos = new TGixDefItemHandler<TQmGixKey, TQmGixItemPos>;
     GixPos = TGix<TQmGixKey, TQmGixItemPos>::New("Index.GixPos",
         IndexFPath, Access, ItemHandlerPos, CacheSizePos, SplitLen);
+    GixPos->SetSplitLenProvider(SplitLenProvider);
     MergerPos = new TGixDefMerger<TQmGixKey, TQmGixItemPos, TQmGixItemPos>;
     // initialize location index
     TStr SphereFNm = IndexFPath + "Index.Geo";
@@ -5928,6 +5934,7 @@ TIndex::~TIndex() {
             GixPos.Clr();
             delete ItemHandlerPos;
             delete MergerPos;
+            delete SplitLenProvider;
         }
         {
             TEnv::Logger->OnStatus("Saving and closing location index");
@@ -5950,6 +5957,11 @@ TIndex::~TIndex() {
         TEnv::Logger->OnStatus("Index closed");
     } else {
         TEnv::Logger->OnStatus("Index opened in read-only mode, no saving needed");
+        // release the gix instances before deleting the handlers and split length provider they use
+        GixFull.Clr();
+        GixSmall.Clr();
+        GixTiny.Clr();
+        GixPos.Clr();
         // we still need to delete all item handlers and mergers
         delete SumItemHandlerFull;
         delete SumMergerFull;
@@ -5959,6 +5971,7 @@ TIndex::~TIndex() {
         delete MergerTiny;
         delete ItemHandlerPos;
         delete MergerPos;
+        delete SplitLenProvider;
     }
 }
 
@@ -6650,6 +6663,11 @@ int TIndex::GetSplitLen() const {
     return GixFull->GetSplitLen();
 }
 
+void TIndex::PutKeySplitLen(const int& KeyId, const int& SplitLen) {
+    QmAssertR(SplitLen > 0, "[TIndex::PutKeySplitLen] Split length must be positive");
+    SplitLenProvider->PutKeySplitLen(KeyId, SplitLen);
+}
+
 void TIndex::ResetStats() {
     GixFull->ResetStats();
     GixSmall->ResetStats();
@@ -7335,6 +7353,15 @@ int TBase::NewFieldIndexKey(const TWPt<TStore>& Store, const TStr& KeyNm, const 
     Store->AddFieldKey(FieldId, KeyId);
     // return id of created key
     return KeyId;
+}
+
+void TBase::PutIndexKeySplitLen(const TStr& StoreNm, const TStr& KeyNm, const int& SplitLen) {
+    QmAssertR(IsStoreNm(StoreNm), "[TBase::PutIndexKeySplitLen] Unknown store " + StoreNm);
+    const uint StoreId = GetStoreByStoreNm(StoreNm)->GetStoreId();
+    QmAssertR(IndexVoc->IsKeyNm(StoreId, KeyNm),
+        "[TBase::PutIndexKeySplitLen] Unknown index key " + StoreNm + "." + KeyNm);
+    const int KeyId = IndexVoc->GetKeyId(StoreId, KeyNm);
+    Index->PutKeySplitLen(KeyId, SplitLen);
 }
 
 uint64 TBase::AddRec(const TWPt<TStore>& Store, const PJsonVal& RecVal) {

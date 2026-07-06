@@ -1572,6 +1572,14 @@ TVec<TWPt<TStore> > CreateStoresFromSchema(const TWPt<TBase>& Base, const PJsonV
     bool UsePaged = true);
 
 ///////////////////////////////
+/// Apply per-index-key "splitLen" attributes from a schema definition to the base.
+/// Index keys and index joins can specify "splitLen" to override the default length
+/// of the inverted index child vectors for that key. Since split lengths are a runtime
+/// parameter (not persisted with the index), this must be called each time an existing
+/// base is loaded; CreateStoresFromSchema applies them automatically when creating.
+void ApplyIndexKeySplitLen(const TWPt<TBase>& Base, const PJsonVal& SchemaVal);
+
+///////////////////////////////
 /// Create new base given a schema definition
 TWPt<TBase> NewBase(const TStr& FPath, const PJsonVal& SchemaVal, const uint64& IndexCacheSize,
     const uint64& DefStoreCacheSize, const bool& StrictNameP,
