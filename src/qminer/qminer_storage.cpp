@@ -1179,6 +1179,23 @@ void TRecSerializator::CheckToast(TMOut& SOut, const int& Offset) {
     SOut.AppendBf(&Pt, sizeof(TPgBlobPt));
 }
 
+/// Collect byte offsets (within the serialized record) of the blob pointers of
+/// all TOAST-ed field values. Used when relocating records to a new blob storage.
+void TRecSerializator::GetToastBlobPtOffsets(const TMemBase& RecMem, TIntV& OffsetV) const {
+    OffsetV.Clr();
+    if (!UseToast) { return; }
+    for (int FieldSerialDescN = 0; FieldSerialDescN < FieldSerialDescV.Len(); FieldSerialDescN++) {
+        const TFieldSerialDesc& FieldSerialDesc = FieldSerialDescV[FieldSerialDescN];
+        if (FieldSerialDesc.FixedPartP) { continue; }
+        if (IsFieldNull(RecMem, FieldSerialDesc.FieldId)) { continue; }
+        char* Bf = GetLocationVar(RecMem, FieldSerialDesc);
+        if (*Bf == ToastYes) {
+            // the blob pointer is stored right after the TOAST marker character
+            OffsetV.Add((int) (Bf + 1 - RecMem.GetBf()));
+        }
+    }
+}
+
 /// Check if given field value is currently TOAST-ed and delete it
 void TRecSerializator::CheckToastDel(const TMemBase& InRecMem, const TFieldSerialDesc& FieldSerialDesc) {
     if (UseToast && !FieldSerialDesc.FixedPartP) {
@@ -5351,30 +5368,138 @@ TStorePbBlob::~TStorePbBlob() {
 
 /// Store value into internal storage using TOAST method
 TPgBlobPt TStorePbBlob::ToastVal(const TMemBase& Mem) {
+    return ToastValToBlob(DataBlob, Mem);
+}
+
+/// Retrieve value that is saved using TOAST method from storage
+void TStorePbBlob::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
+    UnToastValFromBlob(DataBlob, Pt, Mem);
+}
+
+/// Store value into the given page blob using the TOAST method
+TPgBlobPt TStorePbBlob::ToastValToBlob(const PPgBlob& Blob, const TMemBase& Mem) {
     TVec<TPgBlobPt> Pts;
-    int BlockLen = DataBlob->GetMxBlobLen();
+    int BlockLen = Blob->GetMxBlobLen();
     int curr_index = 0;
     while (curr_index < Mem.Len()) {
         int curr_len = MIN(BlockLen, Mem.Len() - curr_index);
-        TPgBlobPt PtTmp = DataBlob->Put(Mem.GetBf() + curr_index, curr_len);
+        TPgBlobPt PtTmp = Blob->Put(Mem.GetBf() + curr_index, curr_len);
         Pts.Add(PtTmp);
         curr_index += curr_len;
     }
     TMOut SOut;
     Pts.Save(SOut);
-    return DataBlob->Put(SOut.GetBfAddr(), SOut.Len());
+    return Blob->Put(SOut.GetBfAddr(), SOut.Len());
 }
 
-/// Retrieve value that is saved using TOAST method from storage
-void TStorePbBlob::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
+/// Retrieve a TOAST-ed value from the given page blob
+void TStorePbBlob::UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, TMem& Mem) {
     TVec<TPgBlobPt> Pts;
-    TThinMIn MIn = DataBlob->Get(Pt);
+    TThinMIn MIn = Blob->Get(Pt);
     Pts.Load(MIn);
     Mem.Clr();
     for (int i = 0; i < Pts.Len(); i++) {
-        TMemBase MemTmp = DataBlob->GetMemBase(Pts[i]);
+        TMemBase MemTmp = Blob->GetMemBase(Pts[i]);
         Mem.AddBf(MemTmp.GetBf(), MemTmp.Len());
     }
+}
+
+/// Copy one record's serialized data into NewBlob, relocating its TOAST-ed
+/// values into NewToastBlob. The copied data is read back and verified.
+TPgBlobPt TStorePbBlob::CopyRecToBlob(const uint64& RecId, const bool& UseMem,
+        const PPgBlob& NewToastBlob, const PPgBlob& NewBlob) {
+
+    // fetch the serialized record and copy it into a local buffer
+    const TPgBlobPt& OldPt = UseMem ? RecIdBlobPtHMem.GetDat(RecId) : RecIdBlobPtH.GetDat(RecId);
+    TMemBase OldRecMemBase = UseMem ? DataMem->GetMemBase(OldPt) : DataBlob->GetMemBase(OldPt);
+    TMem RecMem; RecMem.AddBf(OldRecMemBase.GetBf(), OldRecMemBase.Len());
+
+    // relocate TOAST-ed values. TOAST-ed values always live in the disk blob
+    // (DataBlob), also for fields of records stored in the in-memory blob
+    const TRecSerializator* Serializator = UseMem ? SerializatorMem : SerializatorCache;
+    TIntV PtOffsetV; Serializator->GetToastBlobPtOffsets(RecMem, PtOffsetV);
+    for (int PtOffsetN = 0; PtOffsetN < PtOffsetV.Len(); PtOffsetN++) {
+        char* PtBf = RecMem.GetBf() + PtOffsetV[PtOffsetN];
+        const TPgBlobPt OldToastPt = *((TPgBlobPt*) PtBf);
+        // read the value from the old blob and store it into the new one
+        TMem ToastMem; UnToastVal(OldToastPt, ToastMem);
+        const TPgBlobPt NewToastPt = ToastValToBlob(NewToastBlob, ToastMem);
+        // verify the relocated value reads back the same
+        TMem NewToastMem; UnToastValFromBlob(NewToastBlob, NewToastPt, NewToastMem);
+        EAssertR(ToastMem.Len() == NewToastMem.Len() && (ToastMem.Len() == 0 ||
+            memcmp(ToastMem.GetBf(), NewToastMem.GetBf(), ToastMem.Len()) == 0), TStr::Fmt(
+            "[TStorePbBlob::CopyRecToBlob] TOAST-ed value mismatch for record %s in store %s",
+            TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr()));
+        // point the record to the relocated value
+        *((TPgBlobPt*) PtBf) = NewToastPt;
+    }
+
+    // store the record into the destination blob and verify it reads back the same
+    const TPgBlobPt NewPt = NewBlob->Put(RecMem.GetBf(), RecMem.Len());
+    TMemBase NewRecMemBase = NewBlob->GetMemBase(NewPt);
+    EAssertR(NewRecMemBase.Len() == RecMem.Len() &&
+        memcmp(NewRecMemBase.GetBf(), RecMem.GetBf(), RecMem.Len()) == 0, TStr::Fmt(
+        "[TStorePbBlob::CopyRecToBlob] record data mismatch for record %s in store %s",
+        TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr()));
+    return NewPt;
+}
+
+/// Rebuild (defragment) the record blobs into new page blob files
+uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize) {
+    TEnv::Logger->OnStatus(TStr::Fmt("Defragmenting store '%s'...", GetStoreNm().CStr()));
+    // create the destination page blobs
+    PPgBlob NewDataBlob = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlob", TFAccess::faCreate, CacheSize));
+    PPgBlob NewDataMem = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlobMem", TFAccess::faCreate, CacheSize));
+    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtH;
+    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtHMem;
+
+    // collect the record ids and sort them, so the records are written in
+    // ascending record id order. Records keep their ids - gaps left by deleted
+    // records are preserved, so the ids stay valid for the index
+    TUInt64V RecIdV;
+    if (DataMemP) { RecIdBlobPtHMem.GetKeyV(RecIdV); } else { RecIdBlobPtH.GetKeyV(RecIdV); }
+    RecIdV.Sort();
+
+    for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
+        const uint64 RecId = RecIdV[RecN];
+        if (DataBlobP) {
+            NewRecIdBlobPtH.AddDat(RecId, CopyRecToBlob(RecId, false, NewDataBlob, NewDataBlob));
+        }
+        if (DataMemP) {
+            NewRecIdBlobPtHMem.AddDat(RecId, CopyRecToBlob(RecId, true, NewDataBlob, NewDataMem));
+        }
+        if (RecN % 100000 == 0) {
+            printf("%d / %d records copied\r", RecN, RecIdV.Len());
+        }
+    }
+    printf("%d / %d records copied\n", RecIdV.Len(), RecIdV.Len());
+
+    // write the destination store state file - the format and content must match
+    // what the destructor writes, with the new record-id-to-blob-pointer maps
+    TFOut FOut(DestStoreFNm + "PgBlobStore");
+    RecNmFieldP.Save(FOut);
+    PrimaryFieldId.Save(FOut);
+    if (PrimaryFieldType == oftInt) {
+        PrimaryIntIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftUInt64) {
+        PrimaryUInt64IdH.Save(FOut);
+    } else if (PrimaryFieldType == oftFlt) {
+        PrimaryFltIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftTm) {
+        PrimaryTmMSecsIdH.Save(FOut);
+    } else {
+        PrimaryStrIdH.Save(FOut);
+    }
+    WndDesc.Save(FOut);
+    SerializatorCache->Save(FOut);
+    SerializatorMem->Save(FOut);
+    NewRecIdBlobPtH.Save(FOut);
+    NewRecIdBlobPtHMem.Save(FOut);
+    RecIdCounter.Save(FOut);
+
+    TEnv::Logger->OnStatus(TStr::Fmt("Defragmenting store '%s' done: %d records", GetStoreNm().CStr(), RecIdV.Len()));
+    // releasing the new page blobs flushes them to disk
+    return (uint64) RecIdV.Len();
 }
 
 /// Delete TOAST-ed value from storage
