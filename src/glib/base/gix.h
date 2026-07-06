@@ -354,10 +354,28 @@ private:
     mutable TGixStats Stats;
 
 private:
+    /// Handler used by CopyTo that appends the streamed item vectors
+    /// (child vectors + work buffer) into another gix under a fixed key
+    class TCopyToHandler {
+    private:
+        TGix<TKey, TItem>& DestGix;
+        TKey Key;
+    public:
+        TCopyToHandler(TGix<TKey, TItem>& _DestGix, const TKey& _Key): DestGix(_DestGix), Key(_Key) {}
+        void operator()(const TVec<TItem>& ItemV) { if (!ItemV.Empty()) { DestGix.AddItemV(Key, ItemV); } }
+    };
+
+private:
     /// Returns pointer to this object. Used in cache call-backs
     void* GetVoidThis() const { return (void*)this; }
     /// asserts if we are allowed to change this index
     void AssertReadOnly() const;
+
+    /// Remove the itemset for given key from the cache without storing it.
+    /// Used during full index scans (CopyTo, VerifySample) - loading child vectors
+    /// is not accounted in the cache size, so a scan would otherwise grow the
+    /// cache without bound.
+    void DropFromCache(const TKey& Key) const;
 
     /// get keyid of a given key and create it if does not exist
     TBlobPt AddKeyId(const TKey& Key);
@@ -493,6 +511,20 @@ public:
     void AddToNewCacheSizeInc(const uint64& Diff) const { NewCacheSizeInc += Diff; }
     /// Update cache increment (or decrement)
     void AddToNewCacheSizeInc(const uint64& OldSize, const uint64& NewSize) const;
+
+    /// Copy the complete content of this gix into DestGix. Keys are processed in
+    /// sorted order and one key at a time, so all child vectors of one key (and of
+    /// neighboring words of the same index key) end up stored contiguously in the
+    /// destination blob base. Data is streamed one child vector at a time, so memory
+    /// use stays bounded even for very large keys. The destination applies its own
+    /// (possibly different) split lengths. Item counts are verified for every key.
+    void CopyTo(TGix<TKey, TItem>& DestGix) const;
+    /// Compare data stored under the given key in this and the other gix.
+    /// Keys with more than MxItems items are compared by count and first/last item only.
+    bool IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const TKey& Key, const int& MxItems = 5000000) const;
+    /// Compare data of (approximately) SampleKeys keys, evenly sampled over all keys,
+    /// between this and the other gix. Returns false if any compared key differs.
+    bool VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys) const;
 
     /// print statistics for index keys
     void SaveTxt(const TStr& FNm, const PGixKeyStr& KeyStr) const;

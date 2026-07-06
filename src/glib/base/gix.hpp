@@ -929,6 +929,92 @@ void TGix<TKey, TItem>::AddToNewCacheSizeInc(const uint64& OldSize, const uint64
 }
 
 template <class TKey, class TItem>
+void TGix<TKey, TItem>::DropFromCache(const TKey& Key) const {
+    if (IsKey(Key)) {
+        const TBlobPt KeyId = KeyIdH.GetDat(Key);
+        PGixItemSet ItemSet;
+        // only clean itemsets can be dropped without storing - discarding a dirty
+        // itemset would lose all its changes that are not yet written to the blob
+        if (ItemSetCache.Get(KeyId, ItemSet) && !ItemSet->IsDirty()) {
+            ItemSetCache.Del(KeyId, false);
+        }
+    }
+}
+
+template <class TKey, class TItem>
+void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix) const {
+    // collect and sort the keys, so that the data of all words belonging to the
+    // same index key is also stored together in the destination
+    TVec<TKey> KeyV; KeyIdH.GetKeyV(KeyV); KeyV.Sort();
+    printf("Copying %s: %d keys\n", GixFNm.GetFMid().CStr(), KeyV.Len());
+    uint64 TotalItems = 0;
+    for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
+        const TKey& Key = KeyV[KeyN];
+        // load the itemset and stream its content (child vectors + work buffer) into the destination
+        PGixItemSet ItemSet = GetItemSet(Key);
+        ItemSet->Def();
+        const int SrcItems = ItemSet->GetItems();
+        if (SrcItems > 0) {
+            TCopyToHandler Handler(DestGix, Key);
+            ItemSet->GetItemV(Handler);
+            TotalItems += (uint64) SrcItems;
+            // validate that the destination received all the items
+            const int DestItems = DestGix.GetItemSet(Key)->GetItems();
+            EAssertR(DestItems == SrcItems, TStr::Fmt(
+                "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination",
+                KeyN, KeyV.Len(), SrcItems, DestItems));
+        }
+        // release the source itemset so the full scan does not grow the cache without bound
+        DropFromCache(Key);
+        if (KeyN % 1000 == 0) {
+            printf("%d / %d keys, %s items copied\r", KeyN, KeyV.Len(), TUInt64::GetStr(TotalItems).CStr());
+        }
+    }
+    printf("%d / %d keys, %s items copied\n", KeyV.Len(), KeyV.Len(), TUInt64::GetStr(TotalItems).CStr());
+}
+
+template <class TKey, class TItem>
+bool TGix<TKey, TItem>::IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const TKey& Key, const int& MxItems) const {
+    PGixItemSet ItemSet = GetItemSet(Key);
+    PGixItemSet OtherItemSet = OtherGix.GetItemSet(Key);
+    const int Items = ItemSet->GetItems();
+    bool EqualP = (Items == OtherItemSet->GetItems());
+    if (EqualP && Items > 0) {
+        if (Items <= MxItems) {
+            // compare complete item vectors
+            TVec<TItem> ItemV; ItemSet->GetItemV(ItemV);
+            TVec<TItem> OtherItemV; OtherItemSet->GetItemV(OtherItemV);
+            EqualP = (ItemV == OtherItemV);
+        } else {
+            // too large to fully materialize twice - compare the boundary items
+            EqualP = (ItemSet->GetItem(0) == OtherItemSet->GetItem(0)) &&
+                (ItemSet->GetItem(Items - 1) == OtherItemSet->GetItem(Items - 1));
+        }
+    }
+    // release both itemsets so verification does not grow the caches
+    DropFromCache(Key);
+    OtherGix.DropFromCache(Key);
+    return EqualP;
+}
+
+template <class TKey, class TItem>
+bool TGix<TKey, TItem>::VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys) const {
+    if (SampleKeys <= 0) { return true; }
+    TVec<TKey> KeyV; KeyIdH.GetKeyV(KeyV); KeyV.Sort();
+    const int Step = KeyV.Len() > SampleKeys ? KeyV.Len() / SampleKeys : 1;
+    int Checked = 0, Failed = 0;
+    for (int KeyN = 0; KeyN < KeyV.Len(); KeyN += Step) {
+        if (!IsKeyDataEqual(OtherGix, KeyV[KeyN])) {
+            printf("VerifySample: data mismatch for key %d of %d\n", KeyN, KeyV.Len());
+            Failed++;
+        }
+        Checked++;
+    }
+    printf("VerifySample: %d keys checked, %d mismatches\n", Checked, Failed);
+    return Failed == 0;
+}
+
+template <class TKey, class TItem>
 void TGix<TKey, TItem>::SaveTxt(const TStr& FNm, const PGixKeyStr& KeyStr) const {
     TFOut FOut(FNm);
     // iterate over all the keys

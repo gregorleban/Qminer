@@ -6668,6 +6668,53 @@ void TIndex::PutKeySplitLen(const int& KeyId, const int& SplitLen) {
     SplitLenProvider->PutKeySplitLen(KeyId, SplitLen);
 }
 
+template <class TQmGixItem>
+void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const int64& CacheSize, const int& VerifySampleKeys) const {
+
+    TEnv::Logger->OnStatus("Defragmenting " + GixNm + " ...");
+    // create the destination gix. it shares the split length provider, so per-key
+    // split lengths (e.g. from the store definition) are applied to all copied data
+    TPt<TGix<TQmGixKey, TQmGixItem> > DestGix = TGix<TQmGixKey, TQmGixItem>::New(GixNm,
+        DestFPath, faCreate, GixItemHandler, CacheSize, SrcGix->GetSplitLen(),
+        SrcGix->CanFirstChildBeUnfilled(), SrcGix->GetSplitLenMin(), SrcGix->GetSplitLenMax());
+    DestGix->SetSplitLenProvider(SplitLenProvider);
+    // copy all keys; each key's data is verified by count during the copy
+    SrcGix->CopyTo(*DestGix);
+    // deep-compare a sample of keys between the source and the destination
+    if (VerifySampleKeys > 0) {
+        QmAssertR(SrcGix->VerifySample(*DestGix, VerifySampleKeys),
+            "[TIndex::DefragGix] Verification of " + GixNm + " failed - the rebuilt index does not match the source");
+    }
+    // releasing the destination gix flushes it and saves its key hash table
+    DestGix.Clr();
+    TEnv::Logger->OnStatus("Defragmenting " + GixNm + " done");
+}
+
+void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
+        const int& VerifySampleKeys) const {
+
+    // make sure the destination folder exists
+    TDir::GenDir(DestFPath);
+    // empty list means all indices
+    TStrV LcGixNmV;
+    for (int GixNmN = 0; GixNmN < GixNmV.Len(); GixNmN++) { LcGixNmV.Add(GixNmV[GixNmN].GetLc()); }
+    const bool AllP = LcGixNmV.Empty();
+    if (AllP || LcGixNmV.IsIn("full")) {
+        DefragOneGix<TQmGixItemFull>(GixFull, "Index.GixFull", DestFPath, SumItemHandlerFull, CacheSize, VerifySampleKeys);
+    }
+    if (AllP || LcGixNmV.IsIn("small")) {
+        DefragOneGix<TQmGixItemSmall>(GixSmall, "Index.GixSmall", DestFPath, SumItemHandlerSmall, CacheSize, VerifySampleKeys);
+    }
+    if (AllP || LcGixNmV.IsIn("tiny")) {
+        DefragOneGix<TQmGixItemTiny>(GixTiny, "Index.GixTiny", DestFPath, ItemHandlerTiny, CacheSize, VerifySampleKeys);
+    }
+    if (AllP || LcGixNmV.IsIn("pos")) {
+        DefragOneGix<TQmGixItemPos>(GixPos, "Index.GixPos", DestFPath, ItemHandlerPos, CacheSize, VerifySampleKeys);
+    }
+}
+
 void TIndex::ResetStats() {
     GixFull->ResetStats();
     GixSmall->ResetStats();

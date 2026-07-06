@@ -3335,6 +3335,12 @@ private:
     /// Executes GIX query expression against the tiny index
     bool DoQueryTiny(const TPt<TQmGixExpItemTiny>& ExpItem, TVec<TQmGixItemFull>& RecIdFqV) const;
 
+    /// Rebuild one gix into DestFPath - used by DefragGix
+    template <class TQmGixItem>
+    void DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const int64& CacheSize, const int& VerifySampleKeys) const;
+
     /// Executes GIX join query against the full index
     void DoJoinQueryFull(const int& KeyId, const TUInt64V& RecIdV, TUInt64IntKdV& RecIdFqV) const;
     /// Executes GIX join query against the small index
@@ -3523,6 +3529,16 @@ public:
     /// parameter (not persisted), so this must be called each time the index is opened,
     /// before any data is indexed or queried.
     void PutKeySplitLen(const int& KeyId, const int& SplitLen);
+
+    /// Rebuild (defragment) the inverted indices into DestFPath. Each key's child
+    /// vectors are written contiguously and the current per-key split lengths are
+    /// applied, so this also serves to re-chunk existing data after split lengths
+    /// change. GixNmV selects which of "full", "small", "tiny" and "pos" to rebuild
+    /// (empty = all). When VerifySampleKeys > 0, a sample of that many keys is re-read
+    /// from both indices and compared in depth after each rebuild.
+    void DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
+        const int& VerifySampleKeys) const;
+
     /// reset blob stats
     void ResetStats();
 
