@@ -21,13 +21,62 @@ extern "C" {
 // Check-Sum
 const int TCs::MxMask = 0x0FFFFFFF;
 
+// Sum of (sign-extended) bytes in the buffer, accumulated without masking.
+// Because MxMask+1 is a power of two, masking once at the end (or never, when the
+// caller only feeds the value into TCs which masks itself) produces the same low
+// bits as the historical byte-at-a-time accumulation. Used by the bulk stream
+// fast paths below.
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#include <emmintrin.h>
+static inline int TSInOutByteSum(const void* Bf, const TSize& BfL)
+{
+    // SSE2: sum the UNSIGNED byte values with PSADBW and count the bytes with
+    // the high bit set; since signed = unsigned - 256 for those bytes, the
+    // signed sum is UnsignedSum - 256 * HighBitCount (modulo 2^32, which is all
+    // the caller keeps)
+    const unsigned char* B = (const unsigned char*)Bf;
+    TSize BfC = 0;
+    unsigned int UnsignedSum = 0;
+    unsigned int HighBitCnt = 0;
+    if (BfL >= 16) {
+        const __m128i Zero = _mm_setzero_si128();
+        __m128i SadAcc = _mm_setzero_si128();
+        for (; BfC + 16 <= BfL; BfC += 16) {
+            const __m128i V = _mm_loadu_si128((const __m128i*)(B + BfC));
+            // per-8-byte sums of unsigned values, accumulated in two 64-bit lanes
+            SadAcc = _mm_add_epi64(SadAcc, _mm_sad_epu8(V, Zero));
+            // count bytes with the high bit set (16-bit mask popcount)
+            unsigned int Mask = (unsigned int)_mm_movemask_epi8(V);
+            Mask = Mask - ((Mask >> 1) & 0x5555u);
+            Mask = (Mask & 0x3333u) + ((Mask >> 2) & 0x3333u);
+            Mask = (Mask + (Mask >> 4)) & 0x0F0Fu;
+            HighBitCnt += (Mask + (Mask >> 8)) & 0x1Fu;
+        }
+        UnsignedSum = (unsigned int)(_mm_cvtsi128_si32(SadAcc) +
+            _mm_cvtsi128_si32(_mm_srli_si128(SadAcc, 8)));
+    }
+    unsigned int Sum = UnsignedSum - (HighBitCnt << 8);
+    // remaining tail bytes, sign-extended as in the historical loop
+    for (; BfC < BfL; BfC++) {
+        Sum += (unsigned int)(int)(char)B[BfC];
+    }
+    return (int)Sum;
+}
+#else
+static inline int TSInOutByteSum(const void* Bf, const TSize& BfL)
+{
+    unsigned int Sum = 0;
+    const char* B = (const char*)Bf;
+    for (TSize BfC = 0; BfC < BfL; BfC++) {
+        Sum += (unsigned int)(int)B[BfC];
+    }
+    return (int)Sum;
+}
+#endif
+
 TCs TCs::GetCsFromBf(char* Bf, const int& BfL)
 {
-    TCs Cs;
-    for (int BfC = 0; BfC < BfL; BfC++) {
-        Cs += Bf[BfC];
-    }
-    return Cs;
+    return TCs(TSInOutByteSum(Bf, (TSize)BfL));
 }
 
 /////////////////////////////////////////////////
@@ -339,7 +388,7 @@ int TStdOut::PutBf(const void* LBf, const TSize& LBfL)
 
 /////////////////////////////////////////////////
 // Input-File
-const int TFIn::MxBfL = 16 * 1024;
+const int TFIn::MxBfL = 1024 * 1024;
 
 void TFIn::SetFPos(const int& FPos) const
 {
@@ -432,24 +481,20 @@ TFIn::~TFIn()
 // reads LBfL bytes into LBf
 int TFIn::GetBf(const void* LBf, const TSize& LBfL)
 {
-    int LBfS = 0;
-    if (TSize(BfC + LBfL) > TSize(BfL)) {
-        for (TSize LBfC = 0; LBfC < LBfL; LBfC++) {
-            if (BfC == BfL) {
-                FillBf();
-                // we tried to fill a buffer (that is used in the next statement).
-                // the available buffer BfL therefore has to be non-empty
-                EAssertR(BfL > 0, "Unable to fill a buffer from " + GetSNm() + "'.");
-            }
-            LBfS += ((char*)LBf)[LBfC] = Bf[BfC++];
+    char* Dest = (char*)LBf;
+    TSize Rest = LBfL;
+    while (Rest > 0) {
+        if (BfC == BfL) {
+            FillBf();
+            // we tried to fill a buffer (that is used in the next statement).
+            // the available buffer BfL therefore has to be non-empty
+            EAssertR(BfL > 0, "Unable to fill a buffer from " + GetSNm() + "'.");
         }
+        const TSize Chunk = MIN(TSize(BfL - BfC), Rest);
+        memcpy(Dest, Bf + BfC, Chunk);
+        BfC += (int)Chunk; Dest += Chunk; Rest -= Chunk;
     }
-    else {
-        for (TSize LBfC = 0; LBfC < LBfL; LBfC++) {
-            LBfS += (((char*)LBf)[LBfC] = Bf[BfC++]);
-        }
-    }
-    return LBfS;
+    return TSInOutByteSum(LBf, LBfL);
 }
 
 // Gets the next line to LnChA.
@@ -545,7 +590,7 @@ TStr TFIn::GetSNm() const
 
 /////////////////////////////////////////////////
 // Output-File
-const TSize TFOut::MxBfL = 16 * 1024;
+const TSize TFOut::MxBfL = 1024 * 1024;
 ;
 
 void TFOut::FlushBf()
@@ -633,18 +678,17 @@ int TFOut::PutCh(const char& Ch)
 
 int TFOut::PutBf(const void* LBf, const TSize& LBfL)
 {
-    int LBfS = 0;
-    if (BfL + LBfL > MxBfL) {
-        for (TSize LBfC = 0; LBfC < LBfL; LBfC++) {
-            LBfS += PutCh(((char*)LBf)[LBfC]);
+    const char* Src = (const char*)LBf;
+    TSize Rest = LBfL;
+    while (Rest > 0) {
+        if (BfL == MxBfL) {
+            FlushBf();
         }
+        const TSize Chunk = MIN(MxBfL - BfL, Rest);
+        memcpy(Bf + BfL, Src, Chunk);
+        BfL += Chunk; Src += Chunk; Rest -= Chunk;
     }
-    else {
-        for (TSize LBfC = 0; LBfC < LBfL; LBfC++) {
-            LBfS += (Bf[BfL++] = ((char*)LBf)[LBfC]);
-        }
-    }
-    return LBfS;
+    return TSInOutByteSum(LBf, LBfL);
 }
 
 void TFOut::Flush()
@@ -818,17 +862,18 @@ char TMIn::PeekCh()
 int TMIn::GetBf(const void* LBf, const TSize& LBfL)
 {
     EAssertR(TSize(BfC + LBfL) <= TSize(BfL), "Reading beyond the end of stream.");
-    int LBfS = 0;
-    for (TSize LBfC = 0; LBfC < LBfL; LBfC++) {
-        LBfS += (((char*)LBf)[LBfC] = Bf[BfC++]);
-    }
-    return LBfS;
+    memcpy((void*)LBf, Bf + BfC, LBfL);
+    BfC += (int)LBfL;
+    return TSInOutByteSum(LBf, LBfL);
 }
 
 void TMIn::GetBfMemCpy(void* LBf, const TSize& LBfL)
 {
     EAssertR(TSize(BfC + LBfL) <= TSize(BfL), "Reading beyond the end of stream.");
-    memcpy(LBf, Bf, LBfL);
+    // note: this used to copy from the start of the buffer (Bf instead of
+    // Bf + BfC), returning wrong data whenever anything was read before the
+    // bulk copy (e.g. the length fields in TVec::LoadMemCpy)
+    memcpy(LBf, Bf + BfC, LBfL);
     BfC += (int)LBfL;
 }
 
@@ -893,18 +938,12 @@ void TMOut::AppendBf(const void* LBf, const TSize& LBfL)
 
 int TMOut::PutBf(const void* LBf, const TSize& LBfL)
 {
-    int LBfS = 0;
     if (TSize(BfL + LBfL) > TSize(MxBfL)) {
-        for (TSize LBfC = 0; LBfC < LBfL; LBfC++) {
-            LBfS += PutCh(((char*)LBf)[LBfC]);
-        }
+        Resize(BfL + (int)LBfL);
     }
-    else {
-        for (TSize LBfC = 0; LBfC < LBfL; LBfC++) {
-            LBfS += (Bf[BfL++] = ((char*)LBf)[LBfC]);
-        }
-    }
-    return LBfS;
+    memcpy(Bf + BfL, LBf, LBfL);
+    BfL += (int)LBfL;
+    return TSInOutByteSum(LBf, LBfL);
 }
 
 TStr TMOut::GetAsStr() const

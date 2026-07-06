@@ -4329,7 +4329,7 @@ const PIndexWordVoc& TIndexVoc::GetWordVoc(const int& KeyId) const {
     return WordVocV[KeyH[KeyId].GetWordVocId()];
 }
 
-TIndexVoc::TIndexVoc(TSIn& SIn) {
+TIndexVoc::TIndexVoc(TSIn& SIn): DirtyP(false) {
     KeyH.Load(SIn);
     StoreIdKeyIdSetH.Load(SIn);
     WordVocV.Load(SIn);
@@ -4382,6 +4382,7 @@ int TIndexVoc::GetWordVoc(const TStr& WordVocNm) const {
 
 void TIndexVoc::SetWordVocNm(const int& WordVocId, const TStr& WordVocNm) {
     WordVocV[WordVocId]->SetWordVocNm(WordVocNm);
+    DirtyP = true;
 }
 
 int TIndexVoc::AddKey(const TWPt<TBase>& Base, const uint& StoreId, const TStr& KeyNm,
@@ -4395,6 +4396,7 @@ int TIndexVoc::AddKey(const TWPt<TBase>& Base, const uint& StoreId, const TStr& 
     KeyH[KeyId].PutKeyId(KeyId);
     // add the key to the associated store key set
     StoreIdKeyIdSetH.AddDat(StoreId).AddKey(KeyId);
+    DirtyP = true;
     return KeyId;
 }
 
@@ -4404,12 +4406,14 @@ int TIndexVoc::AddInternalKey(const TWPt<TBase>& Base, const uint& StoreId,
     const int KeyId = KeyH.AddKey(TUIntStrPr(StoreId, KeyNm));
     KeyH[KeyId] = TIndexKey(Base, StoreId, KeyNm, JoinNm, GixType);
     KeyH[KeyId].PutKeyId(KeyId);
+    DirtyP = true;
     return KeyId;
 }
 
 void TIndexVoc::AddKeyField(const int& KeyId, const uint& StoreId, const int& FieldId) {
     QmAssert(StoreId == KeyH[KeyId].GetStoreId());
     KeyH[KeyId].AddField(FieldId);
+    DirtyP = true;
 }
 
 bool TIndexVoc::IsStoreKeys(const uint& StoreId) const {
@@ -4474,6 +4478,9 @@ void TIndexVoc::GetWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& Word
 }
 
 uint64 TIndexVoc::AddWordStr(const int& KeyId, const TStr& WordStr) {
+    // AddWordStr also bumps the word frequency, so the vocabulary changes
+    // even when the word already exists
+    DirtyP = true;
     return GetWordVoc(KeyId)->AddWordStr(WordStr);
 }
 
@@ -4488,6 +4495,7 @@ void TIndexVoc::AddWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& Word
         WordIdV.Add(WordVoc->AddWordStr(TokV[TokN]));
     }
     WordVoc->IncRecs();
+    DirtyP = true;
 }
 
 void TIndexVoc::AddWordIdV(const int& KeyId, const TStrV& WordV, TUInt64V& WordIdV) {
@@ -4499,6 +4507,7 @@ void TIndexVoc::AddWordIdV(const int& KeyId, const TStrV& WordV, TUInt64V& WordI
         WordIdV.Add(WordVoc->AddWordStr(WordV[WordN]));
     }
     WordVoc->IncRecs();
+    DirtyP = true;
 }
 
 void TIndexVoc::GetWcWordIdV(const int& KeyId, const TStr& WcStr, TUInt64V& WcWordIdV) {
@@ -4538,6 +4547,7 @@ const PTokenizer& TIndexVoc::GetTokenizer(const int& KeyId) const {
 
 void TIndexVoc::PutTokenizer(const int& KeyId, const PTokenizer& Tokenizer) {
     KeyH[KeyId].PutTokenizer(Tokenizer);
+    DirtyP = true;
 }
 
 void TIndexVoc::SaveTxt(const TWPt<TBase>& Base, const TStr& FNm) const {
@@ -7282,10 +7292,16 @@ TBase::TBase(const TStr& _FPath, const TFAccess& _FAccess, const int64& IndexCac
 
 TBase::~TBase() {
     if (FAccess != faRdOnly) {
-        TEnv::Logger->OnStatus("Saving index vocabulary ... ");
-
-        TFOut IndexVocFOut(FPath + "IndexVoc.dat");
-        IndexVoc->Save(IndexVocFOut);
+        // rewrite the vocabulary only when something was added/changed since load;
+        // rewriting the unchanged (potentially huge) file dominated shutdown time
+        // on large read-mostly bases
+        if (IndexVoc->IsDirty()) {
+            TEnv::Logger->OnStatus("Saving index vocabulary ... ");
+            TFOut IndexVocFOut(FPath + "IndexVoc.dat");
+            IndexVoc->Save(IndexVocFOut);
+        } else {
+            TEnv::Logger->OnStatus("Index vocabulary unchanged - not saving");
+        }
 
         SaveBaseConf(FPath);
     } else {

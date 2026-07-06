@@ -570,6 +570,7 @@ TBlobPt TGix<TKey, TItem>::AddKeyId(const TKey& Key) {
     PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, &ItemHandler, this);
     TBlobPt KeyId = EnlistItemSet(ItemSet);
     KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+    KeyIdHDirtyP = true;
     return KeyId;
 }
 
@@ -648,7 +649,8 @@ template <class TKey, class TItem>
 TGix<TKey, TItem>::TGix(const TStr& Nm, const TStr& FPath, const TFAccess& _Access,
     const TGixItemHandler<TKey, TItem>* _ItemHandler, const int64& CacheSize, const int _SplitLen,
     const bool _FirstChildBeUnfilledP, const int _SplitLenMin, const int _SplitLenMax) :
-        Access(_Access), ItemHandler(_ItemHandler), ItemSetCache(CacheSize, 1000000, GetVoidThis()),
+        Access(_Access), KeyIdHDirtyP(false), ItemHandler(_ItemHandler),
+        ItemSetCache(CacheSize, 1000000, GetVoidThis()),
         SplitLen(_SplitLen), SplitLenMin(_SplitLenMin), SplitLenMax(_SplitLenMax),
         FirstChildBeUnfilledP(_FirstChildBeUnfilledP), SplitLenProvider(NULL) {
 
@@ -677,9 +679,14 @@ template <class TKey, class TItem>
 TGix<TKey, TItem>::~TGix() {
     if ((Access == faCreate) || (Access == faUpdate)) {
         // flush all the latest changes in cache to the disk
+        // (storing a dirty itemset updates KeyIdH and sets KeyIdHDirtyP)
         ItemSetCache.Flush();
-        // save the rest to GixFNm
-        TFOut FOut(GixFNm); KeyIdH.Save(FOut);
+        // save the key hash to GixFNm; skipped in update mode when no key was
+        // added/moved/removed - rewriting the unchanged (potentially huge) hash
+        // dominated shutdown time on large read-mostly indexes
+        if ((Access == faCreate) || KeyIdHDirtyP) {
+            TFOut FOut(GixFNm); KeyIdH.Save(FOut);
+        }
     }
 }
 
@@ -736,6 +743,7 @@ TBlobPt TGix<TKey, TItem>::StoreItemSet(const TBlobPt& KeyId) {
         // itemset is empty after all deletes were processed => remove it
         ItemSetBlobBs->DelBlob(KeyId);
         KeyIdH.DelKey(ItemSet->GetKey());
+        KeyIdHDirtyP = true;
         return TBlobPt(); // return NULL pointer
     } else {
         // store the current version to the blob
@@ -744,7 +752,10 @@ TBlobPt TGix<TKey, TItem>::StoreItemSet(const TBlobPt& KeyId) {
         int ReleasedSize;
         TBlobPt NewKeyId = ItemSetBlobBs->PutBlob(KeyId, MOut.GetSIn(), ReleasedSize);
         // and update the KeyId in the hash table
-        KeyIdH.GetDat(ItemSet->GetKey()) = NewKeyId;
+        if (!(KeyIdH.GetDat(ItemSet->GetKey()) == NewKeyId)) {
+            KeyIdH.GetDat(ItemSet->GetKey()) = NewKeyId;
+            KeyIdHDirtyP = true;
+        }
         return NewKeyId;
     }
 }
@@ -758,6 +769,7 @@ void TGix<TKey, TItem>::DeleteItemSet(const TKey& Key) {
         ItemSetCache.Del(Pt, false);
         ItemSetBlobBs->DelBlob(Pt);
         KeyIdH.DelKey(Key);
+        KeyIdHDirtyP = true;
     }
 }
 
@@ -787,6 +799,7 @@ void TGix<TKey, TItem>::AddItem(const TKey& Key, const TItem& Item) {
         ItemSet->AddItem(Item, false);
         TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to a blob
         KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+        KeyIdHDirtyP = true;
         ItemSetCache.Put(KeyId, ItemSet); // add it to cache
     }
     // check if we have to drop anything from the cache
@@ -808,6 +821,7 @@ void TGix<TKey, TItem>::AddItemV(const TKey& Key, const TVec<TItem>& ItemV) {
         ItemSet->AddItemV(ItemV);
         TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to disk
         KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+        KeyIdHDirtyP = true;
     }
     // check if we have to drop anything from the cache
     RefreshMemUsed();

@@ -1969,3 +1969,19 @@ template <class TVal>
 TVal LoadEnum(TSIn& SIn) {
     return (TVal)(TInt(SIn).Val);
 }
+
+/////////////////////////////////////////////////
+// Flat-serialization opt-ins (see TIsFlatSerializable in bd.h)
+// All of these serialize as a single PutBf/GetBf of their only data member.
+// Note: TAscFlt and other subclasses with custom Save intentionally stay opted out.
+template <> struct TIsFlatSerializable<TBool>   { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TCh>     { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TUCh>    { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TSInt>   { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TUSInt>  { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TInt>    { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TUInt>   { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TInt64>  { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TUInt64> { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TFlt>    { enum { Val = 1 }; };
+template <> struct TIsFlatSerializable<TSFlt>   { enum { Val = 1 }; };

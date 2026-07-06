@@ -2482,13 +2482,17 @@ private:
     TIndexWordVocV WordVocV;
     /// Used to return empty set by reference
     TIntSet EmptySet;
+    /// Set when keys, tokenizers or words were added/changed since creation/load.
+    /// When still false at shutdown, the (potentially huge) vocabulary file does
+    /// not have to be rewritten.
+    TBool DirtyP;
 
     /// Get editable word vocabulary for a given key
     PIndexWordVoc& GetWordVoc(const int& KeyId);
     /// Get constant word vocabulary for a given key
     const PIndexWordVoc& GetWordVoc(const int& KeyId) const;
 
-    TIndexVoc() { }
+    TIndexVoc(): DirtyP(true) { }
     TIndexVoc(TSIn& SIn);
 public:
     /// Create new index vocabulary
@@ -2497,6 +2501,9 @@ public:
     static PIndexVoc Load(TSIn& SIn) { return new TIndexVoc(SIn); }
     /// Serialize vocabulary to stream
     void Save(TSOut& SOut) const;
+
+    /// Was the vocabulary modified since it was created/loaded?
+    bool IsDirty() const { return DirtyP; }
 
     /// Get number of keys
     int GetKeys() const { return KeyH.Len(); }
@@ -2516,7 +2523,7 @@ public:
     const TIndexKey& GetKey(const uint& StoreId, const TStr& KeyNm) const;
 
     /// Create new word vocabulary, returns its ID
-    int NewWordVoc() { return WordVocV.Add(TIndexWordVoc::New()); }
+    int NewWordVoc() { DirtyP = true; return WordVocV.Add(TIndexWordVoc::New()); }
     /// Get Id of word vocabulary with a given name if one exists, -1 otherwise
     int GetWordVoc(const TStr& WordVocNm) const;
     /// Set the name of word vocabulary

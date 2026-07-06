@@ -51,6 +51,14 @@ public:
 };
 #pragma pack(pop)
 
+// Flat-serialization opt-in (see TIsFlatSerializable in bd.h): a hash entry is
+// flat when key and value are flat and the packed struct carries no padding.
+// This lets THash::Load/Save move its KeyDatV with bulk memcpy-based IO.
+template <class TKey, class TDat>
+struct TIsFlatSerializable<THashKeyDat<TKey, TDat> > { enum { Val =
+    TIsFlatSerializable<TKey>::Val && TIsFlatSerializable<TDat>::Val &&
+    (sizeof(THashKeyDat<TKey, TDat>) == 2 * sizeof(TInt) + sizeof(TKey) + sizeof(TDat)) }; };
+
 /////////////////////////////////////////////////
 // Hash-Table-Key-Data-Iterator
 template<class TKey, class TDat>

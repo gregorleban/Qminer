@@ -305,6 +305,8 @@ TPgBlob::TPgBlob(const TStr& _FNm, const TFAccess& _Access, const uint64& CacheS
     default:
         FailR("Unsupported TFAccess flag for TPgBlob.");
     }
+    // main file matches the in-memory state at this point
+    MainDirtyP = false;
 
     // init cache
     LastExtentCnt = PG_EXTENT_PCOUNT; // this means the "last" extent is full, so use new one
@@ -321,7 +323,8 @@ TPgBlob::~TPgBlob() {
                 Files[a.Pt.GetFIx()]->SavePage(a.Pt.GetPg(), GetPageBf(i));
             }
         }
-        SaveMain();
+        // rewrite the main file (free-space map) only when it changed
+        if (MainDirtyP) { SaveMain(); }
         Files.Clr();
     }
 }
@@ -495,6 +498,7 @@ void TPgBlob::CreateNewPage(TPgBlobPgPt& Pt, char** Bf) {
     }
     TStr NewFNm = FNm + ".bin" + TStr::GetNrNumFExt(Files.Len());
     Files.Add(TPgBlobFile::New(NewFNm, TFAccess::faCreate, MxBlobFLen));
+    MainDirtyP = true;
     long Pg = Files.Last()->CreateNewPage();
     EAssert(Pg >= 0);
     Pt.Set(Files.Len() - 1, (uint32)Pg);
@@ -570,6 +574,7 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL) {
     } else {
         Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
     }
+    MainDirtyP = true;
     return Pt;
 }
 
@@ -601,12 +606,14 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL, const TPgBlobPt& Pt) {
 
         ChangeItem(PgBf, Pt.GetIIx(), Bf, BfL);
         Fsm.FsmUpdatePage(Pt, PgH->GetFreeMem());
+        MainDirtyP = true;
         return Pt;
     }
     else {
         // bad luck, we need to move data to new page
         DeleteItem(PgBf, Pt.GetIIx());
         Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
+        MainDirtyP = true;
 
         CreateNewPage(PgPt, &PgBf);
         uint16 ii = AddItem(PgBf, Bf, BfL);
@@ -614,6 +621,7 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL, const TPgBlobPt& Pt) {
         TPgBlobPt Pt2(PgPt.GetFIx(), PgPt.GetPg(), ii);
         PgH = (TPgHeader*)PgBf;
         Fsm.FsmAddPage(PgPt, PgH->GetFreeMem());
+        MainDirtyP = true;
 
         return Pt2;
     }
@@ -643,6 +651,7 @@ void TPgBlob::Del(const TPgBlobPt& Pt) {
         MoveToEndLru(Pt.GetPg());
     }
     Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
+    MainDirtyP = true;
 }
 
 /// Retrieve BLOB from storage
@@ -668,6 +677,7 @@ void TPgBlob::Clr() {
     LastExtentCnt = PG_EXTENT_PCOUNT;
     LruFirst = LruLast = -1;
     SaveMain();
+    MainDirtyP = false;
 }
 
 /// Save part of the data, given time-window

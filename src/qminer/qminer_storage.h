@@ -922,6 +922,10 @@ private:
     THash<TFlt, TUInt64> PrimaryFltIdH;
     /// Hash map from TTm primary field to record ID
     THash<TUInt64, TUInt64> PrimaryTmMSecsIdH;
+    /// Set when the store metadata saved to the .GenericStore file (primary-field
+    /// hash maps) was modified since creation/load. When still false at destruction
+    /// time, the .GenericStore and .BaseStore files are not rewritten.
+    TBool MetaDirtyP;
 
     /// Flag if we are using cache store
     TBool DataCacheP;
@@ -1219,6 +1223,11 @@ private:
 
     /// Counter for record IDs
     TUInt64 RecIdCounter;
+    /// Set when the store metadata saved to the PgBlobStore file (primary-field
+    /// hash maps, record-id blob-pointer maps, record counter) was modified since
+    /// creation/load. When still false at destruction time, the PgBlobStore and
+    /// .BaseStore files are not rewritten.
+    TBool MetaDirtyP;
 
     /// Serializator to disk
     TRecSerializator* SerializatorCache;

@@ -449,6 +449,26 @@ public:
   }
 };
 
+/////////////////////////////////////////////////
+// Flat-serialization opt-ins for composite types (see TIsFlatSerializable in bd.h).
+// A pair/triple/key-dat is flat when all members are flat AND the struct carries
+// no padding (checked via sizeof), since Save() writes members in declaration order.
+template <class TVal1, class TVal2>
+struct TIsFlatSerializable<TPair<TVal1, TVal2> > { enum { Val =
+    TIsFlatSerializable<TVal1>::Val && TIsFlatSerializable<TVal2>::Val &&
+    (sizeof(TPair<TVal1, TVal2>) == sizeof(TVal1) + sizeof(TVal2)) }; };
+
+template <class TVal1, class TVal2, class TVal3>
+struct TIsFlatSerializable<TTriple<TVal1, TVal2, TVal3> > { enum { Val =
+    TIsFlatSerializable<TVal1>::Val && TIsFlatSerializable<TVal2>::Val &&
+    TIsFlatSerializable<TVal3>::Val &&
+    (sizeof(TTriple<TVal1, TVal2, TVal3>) == sizeof(TVal1) + sizeof(TVal2) + sizeof(TVal3)) }; };
+
+template <class TKey, class TDat>
+struct TIsFlatSerializable<TKeyDat<TKey, TDat> > { enum { Val =
+    TIsFlatSerializable<TKey>::Val && TIsFlatSerializable<TDat>::Val &&
+    (sizeof(TKeyDat<TKey, TDat>) == sizeof(TKey) + sizeof(TDat)) }; };
+
 //#//////////////////////////////////////////////
 /// Vector is a sequence \c TVal objects representing an array that can change in size. ##TVec
 template <class TVal, class TSizeTy = int>

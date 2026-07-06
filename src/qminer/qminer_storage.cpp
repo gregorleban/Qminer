@@ -2890,6 +2890,7 @@ const TRecSerializator* TStoreImpl::GetFieldSerializator(const int &FieldId) con
 }
 
 void TStoreImpl::SetPrimaryField(const uint64& RecId) {
+    MetaDirtyP = true;
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.AddDat(GetFieldStr(RecId, PrimaryFieldId)) = RecId;
     } else if (PrimaryFieldType == oftInt) {
@@ -2907,25 +2908,31 @@ void TStoreImpl::SetPrimaryField(const uint64& RecId) {
 
 void TStoreImpl::SetPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     PrimaryStrIdH.AddDat(Str) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldInt(const uint64& RecId, const int& Int) {
     PrimaryIntIdH.AddDat(Int) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     PrimaryUInt64IdH.AddDat(UInt64) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     PrimaryFltIdH.AddDat(Flt) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     PrimaryTmMSecsIdH.AddDat(MSecs) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryField(const uint64& RecId) {
+    MetaDirtyP = true;
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.DelIfKey(GetFieldStr(RecId, PrimaryFieldId));
     } else if (PrimaryFieldType == oftInt) {
@@ -2944,26 +2951,31 @@ void TStoreImpl::DelPrimaryField(const uint64& RecId) {
 void TStoreImpl::DelPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     Assert(PrimaryStrIdH.GetDat(Str) == RecId);
     PrimaryStrIdH.DelIfKey(Str);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldInt(const uint64& RecId, const int& Int) {
     Assert(PrimaryIntIdH.GetDat(Int) == RecId);
     PrimaryIntIdH.DelIfKey(Int);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     Assert(PrimaryUInt64IdH.GetDat(UInt64) == RecId);
     PrimaryUInt64IdH.DelIfKey(UInt64);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     Assert(PrimaryFltIdH.GetDat(Flt) == RecId);
     PrimaryFltIdH.DelIfKey(Flt);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     Assert(PrimaryTmMSecsIdH.GetDat(MSecs) == RecId);
     PrimaryTmMSecsIdH.DelIfKey(MSecs);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::InitFromSchema(const TStoreSchema& StoreSchema) {
@@ -3029,6 +3041,8 @@ TStoreImpl::TStoreImpl(const TWPt<TBase>& Base, const uint& StoreId,
         DataMem(_StoreFNm + ".MemCache", Base->GetStoreBlobBs(), BlockSize) {
 
     SetStoreType("TStoreImpl");
+    // freshly created store must write its metadata files at least once
+    MetaDirtyP = true;
     InitFromSchema(StoreSchema);
     // initialize data storage flags
     InitDataFlags();
@@ -3080,11 +3094,20 @@ TStoreImpl::TStoreImpl(const TWPt<TBase>& Base, const TStr& _StoreFNm,
 
     // initialize data storage flags
     InitDataFlags();
+
+    // nothing was modified yet with regards to the loaded metadata
+    MetaDirtyP = false;
 }
 
 TStoreImpl::~TStoreImpl() {
-    // save if necessary
-    if (FAccess != faRdOnly) {
+    // save if necessary; when the metadata (primary-field maps, which are the only
+    // parts that can change at runtime) is unchanged, skip the rewrite - it
+    // dominated shutdown time on large read-mostly stores
+    if (FAccess == faRdOnly) {
+        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
+    } else if (!MetaDirtyP) {
+        TEnv::Logger->OnStatus(TStr::Fmt("Store '%s' metadata unchanged - not saving", GetStoreNm().CStr()));
+    } else {
         TEnv::Logger->OnStatus(TStr::Fmt("Saving store '%s'...", GetStoreNm().CStr()));
         // save base store
         TFOut BaseFOut(StoreFNm + ".BaseStore");
@@ -3110,8 +3133,6 @@ TStoreImpl::~TStoreImpl() {
         // save data
         SerializatorCache->Save(FOut);
         SerializatorMem->Save(FOut);
-    } else {
-        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
     }
     delete SerializatorCache;
     delete SerializatorMem;
@@ -3415,6 +3436,7 @@ void TStoreImpl::DeleteAllRecs() {
     PrimaryUInt64IdH.Clr();
     PrimaryFltIdH.Clr();
     PrimaryTmMSecsIdH.Clr();
+    MetaDirtyP = true;
     DataCache.DelVals(TInt::Mx);
     DataMem.DelVals(TInt::Mx);
     PartialFlush(TInt::Mx);
@@ -4015,6 +4037,7 @@ uint64 TStorePbBlob::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
     TPgBlobPt CacheRecId;
     TPgBlobPt MemRecId;
     uint64 RecId = RecIdCounter++;
+    MetaDirtyP = true;
     // store to disk storage
     if (DataBlobP) {
         TMem CacheRecMem;
@@ -4195,47 +4218,57 @@ const TRecSerializator* TStorePbBlob::GetFieldSerializator(const int &FieldId) c
 
 void TStorePbBlob::SetPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     PrimaryStrIdH.AddDat(Str) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldInt(const uint64& RecId, const int& Int) {
     PrimaryIntIdH.AddDat(Int) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     PrimaryUInt64IdH.AddDat(UInt64) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     PrimaryFltIdH.AddDat(Flt) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     PrimaryTmMSecsIdH.AddDat(MSecs) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     Assert(PrimaryStrIdH.GetDat(Str) == RecId);
     PrimaryStrIdH.DelIfKey(Str);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldInt(const uint64& RecId, const int& Int) {
     Assert(PrimaryIntIdH.GetDat(Int) == RecId);
     PrimaryIntIdH.DelIfKey(Int);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     Assert(PrimaryUInt64IdH.GetDat(UInt64) == RecId);
     PrimaryUInt64IdH.DelIfKey(UInt64);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     Assert(PrimaryFltIdH.GetDat(Flt) == RecId);
     PrimaryFltIdH.DelIfKey(Flt);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     Assert(PrimaryTmMSecsIdH.GetDat(MSecs) == RecId);
     PrimaryTmMSecsIdH.DelIfKey(MSecs);
+    MetaDirtyP = true;
 }
 
 /// Check if the value of given field for a given record is NULL
@@ -4366,6 +4399,9 @@ TThinMIn TStorePbBlob::GetEditableField(const uint64& RecId, const int& FieldId)
 
 void TStorePbBlob::GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem, THash<TUInt64, TPgBlobPt>* &RecIdBlobPtr, PPgBlob& Blob, TPgBlobPt* &PgPt)
 {
+    // callers (variable-length field setters) may re-point the returned hash
+    // entry to a new blob location, which changes the persisted metadata
+    MetaDirtyP = true;
     TMemBase MemInternal;
     if (FieldLocV[FieldId] == TStoreLoc::slDisk) {
         Blob = DataBlob;
@@ -5100,6 +5136,7 @@ void TStorePbBlob::DeleteAllRecs() {
     TEnv::Logger->OnStatus("Internal structures 2");
     RecIdBlobPtH.Clr();
     RecIdBlobPtHMem.Clr();
+    MetaDirtyP = true;
     DataBlob->Clr();
     DataMem->Clr();
     PartialFlush(TInt::Mx);
@@ -5133,6 +5170,7 @@ void TStorePbBlob::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs,
         }
     }
     // delete records
+    if (!DelRecIdV.Empty()) { MetaDirtyP = true; }
     TTmStopWatch StopWatch(true);
     for (int DelRecN = 0; DelRecN < DelRecIdV.Len(); DelRecN++) {
         // report progress
@@ -5266,6 +5304,8 @@ TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const uint& StoreId,
     TStore(Base, StoreId, StoreName), StoreFNm(_StoreFNm), FAccess(faCreate) {
 
     SetStoreType("TStorePbBlob");
+    // freshly created store must write its metadata files at least once
+    MetaDirtyP = true;
     DataBlob = new TPgBlob(_StoreFNm + "PgBlob", TFAccess::faCreate, _MxCacheSize);
     DataMem = new TPgBlob(_StoreFNm + "PgBlobMem", TFAccess::faCreate, TUInt64::Mx);
     InitFromSchema(StoreSchema);
@@ -5327,11 +5367,20 @@ TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const TStr& _StoreFNm,
 
     // initialize data storage flags
     InitDataFlags();
+
+    // nothing was modified yet with regards to the loaded metadata
+    MetaDirtyP = false;
 }
 
 TStorePbBlob::~TStorePbBlob() {
-    // save if necessary
-    if (FAccess != faRdOnly) {
+    // save if necessary; when the metadata (primary-field maps, record-id
+    // blob-pointer maps, record counter) is unchanged, skip the rewrite - it
+    // dominated shutdown time on large read-mostly stores
+    if (FAccess == faRdOnly) {
+        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
+    } else if (!MetaDirtyP) {
+        TEnv::Logger->OnStatus(TStr::Fmt("Store '%s' metadata unchanged - not saving", GetStoreNm().CStr()));
+    } else {
         TEnv::Logger->OnStatus(TStr::Fmt("Saving store '%s'...", GetStoreNm().CStr()));
         // save base store
         TFOut BaseFOut(StoreFNm + ".BaseStore");
@@ -5361,8 +5410,6 @@ TStorePbBlob::~TStorePbBlob() {
         RecIdBlobPtH.Save(FOut);
         RecIdBlobPtHMem.Save(FOut);
         RecIdCounter.Save(FOut);
-    } else {
-        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
     }
 }
 

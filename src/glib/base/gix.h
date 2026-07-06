@@ -320,6 +320,9 @@ private:
     TStr GixBlobFNm;
     /// mapping between key and BLOB pointer
     THash<TKey, TBlobPt> KeyIdH;
+    /// set when KeyIdH was modified since load; when still false at destruction
+    /// time the (potentially huge) hash is not rewritten to GixFNm
+    bool KeyIdHDirtyP;
 
     /// ItemHandler used for packing item vectors in item sets
     const TGixItemHandler<TKey, TItem>* ItemHandler;
@@ -458,7 +461,10 @@ public:
     /// number of keys in the index
     int GetKeys() const { return KeyIdH.Len(); }
     /// sort keys
-    void SortKeys() { KeyIdH.SortByKey(true); }
+    void SortKeys() { KeyIdH.SortByKey(true); KeyIdHDirtyP = true; }
+
+    /// was the key hash modified since the gix was created/loaded?
+    bool IsKeyIdHDirty() const { return KeyIdHDirtyP; }
 
     /// get item set for given key
     PGixItemSet GetItemSet(const TKey& Key) const;
@@ -540,7 +546,7 @@ public:
 
 #ifdef XTEST
     friend class XTest;
-    void KillHash() { this->KeyIdH.Clr(); }
+    void KillHash() { this->KeyIdH.Clr(); this->KeyIdHDirtyP = true; }
     void KillCache() { this->ItemSetCache.FlushAndClr(); }
 #endif
 
