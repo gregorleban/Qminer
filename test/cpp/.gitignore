@@ -1,1 +1,12 @@
 /data
+
+# local-only Visual Studio build files (contain machine-specific paths)
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.props
+.vs/
+x64/
+*.log
+*.pdb
