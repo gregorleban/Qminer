@@ -24,13 +24,12 @@
 
 TEST_IMPL(get_loadavg) {
 
-  double avg[3];
+  double avg[3] = {-1, -1, -1};
   uv_loadavg(avg);
 
-  ASSERT(avg != NULL);
-  ASSERT(avg[0] >= 0);
-  ASSERT(avg[1] >= 0);
-  ASSERT(avg[2] >= 0);
+  ASSERT_GE(avg[0], 0);
+  ASSERT_GE(avg[1], 0);
+  ASSERT_GE(avg[2], 0);
 
   return 0;
 }
