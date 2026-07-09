@@ -5516,10 +5516,11 @@ uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize)
             NewRecIdBlobPtHMem.AddDat(RecId, CopyRecToBlob(RecId, true, NewDataBlob, NewDataMem));
         }
         if (RecN % 100000 == 0) {
-            printf("%d / %d records copied\r", RecN, RecIdV.Len());
+            printf("%d / %d records copied (%.1f%%)\r", RecN, RecIdV.Len(),
+                RecIdV.Len() > 0 ? 100.0 * RecN / RecIdV.Len() : 100.0);
         }
     }
-    printf("%d / %d records copied\n", RecIdV.Len(), RecIdV.Len());
+    printf("%d / %d records copied (100.0%%)\n", RecIdV.Len(), RecIdV.Len());
 
     // write the destination store state file - the format and content must match
     // what the destructor writes, with the new record-id-to-blob-pointer maps

@@ -981,10 +981,11 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix) const {
         // release the source itemset so the full scan does not grow the cache without bound
         DropFromCache(Key);
         if (KeyN % 1000 == 0) {
-            printf("%d / %d keys, %s items copied\r", KeyN, KeyV.Len(), TUInt64::GetStr(TotalItems).CStr());
+            printf("%d / %d keys (%.1f%%), %s items copied\r", KeyN, KeyV.Len(),
+                KeyV.Len() > 0 ? 100.0 * KeyN / KeyV.Len() : 100.0, TUInt64::GetStr(TotalItems).CStr());
         }
     }
-    printf("%d / %d keys, %s items copied\n", KeyV.Len(), KeyV.Len(), TUInt64::GetStr(TotalItems).CStr());
+    printf("%d / %d keys (100.0%%), %s items copied\n", KeyV.Len(), KeyV.Len(), TUInt64::GetStr(TotalItems).CStr());
 }
 
 template <class TKey, class TItem>
