@@ -3,7 +3,7 @@
 
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 
 
@@ -16,12 +16,12 @@
 
 //// Test an empty archive
 //
-//TEST(TZipInEmptyArchiveFLen) {
+//TEST(Zipfl, TZipInEmptyArchiveFLen) {
 //    TStr FNm = "../../test/cpp/files/empty.7z";
 //    ASSERT_EQ(0, TZipIn::GetFLen(FNm));
 //}
 //
-//TEST(TZipInEmptyArchiveNew) {
+//TEST(Zipfl, TZipInEmptyArchiveNew) {
 //    TStr FNm = "../../test/cpp/files/empty.7z";
 //    PSIn SIn = TZipIn::New(FNm);
 //
@@ -31,12 +31,12 @@
 //
 //// Test archive with single, empty file
 //
-//TEST(TZipInEmptyFileFLen) {
+//TEST(Zipfl, TZipInEmptyFileFLen) {
 //    TStr FNm = "../../test/cpp/files/zero.7z";
 //    ASSERT_EQ(0, TZipIn::GetFLen(FNm));
 //}
 //
-//TEST(TZipInEmptyFileNew) {
+//TEST(Zipfl, TZipInEmptyFileNew) {
 //    TStr FNm = "../../test/cpp/files/zero.7z";
 //    PSIn SIn = TZipIn::New(FNm);
 //
@@ -46,12 +46,12 @@
 //
 //// Test archive with single file containing "1234567\n"
 //
-//TEST(TZipInEightFileFLen) {
+//TEST(Zipfl, TZipInEightFileFLen) {
 //    TStr FNm = "../../test/cpp/files/eight.7z";
 //    ASSERT_EQ(8, TZipIn::GetFLen(FNm));
 //}
 //
-//TEST(TZipInEightFileNew) {
+//TEST(Zipfl, TZipInEightFileNew) {
 //    TStr FNm = "../../test/cpp/files/eight.7z";
 //    PSIn SIn = TZipIn::New(FNm);
 //

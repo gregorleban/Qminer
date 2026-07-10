@@ -1,9 +1,9 @@
 #include <base.h>
 #include <mine.h>
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 
-// TEST(TSumSpVecSimple1) {
+// TEST(TSumSpVec, TSumSpVecSimple1) {
     // try {
         // TSignalProc::TSumSpVec sum;
 

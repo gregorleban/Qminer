@@ -2,7 +2,7 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 using namespace TQuant;
 using namespace TUtils;
@@ -130,7 +130,7 @@ void AssertCdfRangeV(TGk& Gk, const double& MnVal, const double& MxVal,
     }
 }
 
-// TEST(TGreenwaldKhannaGetQuantile) {
+// TEST(Quantiles, TGreenwaldKhannaGetQuantile) {
     // const double Eps = .001;
     // const int NSamples = 1000;
 
@@ -149,7 +149,7 @@ void AssertCdfRangeV(TGk& Gk, const double& MnVal, const double& MxVal,
     // ASSERT_NEAR((1 - 1e-6)*NSamples, Last, Eps*NSamples);
 // }
 
-TEST(TGreenwaldKhannaGetQuantileExtensive) {
+TEST(Quantiles, TGreenwaldKhannaGetQuantileExtensive) {
     const int NTrials = 100;
     const int NSamples = 1000;
 
@@ -177,7 +177,7 @@ TEST(TGreenwaldKhannaGetQuantileExtensive) {
     }
 }
 
-TEST(TGkGetCdf) {
+TEST(Quantiles, TGkGetCdf) {
     const int NTrials = 100;
     const int BatchSize = 1000;
 
@@ -201,7 +201,7 @@ TEST(TGkGetCdf) {
     }
 }
 
-TEST(TGreenwaldKhannaCompress) {
+TEST(Quantiles, TGreenwaldKhannaCompress) {
     const double Eps = .1;
     const int NSamples = 100;
 
@@ -231,7 +231,7 @@ TEST(TGreenwaldKhannaCompress) {
     }
 }
 
-TEST(TGreenwaldKhannaLateManualCompress) {
+TEST(Quantiles, TGreenwaldKhannaLateManualCompress) {
     const double Eps = .1;
     const int NSamples = 100;
 
@@ -260,7 +260,7 @@ TEST(TGreenwaldKhannaLateManualCompress) {
     AssertQuantileRangeVNew(Gk, LowerBoundFun, UpperBoundFun);
 }
 
-TEST(TGreenwaldKhannaAutoCompress) {
+TEST(Quantiles, TGreenwaldKhannaAutoCompress) {
     const double Eps = .1;
     const int BatchSize = 100;
     const int NBatches = 100;
@@ -290,7 +290,7 @@ TEST(TGreenwaldKhannaAutoCompress) {
     ASSERT_TRUE(Gk.GetSummarySize() < BatchSize);
 }
 
-TEST(TGreenwaldKhannaKolmogorovSmirnovFar) {
+TEST(Quantiles, TGreenwaldKhannaKolmogorovSmirnovFar) {
     const int Vals = 7;
     const double Eps = 0.001;
     const double Mean1 = 5;
@@ -331,7 +331,7 @@ TEST(TGreenwaldKhannaKolmogorovSmirnovFar) {
     ASSERT_TRUE(AreDiffP);
 }
 
-TEST(TGreenwaldKhannaKolmogorovSmirnovNear) {
+TEST(Quantiles, TGreenwaldKhannaKolmogorovSmirnovNear) {
     const int Vals = 41;
     const double Eps = 0.001;
     const double Mean1 = 1;
@@ -372,7 +372,7 @@ TEST(TGreenwaldKhannaKolmogorovSmirnovNear) {
     ASSERT_TRUE(AreDiffP);
 }
 
-TEST(TGreenwaldKhannaKolmogorovSmirnovSame) {
+TEST(Quantiles, TGreenwaldKhannaKolmogorovSmirnovSame) {
     const int Vals = 1000;
     const double Eps = 0.001;
     const double Mean1 = 0;
@@ -408,7 +408,7 @@ TEST(TGreenwaldKhannaKolmogorovSmirnovSame) {
     }
 }
 
-TEST(TBiasedGkGetQuantile) {
+TEST(Quantiles, TBiasedGkGetQuantile) {
     const int NTrials = 100;
     const int NSamples = 1000;
 
@@ -435,7 +435,7 @@ TEST(TBiasedGkGetQuantile) {
     }
 }
 
-TEST(TBiasedGkHighQuantiles) {
+TEST(Quantiles, TBiasedGkHighQuantiles) {
     const int NTrials = 10;
     const int NSamples = 1000;
     const double TargetPVal = 1 - .01;
@@ -458,7 +458,7 @@ TEST(TBiasedGkHighQuantiles) {
     }
 }
 
-TEST(TBiasedGkOrderedInput) {
+TEST(Quantiles, TBiasedGkOrderedInput) {
     const uint64 NSamples = 10000;
     const double TargetPVal = .01;
     const double Eps = .1;
@@ -484,7 +484,7 @@ TEST(TBiasedGkOrderedInput) {
     AssertQuantileRangeVNew(DecGk, LowerBoundFun, UpperBoundFun, 0.0001);
 }
 
-TEST(TBiasedGkExtremeValues) {
+TEST(Quantiles, TBiasedGkExtremeValues) {
     const int NSamples = 10000;
     const double Quant = .01;
     const double Eps = .1;
@@ -500,7 +500,7 @@ TEST(TBiasedGkExtremeValues) {
     ASSERT_EQ(Gk.GetQuantile(1), NSamples);
 }
 
-TEST(TBiasedGkZeroQ0) {
+TEST(Quantiles, TBiasedGkZeroQ0) {
     const int NTrials = 10;
     const int NSamples = 10000;
     const double Quant0 = 0;
@@ -531,7 +531,7 @@ TEST(TBiasedGkZeroQ0) {
     }
 }
 
-TEST(TBiasedGkGetCdf) {
+TEST(Quantiles, TBiasedGkGetCdf) {
     const int NTrials = 100;
     const int NSamples = 1000;
 
@@ -573,7 +573,7 @@ TEST(TBiasedGkGetCdf) {
     }
 }
 
-TEST(TBiasedGkGetCdfNegDir) {
+TEST(Quantiles, TBiasedGkGetCdfNegDir) {
     const int NTrials = 100;
     const int NSamples = 1000;
 
@@ -618,7 +618,7 @@ TEST(TBiasedGkGetCdfNegDir) {
 
 // TODO test space limitation
 
-TEST(TTDigestQuery) {
+TEST(Quantiles, TTDigestQuery) {
     const int BatchSize = 1000;
     const int NTrials = 100;
 
@@ -679,7 +679,7 @@ TEST(TTDigestQuery) {
     /* TDigest.PrintSummary(); */
 }
 
-TEST(TTDigestSummarySize) {
+TEST(Quantiles, TTDigestSummarySize) {
     const int BatchSize = 1000;
     const int NTrials = 100;
 
@@ -701,7 +701,7 @@ TEST(TTDigestSummarySize) {
     }
 }
 
-TEST(TTDigestSampleN) {
+TEST(Quantiles, TTDigestSampleN) {
     const int BatchSize = 1000;
     const int NTrials = 100;
 
@@ -720,7 +720,7 @@ TEST(TTDigestSampleN) {
     }
 }
 
-TEST(TMergingTDigestQuery) {
+TEST(Quantiles, TMergingTDigestQuery) {
     const int BatchSize = 1000;
     const int NTrials = 1000;
 
@@ -782,7 +782,7 @@ TEST(TMergingTDigestQuery) {
     /*     TDigest.PrintSummary(); */
 }
 
-TEST(TExpHistogramCountEquallySpaced) {
+TEST(Quantiles, TExpHistogramCountEquallySpaced) {
     const uint64 WindowMSec = 10000;
     const uint64 SampleInterval = 1000;
     const int NSamples = 1000;
@@ -818,7 +818,7 @@ TEST(TExpHistogramCountEquallySpaced) {
     }
 }
 
-TEST(TExpHistogramCountNonEqual) {
+TEST(Quantiles, TExpHistogramCountNonEqual) {
     const uint64 WindowMSec = 1000;
     const double Eps = .1;
 
@@ -870,7 +870,7 @@ TEST(TExpHistogramCountNonEqual) {
     }
 }
 
-TEST(TExpHistogramCompression) {
+TEST(Quantiles, TExpHistogramCompression) {
     const uint64 WindowMSec = 1000;
     const uint64 DeltaTm = 10;
     const double Eps = .1;
@@ -895,7 +895,7 @@ TEST(TExpHistogramCompression) {
     ASSERT_LE(ExpHist.GetSummarySize(), (uint)36);
 }
 
-TEST(TExpHistogramMxVal) {
+TEST(Quantiles, TExpHistogramMxVal) {
     const uint64 WindowMSec = 100;
     const uint64 MxValInterval = 200;
     /* const uint64 SamplesInWindow = 100; */
@@ -933,7 +933,7 @@ TEST(TExpHistogramMxVal) {
     }
 }
 
-TEST(TExpHistogramSwallowBasic) {
+TEST(Quantiles, TExpHistogramSwallowBasic) {
     const uint64 WindowMSec = 1000;
     const double Eps = .1;
 
@@ -968,7 +968,7 @@ TEST(TExpHistogramSwallowBasic) {
     ASSERT_GE(NewCount, (1 - Eps / 2)*(Count1 + Count2));
 }
 
-TEST(TExpHistogramSwallowSameTSteps) {
+TEST(Quantiles, TExpHistogramSwallowSameTSteps) {
     const uint64 WindowMSec = 1000;
     const double Eps = .1;
 
@@ -1024,7 +1024,7 @@ TEST(TExpHistogramSwallowSameTSteps) {
     ASSERT_GE(NewCount, std::floor((1 - Eps / 2)*(Count1 + Count2)));
 }
 
-TEST(TExpHistogramDelNewest) {
+TEST(Quantiles, TExpHistogramDelNewest) {
     const double Eps = .1;
     const uint64 WindowMSec = 100;
 
@@ -1068,7 +1068,7 @@ TEST(TExpHistogramDelNewest) {
     ASSERT_TRUE(Eh2.CheckInvariant2());
 }
 
-TEST(TExpHistWithMaxDelNewestAcc) {
+TEST(Quantiles, TExpHistWithMaxDelNewestAcc) {
     const uint WindowMSec = 100;
     const double Eps = .1;
 
@@ -1095,7 +1095,7 @@ TEST(TExpHistWithMaxDelNewestAcc) {
     }
 }
 
-TEST(TExpHistWithMaxDelNewestNonMax) {
+TEST(Quantiles, TExpHistWithMaxDelNewestNonMax) {
     const uint WindowMSec = 100;
     const double Eps = .1;
 
@@ -1148,7 +1148,7 @@ TEST(TExpHistWithMaxDelNewestNonMax) {
     }
 }
 
-TEST(TExpHistWithMaxDelNewestNonMaxEdgeCaseEps) {
+TEST(Quantiles, TExpHistWithMaxDelNewestNonMaxEdgeCaseEps) {
     const uint WindowMSec = 100;
     const double Eps = .5;
 
@@ -1189,7 +1189,7 @@ TEST(TExpHistWithMaxDelNewestNonMaxEdgeCaseEps) {
     ASSERT_EQ(BatchSize, MxFalling);
 }
 
-TEST(TExpHistWithMaxSwallowSameTSteps) {
+TEST(Quantiles, TExpHistWithMaxSwallowSameTSteps) {
     const uint64 WindowMSec = 100;
     const double Eps = .1;
 
@@ -1274,7 +1274,7 @@ TEST(TExpHistWithMaxSwallowSameTSteps) {
     }
 }
 
-TEST(TWindowMinQuery) {
+TEST(Quantiles, TWindowMinQuery) {
     const uint NSamples = 1000;
 
     const uint64 WindowLen = 100;
@@ -1306,7 +1306,7 @@ TEST(TWindowMinQuery) {
     }
 }
 
-TEST(TWindowMinForgetLarge) {
+TEST(Quantiles, TWindowMinForgetLarge) {
     const uint64 WindowLen = 100;
     const double Eps = .1;
 
@@ -1322,7 +1322,7 @@ TEST(TWindowMinForgetLarge) {
     Assert(WinMin.GetSummarySize() == 1);
 }
 
-TEST(TCountWindowGkQueryAccNoWindow) {
+TEST(Quantiles, TCountWindowGkQueryAccNoWindow) {
     const int BatchSize = 100;
     const int TotalBatches = 10;
 
@@ -1365,7 +1365,7 @@ TEST(TCountWindowGkQueryAccNoWindow) {
     }
 }
 
-TEST(TCountWindowGkQueryAccWindow) {
+TEST(Quantiles, TCountWindowGkQueryAccWindow) {
     const int BatchSize = 1000;
     const int TotalBatches = 10;
 
@@ -1394,7 +1394,7 @@ TEST(TCountWindowGkQueryAccWindow) {
     }
 }
 
-TEST(TCountWindowGkQuery) {
+TEST(Quantiles, TCountWindowGkQuery) {
     const int BatchSize = 1000;
     const int TotalBatches = 10;
 
@@ -1423,7 +1423,7 @@ TEST(TCountWindowGkQuery) {
     }
 }
 
-TEST(TCountWindowGkConceptDrift) {
+TEST(Quantiles, TCountWindowGkConceptDrift) {
     const int BatchSize = 1000;
     const int TotalBatches = 10;
 
@@ -1457,7 +1457,7 @@ TEST(TCountWindowGkConceptDrift) {
     }
 }
 
-TEST(TCountWindowGkItemCountExact) {
+TEST(Quantiles, TCountWindowGkItemCountExact) {
     const int NSamples = 1000;
 
     const int WindowLen = 10;
@@ -1490,7 +1490,7 @@ TEST(TCountWindowGkItemCountExact) {
     ASSERT_EQ(ValCount, ValRecount);
 }
 
-TEST(TCountWindowGkItemCountApprox) {
+TEST(Quantiles, TCountWindowGkItemCountApprox) {
     const int NSamples = 100;
 
     const int WindowLen = 10;
@@ -1513,7 +1513,7 @@ TEST(TCountWindowGkItemCountApprox) {
     ASSERT_LE(ValCount, std::ceil((1 + EpsEh)*WindowLen));
 }
 
-TEST(TTimeWindowGkQuery) {
+TEST(Quantiles, TTimeWindowGkQuery) {
 
     const double EpsGk = .1;
     const double EpsEh = .05;
@@ -1547,7 +1547,7 @@ TEST(TTimeWindowGkQuery) {
     }
 }
 
-TEST(TTimeWindowGkConceptDrift) {
+TEST(Quantiles, TTimeWindowGkConceptDrift) {
     const uint64 WindowMSec = 10000;
     const uint64 DeltaTm = 10;
     const int BatchSize = WindowMSec / DeltaTm;
@@ -1581,7 +1581,7 @@ TEST(TTimeWindowGkConceptDrift) {
     }
 }
 
-TEST(TTimeWindowGkItemCountExact) {
+TEST(Quantiles, TTimeWindowGkItemCountExact) {
     const int NSamples = 1000;
 
     const int WindowMSec = 100;
@@ -1626,7 +1626,7 @@ TEST(TTimeWindowGkItemCountExact) {
     ASSERT_EQ(SampleTmV.Len(), (int)ValRecount);
 }
 
-TEST(TTimeWindowGkItemCountApprox) {
+TEST(Quantiles, TTimeWindowGkItemCountApprox) {
     const int NSamples = 1000;
 
     const int WindowMSec = 100;
@@ -1673,7 +1673,7 @@ TEST(TTimeWindowGkItemCountApprox) {
     ASSERT_GE(ValCount, std::floor(SampleTmV.Len())*(1 - EpsEh));
 }
 
-TEST(TTimeWindowDrainSummary) {
+TEST(Quantiles, TTimeWindowDrainSummary) {
     const uint64 WindowMSec = 1000;
     const uint64 DeltaTm = 10;
     const int SamplesInWindow = WindowMSec / DeltaTm;
@@ -1703,7 +1703,7 @@ TEST(TTimeWindowDrainSummary) {
     AssertQuantileRangeV(Gk, ZeroFun, ZeroFun);
 }
 
-TEST(TTimeWindowAutoCompress) {
+TEST(Quantiles, TTimeWindowAutoCompress) {
     const uint64 WindowMSec = 10000;
     const int BatchSize = WindowMSec;
 
@@ -1722,7 +1722,7 @@ TEST(TTimeWindowAutoCompress) {
     ASSERT_LE(Gk.GetSummarySize(), 300);
 }
 
-TEST(TSwGkQuery) {
+TEST(Quantiles, TSwGkQuery) {
     const int NSamples = 10000;
     const int WindowLen = 1000;
 
@@ -1753,7 +1753,7 @@ TEST(TSwGkQuery) {
     AssertQuantileRangeV(GkWin, NewLowerBoundFun, NewUpperBoundFun);
 }
 
-TEST(TSwGkDrainedSummary) {
+TEST(Quantiles, TSwGkDrainedSummary) {
     const int NSamples = 1000;
 
     const double EpsGk = .1;

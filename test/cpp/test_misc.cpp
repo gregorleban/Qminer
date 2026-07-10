@@ -2,15 +2,15 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-TEST(TDirExists) {
+TEST(Misc, TDirExists) {
     ASSERT_TRUE(TDir::Exists("./test/cpp")); // here we assume that tests are always ran from root dir
     ASSERT_FALSE(TDir::Exists("./xyz"));
 }
 
 
-TEST(TMathFloorLog2_uint) {
+TEST(Misc, TMathFloorLog2_uint) {
     ASSERT_EQ(TMath::FloorLog2((uint)1), 0);
     ASSERT_EQ(TMath::FloorLog2((uint)2), 1);
     ASSERT_EQ(TMath::FloorLog2((uint)3), 1);
@@ -26,7 +26,7 @@ TEST(TMathFloorLog2_uint) {
     //ASSERT_EQ(TMath::FloorLog2((uint)TMath::Pow2(32) - 1), 31);
 }
 
-TEST(TMathFloorLog2_uint64) {
+TEST(Misc, TMathFloorLog2_uint64) {
     ASSERT_EQ(TMath::FloorLog2((uint64)1), 0);
     ASSERT_EQ(TMath::FloorLog2((uint64)2), 1);
     ASSERT_EQ(TMath::FloorLog2((uint64)3), 1);

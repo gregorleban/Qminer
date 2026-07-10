@@ -1,8 +1,8 @@
 #include <base.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-TEST(TPgBlob1) {
+TEST(PgBlob, TPgBlob1) {
     return;
 
     PPgBlob Blob = TPgBlob::Create("./test/cpp/data/test_pgblob");
@@ -36,7 +36,7 @@ TEST(TPgBlob1) {
     }
 }
 
-TEST(TPgBlob2) {
+TEST(PgBlob, TPgBlob2) {
     return;
 
     PPgBlob Blob = TPgBlob::Create("./test/cpp/data/test_pgblob", TInt::Mega);

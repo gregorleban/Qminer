@@ -2,9 +2,9 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-TEST(TSlottedHistogramTestSimple1) {
+TEST(SlottedHistogram, TSlottedHistogramTestSimple1) {
     try {
         TSignalProc::TSlottedHistogram obj(20, 2, 3);
 
@@ -36,7 +36,7 @@ TEST(TSlottedHistogramTestSimple1) {
     }
 }
 
-TEST(TSlottedHistogramTestSimple2) {
+TEST(SlottedHistogram, TSlottedHistogramTestSimple2) {
     try {
         TSignalProc::TSlottedHistogram obj(20, 5, 3);
 

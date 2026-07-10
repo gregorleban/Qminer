@@ -1,8 +1,8 @@
 #include <base.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-TEST(TBlobBs1) {
+TEST(BlobBs, TBlobBs1) {
     return;
 
     PBlobBs BlobBs = TGBlobBs::New("./test/cpp/data/test_blobbs.dat", faCreate);
@@ -21,7 +21,7 @@ TEST(TBlobBs1) {
     ASSERT_EQ(ReleasedSize, 16);
 }
 
-TEST(TBlobBs2) {
+TEST(BlobBs, TBlobBs2) {
     return;
 
     TBlobPt BlobPt, BlobPt2, BlobPt3;
@@ -45,7 +45,7 @@ TEST(TBlobBs2) {
     ASSERT_EQ(BlobPt.GetAddr(), BlobPt3.GetAddr());
 }
 
-TEST(TBlobBs3) {
+TEST(BlobBs, TBlobBs3) {
     return;
 
     PBlobBs BlobBs = TMBlobBs::New("./test/cpp/data/test_blobbs.dat", faCreate);

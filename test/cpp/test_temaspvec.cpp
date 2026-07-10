@@ -2,9 +2,9 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-// TEST(TEmaSpVecSimple1) {
+// TEST(TEmaSpVec, TEmaSpVecSimple1) {
     // try {
         // auto params = TJsonVal::GetValFromStr("{ \"emaType\": \"linear\", \"interval\": 10000, \"initWindow\": 100 }");
 
@@ -85,7 +85,7 @@
 
 
 
-// TEST(TEmaSimpleTest1) {
+// TEST(TEmaSpVec, TEmaSimpleTest1) {
     // try {
         // TSignalProc::TEma ema(TSignalProc::TEmaType::etPreviousPoint, 0, 2000);
 

@@ -2,13 +2,13 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 int Prime(const int& n);
 bool IsPrime(const int& d);
 
 // Test the default constructor
-TEST(TIntIntHDefaultConstructor) {
+TEST(THash, TIntIntHDefaultConstructor) {
     TIntIntH TableInt;
 
     ASSERT_EQ(1, TableInt.Empty());
@@ -17,7 +17,7 @@ TEST(TIntIntHDefaultConstructor) {
 }
 
 // Table manipulations
-TEST(TIntIntHManipulateTable) {
+TEST(THash, TIntIntHManipulateTable) {
     const int64 NElems = 1000000;
     int DDist = 10;
     const char *FName = "test.hashint.dat";
@@ -244,7 +244,7 @@ TEST(TIntIntHManipulateTable) {
 }
 
 // Test the default constructor
-TEST(TStrIntHDefaultConstructor) {
+TEST(THash, TStrIntHDefaultConstructor) {
     TStrIntH TableStr;
 
     ASSERT_EQ(1, TableStr.Empty());
@@ -253,7 +253,7 @@ TEST(TStrIntHDefaultConstructor) {
 }
 
 // Table manipulations
-TEST(TStrIntHManipulateTable) {
+TEST(THash, TStrIntHManipulateTable) {
     const int64 NElems = 1000000;
     int DDist = 10;
     const char *FName = "test.hashstr.dat";

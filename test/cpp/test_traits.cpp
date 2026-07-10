@@ -1,23 +1,23 @@
 #include <base.h>
 #include <mine.h>
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 #ifdef GLib_CPP11
 
-TEST(is_containerTVec) {
+TEST(Traits, is_containerTVec) {
     ASSERT_TRUE(gtraits::is_container<TIntV>::value);
     ASSERT_TRUE(gtraits::is_container<TStrV>::value);
     ASSERT_TRUE(gtraits::is_container<TStrPrV>::value);
 }
 
-TEST(is_containerTHash) {
+TEST(Traits, is_containerTHash) {
     ASSERT_TRUE(gtraits::is_container<TIntH>::value);
     ASSERT_TRUE(gtraits::is_container<TIntStrH>::value);
     ASSERT_TRUE(gtraits::is_container<TIntFltH>::value);
 }
 
 // test that glib numeric types have standard layouts
-TEST(type_traitsTNum) {
+TEST(Traits, type_traitsTNum) {
     ASSERT_TRUE(gtraits::is_shallow<TInt>::value);
     ASSERT_TRUE(gtraits::is_shallow<TUInt>::value);
     ASSERT_TRUE(gtraits::is_shallow<TFlt>::value);
@@ -26,21 +26,21 @@ TEST(type_traitsTNum) {
 }
 
 // characters
-TEST(type_traitsTCh) {
+TEST(Traits, type_traitsTCh) {
     ASSERT_TRUE(gtraits::is_shallow<TCh>::value);
     ASSERT_TRUE(gtraits::is_shallow<TUCh>::value);
 }
 
 // boolean
-TEST(type_traitsTBool) {
+TEST(Traits, type_traitsTBool) {
     ASSERT_TRUE(gtraits::is_shallow<TBool>::value);
 }
 
-TEST(type_traitsTStr) {
+TEST(Traits, type_traitsTStr) {
     ASSERT_FALSE(gtraits::is_shallow<TStr>::value);
 }
 
-TEST(type_traitsTPair) {
+TEST(Traits, type_traitsTPair) {
     ASSERT_TRUE(gtraits::is_shallow<TIntPr>::value);
     ASSERT_FALSE(gtraits::is_shallow<TIntStrPr>::value);
 }

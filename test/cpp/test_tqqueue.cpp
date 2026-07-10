@@ -1,8 +1,8 @@
 #include <base.h>
 #include <mine.h>
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-TEST(TQQueueTestUnlimited) {
+TEST(TQQueue, TQQueueTestUnlimited) {
     try {
         TQQueue<TInt> Q(64, -1);
         ASSERT_TRUE(Q.Empty());
@@ -44,7 +44,7 @@ TEST(TQQueueTestUnlimited) {
     }
 }
 
-TEST(TQQueueTestUnlimited2) {
+TEST(TQQueue, TQQueueTestUnlimited2) {
     try {
         TQQueue<TInt> Q(64, -1);
         ASSERT_TRUE(Q.Empty());
@@ -70,7 +70,7 @@ TEST(TQQueueTestUnlimited2) {
     }
 }
 
-TEST(TQQueueTestUnlimited3) {
+TEST(TQQueue, TQQueueTestUnlimited3) {
     try {
         TQQueue<TInt> Q(64, -1);
         ASSERT_TRUE(Q.Empty());
@@ -96,7 +96,7 @@ TEST(TQQueueTestUnlimited3) {
 
 
 
-TEST(TQQueueTestLimited1) {
+TEST(TQQueue, TQQueueTestLimited1) {
     try {
         TQQueue<TInt> Q(64, 1);
         ASSERT_EQ(Q.Len(), 0);
@@ -124,7 +124,7 @@ TEST(TQQueueTestLimited1) {
     }
 }
 
-TEST(TQQueueTestLimited2) {
+TEST(TQQueue, TQQueueTestLimited2) {
     try {
         TQQueue<TInt> Q(64, 2);
         ASSERT_EQ(Q.Len(), 0);
@@ -156,7 +156,7 @@ TEST(TQQueueTestLimited2) {
     }
 }
 
-TEST(TQQueueTestLimited3) {
+TEST(TQQueue, TQQueueTestLimited3) {
     try {
         TQQueue<TInt> Q(64, 3);
         ASSERT_EQ(Q.Len(), 0);
@@ -194,7 +194,7 @@ TEST(TQQueueTestLimited3) {
 }
 
 
-TEST(TQQueueTestShuffle) {
+TEST(TQQueue, TQQueueTestShuffle) {
     try {
         TQQueue<TInt> Q(64, -1);
         ASSERT_TRUE(Q.Empty());

@@ -1,5 +1,3 @@
-//#define CATCH_CONFIG_MAIN  // This tells Catch to provide a main() - only do this in one cpp file
-//#include "catch_v2.1.1.hpp"
-
-#include "microtest.h"
-TEST_MAIN();
+// This translation unit previously provided the microtest main() via TEST_MAIN().
+// After the migration to GoogleTest, the single shared main() lives in
+// run-all-tests.cpp (which links gtest). This file intentionally defines no main().
