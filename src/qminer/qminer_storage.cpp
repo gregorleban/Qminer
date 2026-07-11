@@ -5500,19 +5500,68 @@ uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize)
     THash<TUInt64, TPgBlobPt> NewRecIdBlobPtH;
     THash<TUInt64, TPgBlobPt> NewRecIdBlobPtHMem;
 
+    // --- source-side accounting, so any record-count change after the rebuild
+    // can be explained instead of discovered later as a shrunken store ---
+    const int SrcBlobRecs = RecIdBlobPtH.Len();
+    const int SrcMemRecs = RecIdBlobPtHMem.Len();
+    int SrcPrimaryRecs = -1;
+    if (PrimaryFieldId != -1) {
+        if (PrimaryFieldType == oftInt) { SrcPrimaryRecs = PrimaryIntIdH.Len(); }
+        else if (PrimaryFieldType == oftUInt64) { SrcPrimaryRecs = PrimaryUInt64IdH.Len(); }
+        else if (PrimaryFieldType == oftFlt) { SrcPrimaryRecs = PrimaryFltIdH.Len(); }
+        else if (PrimaryFieldType == oftTm) { SrcPrimaryRecs = PrimaryTmMSecsIdH.Len(); }
+        else if (PrimaryFieldType == oftStr) { SrcPrimaryRecs = PrimaryStrIdH.Len(); }
+    }
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Defrag] store '%s' source counts: GetRecs=%s, blob-hash=%s, mem-hash=%s, primary-hash=%s, RecIdCounter=%s",
+        GetStoreNm().CStr(), TStrUtil::GetStr(GetRecs()).CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(SrcMemRecs).CStr(),
+        SrcPrimaryRecs >= 0 ? TStrUtil::GetStr(SrcPrimaryRecs).CStr() : "n/a",
+        TStrUtil::GetStr(RecIdCounter).CStr()));
+
     // collect the record ids and sort them, so the records are written in
     // ascending record id order. Records keep their ids - gaps left by deleted
-    // records are preserved, so the ids stay valid for the index
+    // records are preserved, so the ids stay valid for the index.
+    // For stores with BOTH a disk and an in-memory section the two id hashes
+    // must agree; iterate their UNION so a desynced record is copied (for the
+    // sections that have it) and REPORTED, instead of silently dropped (id only
+    // in the blob hash) or crashing GetDat (id only in the mem hash), which is
+    // what iterating a single hash did.
     TUInt64V RecIdV;
-    if (DataMemP) { RecIdBlobPtHMem.GetKeyV(RecIdV); } else { RecIdBlobPtH.GetKeyV(RecIdV); }
-    RecIdV.Sort();
+    int BlobOnlyRecs = 0, MemOnlyRecs = 0;
+    TUInt64V BlobOnlySampleV, MemOnlySampleV;
+    const int MxSamples = 10;
+    if (DataBlobP && DataMemP) {
+        TUInt64V BlobIdV; RecIdBlobPtH.GetKeyV(BlobIdV); BlobIdV.Sort();
+        TUInt64V MemIdV; RecIdBlobPtHMem.GetKeyV(MemIdV); MemIdV.Sort();
+        RecIdV.Gen(TInt::GetMx(BlobIdV.Len(), MemIdV.Len()), 0);
+        int BlobN = 0, MemN = 0;
+        while (BlobN < BlobIdV.Len() || MemN < MemIdV.Len()) {
+            const bool TakeBlob = MemN >= MemIdV.Len() || (BlobN < BlobIdV.Len() && BlobIdV[BlobN] <= MemIdV[MemN]);
+            const bool TakeMem = BlobN >= BlobIdV.Len() || (MemN < MemIdV.Len() && MemIdV[MemN] <= BlobIdV[BlobN]);
+            const uint64 RecId = TakeBlob ? BlobIdV[BlobN] : MemIdV[MemN];
+            if (TakeBlob && !TakeMem) {
+                BlobOnlyRecs++;
+                if (BlobOnlySampleV.Len() < MxSamples) { BlobOnlySampleV.Add(RecId); }
+            } else if (TakeMem && !TakeBlob) {
+                MemOnlyRecs++;
+                if (MemOnlySampleV.Len() < MxSamples) { MemOnlySampleV.Add(RecId); }
+            }
+            RecIdV.Add(RecId);
+            if (TakeBlob) { BlobN++; }
+            if (TakeMem) { MemN++; }
+        }
+    } else if (DataMemP) {
+        RecIdBlobPtHMem.GetKeyV(RecIdV); RecIdV.Sort();
+    } else {
+        RecIdBlobPtH.GetKeyV(RecIdV); RecIdV.Sort();
+    }
 
     for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
         const uint64 RecId = RecIdV[RecN];
-        if (DataBlobP) {
+        if (DataBlobP && RecIdBlobPtH.IsKey(RecId)) {
             NewRecIdBlobPtH.AddDat(RecId, CopyRecToBlob(RecId, false, NewDataBlob, NewDataBlob));
         }
-        if (DataMemP) {
+        if (DataMemP && RecIdBlobPtHMem.IsKey(RecId)) {
             NewRecIdBlobPtHMem.AddDat(RecId, CopyRecToBlob(RecId, true, NewDataBlob, NewDataMem));
         }
         if (RecN % 100000 == 0) {
@@ -5521,6 +5570,70 @@ uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize)
         }
     }
     printf("%d / %d records copied (100.0%%)\n", RecIdV.Len(), RecIdV.Len());
+
+    // --- cross-check the primary-key hash: every entry must point at a live
+    // record id; dangling entries make by-name lookups and primary-based counts
+    // disagree with the record hashes (a further source of "count changed") ---
+    int DanglingPrimaryRecs = 0;
+    TUInt64V DanglingPrimarySampleV;
+    if (PrimaryFieldId != -1) {
+        #define QM_DEFRAG_CHECK_PRIMARY(PrimaryH) { \
+            int KeyId = PrimaryH.FFirstKeyId(); \
+            while (PrimaryH.FNextKeyId(KeyId)) { \
+                const uint64 PrimaryRecId = PrimaryH[KeyId]; \
+                const bool LiveP = (DataBlobP && RecIdBlobPtH.IsKey(PrimaryRecId)) || \
+                                   (DataMemP && RecIdBlobPtHMem.IsKey(PrimaryRecId)); \
+                if (!LiveP) { \
+                    DanglingPrimaryRecs++; \
+                    if (DanglingPrimarySampleV.Len() < MxSamples) { DanglingPrimarySampleV.Add(PrimaryRecId); } \
+                } \
+            } }
+        if (PrimaryFieldType == oftInt) { QM_DEFRAG_CHECK_PRIMARY(PrimaryIntIdH); }
+        else if (PrimaryFieldType == oftUInt64) { QM_DEFRAG_CHECK_PRIMARY(PrimaryUInt64IdH); }
+        else if (PrimaryFieldType == oftFlt) { QM_DEFRAG_CHECK_PRIMARY(PrimaryFltIdH); }
+        else if (PrimaryFieldType == oftTm) { QM_DEFRAG_CHECK_PRIMARY(PrimaryTmMSecsIdH); }
+        else if (PrimaryFieldType == oftStr) { QM_DEFRAG_CHECK_PRIMARY(PrimaryStrIdH); }
+        #undef QM_DEFRAG_CHECK_PRIMARY
+    }
+
+    // --- rebuilt-side accounting: report and explain every difference ---
+    const auto SampleStr = [](const TUInt64V& SampleV) {
+        TChA ChA;
+        for (int SampleN = 0; SampleN < SampleV.Len(); SampleN++) {
+            if (SampleN > 0) { ChA += ", "; }
+            ChA += TUInt64::GetStr(SampleV[SampleN]);
+        }
+        return TStr(ChA);
+    };
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Defrag] store '%s' rebuilt counts: blob-hash %s -> %s, mem-hash %s -> %s",
+        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtH.Len()).CStr(),
+        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtHMem.Len()).CStr()));
+    if (DataBlobP && DataMemP && SrcBlobRecs != SrcMemRecs) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: store '%s' disk and in-memory sections disagree: %s records have only a disk part "
+            "(previously silently dropped by defrag; sample ids: %s), %s records have only an in-memory part "
+            "(previously crashed/corrupted the rebuild; sample ids: %s). Such records are typically left behind "
+            "by a partial delete or an interrupted add; their sections were copied as-is - inspect the sample ids "
+            "to decide whether they are live or garbage.",
+            GetStoreNm().CStr(), TStrUtil::GetStr(BlobOnlyRecs).CStr(), SampleStr(BlobOnlySampleV).CStr(),
+            TStrUtil::GetStr(MemOnlyRecs).CStr(), SampleStr(MemOnlySampleV).CStr()));
+    }
+    if (DanglingPrimaryRecs > 0) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: store '%s' primary-key hash has %s entries pointing at record ids with no data "
+            "(sample ids: %s). Counts based on the primary hash (%s) will disagree with the record hashes; "
+            "these entries are typically left behind when a record delete removed the data but not the "
+            "primary-key entry.",
+            GetStoreNm().CStr(), TStrUtil::GetStr(DanglingPrimaryRecs).CStr(), SampleStr(DanglingPrimarySampleV).CStr(),
+            TStrUtil::GetStr(SrcPrimaryRecs).CStr()));
+    }
+    if (NewRecIdBlobPtH.Len() != SrcBlobRecs || NewRecIdBlobPtHMem.Len() != SrcMemRecs) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: store '%s' rebuilt record count differs from the source - see the reasons above. "
+            "The rebuilt store keeps every record that had data in at least one section.",
+            GetStoreNm().CStr()));
+    }
 
     // write the destination store state file - the format and content must match
     // what the destructor writes, with the new record-id-to-blob-pointer maps

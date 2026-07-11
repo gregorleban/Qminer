@@ -956,12 +956,13 @@ void TGix<TKey, TItem>::DropFromCache(const TKey& Key) const {
 }
 
 template <class TKey, class TItem>
-void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix) const {
+void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut, int* EmptyKeysOut) const {
     // collect and sort the keys, so that the data of all words belonging to the
     // same index key is also stored together in the destination
     TVec<TKey> KeyV; KeyIdH.GetKeyV(KeyV); KeyV.Sort();
     printf("Copying %s: %d keys\n", GixFNm.GetFMid().CStr(), KeyV.Len());
     uint64 TotalItems = 0;
+    int EmptyKeys = 0;
     for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
         const TKey& Key = KeyV[KeyN];
         // load the itemset and stream its content (child vectors + work buffer) into the destination
@@ -977,15 +978,21 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix) const {
             EAssertR(DestItems == SrcItems, TStr::Fmt(
                 "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination",
                 KeyN, KeyV.Len(), SrcItems, DestItems));
+        } else {
+            // fully deleted posting list - the key is not created in the destination
+            EmptyKeys++;
         }
         // release the source itemset so the full scan does not grow the cache without bound
         DropFromCache(Key);
         if (KeyN % 1000 == 0) {
-            printf("%d / %d keys (%.1f%%), %s items copied\r", KeyN, KeyV.Len(),
-                KeyV.Len() > 0 ? 100.0 * KeyN / KeyV.Len() : 100.0, TUInt64::GetStr(TotalItems).CStr());
+            printf("%s / %s keys (%.1f%%), %s items copied\r", TStrUtil::GetStr(KeyN).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(),
+                KeyV.Len() > 0 ? 100.0 * KeyN / KeyV.Len() : 100.0, TStrUtil::GetStr(TotalItems).CStr());
         }
     }
-    printf("%d / %d keys (100.0%%), %s items copied\n", KeyV.Len(), KeyV.Len(), TUInt64::GetStr(TotalItems).CStr());
+    printf("%s / %s keys (100.0%%), %s items copied, %s empty keys skipped\n",
+        TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(TotalItems).CStr(), TStrUtil::GetStr(EmptyKeys).CStr());
+    if (CopiedItemsOut != NULL) { *CopiedItemsOut = TotalItems; }
+    if (EmptyKeysOut != NULL) { *EmptyKeysOut = EmptyKeys; }
 }
 
 template <class TKey, class TItem>

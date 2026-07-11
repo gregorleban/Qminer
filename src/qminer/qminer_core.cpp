@@ -6691,7 +6691,23 @@ void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const
         SrcGix->CanFirstChildBeUnfilled(), SrcGix->GetSplitLenMin(), SrcGix->GetSplitLenMax());
     DestGix->SetSplitLenProvider(SplitLenProvider);
     // copy all keys; each key's data is verified by count during the copy
-    SrcGix->CopyTo(*DestGix);
+    const int SrcKeys = SrcGix->GetKeys();
+    uint64 CopiedItems = 0; int EmptyKeys = 0;
+    SrcGix->CopyTo(*DestGix, &CopiedItems, &EmptyKeys);
+    // before/after accounting: the only legitimate key-count difference is source
+    // keys whose posting list is fully deleted (they are not created in the rebuilt
+    // gix and cannot match any search). Anything else means keys were lost or invented.
+    const int DestKeys = DestGix->GetKeys();
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Defrag] %s: source keys %s (of which %s empty - skipped), rebuilt keys %s, items copied %s",
+        GixNm.CStr(), TStrUtil::GetStr(SrcKeys).CStr(), TStrUtil::GetStr(EmptyKeys).CStr(),
+        TStrUtil::GetStr(DestKeys).CStr(), TStrUtil::GetStr(CopiedItems).CStr()));
+    if (DestKeys != SrcKeys - EmptyKeys) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: %s rebuilt key count %s does not match the %s non-empty source keys - "
+            "index entries were lost or duplicated by the rebuild, do not swap this index in!",
+            GixNm.CStr(), TStrUtil::GetStr(DestKeys).CStr(), TStrUtil::GetStr(SrcKeys - EmptyKeys).CStr()));
+    }
     // deep-compare a sample of keys between the source and the destination
     if (VerifySampleKeys > 0) {
         QmAssertR(SrcGix->VerifySample(*DestGix, VerifySampleKeys),

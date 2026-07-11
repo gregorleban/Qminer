@@ -524,7 +524,12 @@ public:
     /// destination blob base. Data is streamed one child vector at a time, so memory
     /// use stays bounded even for very large keys. The destination applies its own
     /// (possibly different) split lengths. Item counts are verified for every key.
-    void CopyTo(TGix<TKey, TItem>& DestGix) const;
+    /// Copy the full content of this gix into DestGix. Every copied key's item count
+    /// is asserted against the destination. Optionally reports the total items copied
+    /// and the number of source keys with no items (fully deleted posting lists) -
+    /// such keys are not created in the destination, which is the one legitimate way
+    /// the destination key count may be lower than the source key count.
+    void CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut = NULL, int* EmptyKeysOut = NULL) const;
     /// Compare data stored under the given key in this and the other gix.
     /// Keys with more than MxItems items are compared by count and first/last item only.
     bool IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const TKey& Key, const int& MxItems = 5000000) const;
