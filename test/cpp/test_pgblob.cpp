@@ -2,6 +2,105 @@
 
 #include "gtest/gtest.h"
 
+// regression tests for the space-reclamation fixes in TPgBlob (pgblob.cpp):
+// 1. DeleteItem's empty-page reset had its condition inverted (Len==0 marks a
+//    DELETED slot) so a page was never reset and ItemCount grew monotonically.
+// 2. Put(Bf, BfL) never reused Len==0 slots - delete/insert churn exhausted the
+//    ~2044-entry item directory of every page and forced new pages forever.
+// 3. Put(Bf, BfL, Pt) resize path: with fix 1 active, deleting the last live
+//    item resets the page, so patching the old slot index would corrupt it.
+
+static TChA PgBlobTestBf(const int& Len, const char& Ch) {
+    TChA ChA;
+    while (ChA.Len() < Len) { ChA += Ch; }
+    return ChA;
+}
+
+// deleted slots must be reused by subsequent inserts (fix 2)
+TEST(PgBlob, DeletedSlotReuse) {
+    TDir::GenDir("./test/cpp/files/pgblob");
+    PPgBlob Blob = TPgBlob::Create("./test/cpp/files/pgblob/slot_reuse");
+    const TChA Bf = PgBlobTestBf(500, 'x');
+
+    TVec<TPgBlobPt> PtV;
+    for (int i = 0; i < 4; i++) { PtV.Add(Blob->Put(Bf.CStr(), 500)); }
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ(0, (int)PtV[i].GetPg());
+        EXPECT_EQ(i, (int)PtV[i].GetIIx());
+    }
+
+    Blob->Del(PtV[1]);
+    const TPgBlobPt NewPt = Blob->Put(Bf.CStr(), 500);
+    EXPECT_EQ(0, (int)NewPt.GetPg());
+    // must land in the freed slot 1, not grow the item table to slot 4
+    EXPECT_EQ(1, (int)NewPt.GetIIx());
+    EXPECT_EQ(500, Blob->GetMemBase(NewPt).Len());
+}
+
+// a page whose items are all deleted must be fully reusable again (fix 1)
+TEST(PgBlob, PageResetAfterDeleteAll) {
+    TDir::GenDir("./test/cpp/files/pgblob");
+    PPgBlob Blob = TPgBlob::Create("./test/cpp/files/pgblob/page_reset");
+    const TChA Bf = PgBlobTestBf(500, 'x');
+
+    TVec<TPgBlobPt> PtV;
+    for (int i = 0; i < 4; i++) { PtV.Add(Blob->Put(Bf.CStr(), 500)); }
+    for (int i = 0; i < 4; i++) { Blob->Del(PtV[i]); }
+
+    const TPgBlobPt NewPt = Blob->Put(Bf.CStr(), 500);
+    EXPECT_EQ(0, (int)NewPt.GetPg());
+    // the empty-page reset must have cleared the item table
+    EXPECT_EQ(0, (int)NewPt.GetIIx());
+}
+
+// delete/insert churn must not allocate new pages without bound (fixes 1+2:
+// before them each cycle grew the item directory until the page was dead)
+TEST(PgBlob, ChurnDoesNotGrowFile) {
+    TDir::GenDir("./test/cpp/files/pgblob");
+    PPgBlob Blob = TPgBlob::Create("./test/cpp/files/pgblob/churn");
+    const TChA Bf = PgBlobTestBf(3000, 'y');
+
+    uint32 MxPg = 0;
+    for (int CycleN = 0; CycleN < 3000; CycleN++) {
+        const TPgBlobPt P1 = Blob->Put(Bf.CStr(), 3000);
+        const TPgBlobPt P2 = Blob->Put(Bf.CStr(), 3000);
+        MxPg = MAX(MxPg, MAX(P1.GetPg(), P2.GetPg()));
+        Blob->Del(P1);
+        Blob->Del(P2);
+    }
+    // with the bugs this reached ~2 slots/cycle -> a page died every ~1000
+    // cycles and MxPg grew past 2; fixed code recycles the first page(s)
+    EXPECT_LE((int)MxPg, 1);
+}
+
+// resizing the only item on a page triggers the empty-page reset inside the
+// update path - the returned pt must stay valid and later inserts must not
+// clobber it (fix 3)
+TEST(PgBlob, UpdateLastLiveItemOnPage) {
+    TDir::GenDir("./test/cpp/files/pgblob");
+    PPgBlob Blob = TPgBlob::Create("./test/cpp/files/pgblob/update_last");
+    const TChA BfA = PgBlobTestBf(1000, 'a');
+    const TChA BfB = PgBlobTestBf(1200, 'b');
+
+    const TPgBlobPt Pt = Blob->Put(BfA.CStr(), 1000);
+    // different size that still fits in the page -> DeleteItem + re-add; the
+    // delete empties the page and resets it
+    const TPgBlobPt Pt2 = Blob->Put(BfB.CStr(), 1200, Pt);
+    TMemBase Mem = Blob->GetMemBase(Pt2);
+    ASSERT_EQ(1200, Mem.Len());
+    EXPECT_EQ(0, memcmp(Mem.GetBf(), BfB.CStr(), 1200));
+
+    // a subsequent insert must get its own slot, leaving Pt2's record intact
+    const TPgBlobPt Pt3 = Blob->Put(BfA.CStr(), 1000);
+    EXPECT_FALSE(Pt3.GetPg() == Pt2.GetPg() && Pt3.GetIIx() == Pt2.GetIIx());
+    Mem = Blob->GetMemBase(Pt2);
+    ASSERT_EQ(1200, Mem.Len());
+    EXPECT_EQ(0, memcmp(Mem.GetBf(), BfB.CStr(), 1200));
+    Mem = Blob->GetMemBase(Pt3);
+    ASSERT_EQ(1000, Mem.Len());
+    EXPECT_EQ(0, memcmp(Mem.GetBf(), BfA.CStr(), 1000));
+}
+
 TEST(PgBlob, TPgBlob1) {
     return;
 
