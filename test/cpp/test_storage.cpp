@@ -66,9 +66,15 @@ double FileSize() {
 }
 
 TEST(Storage, TInit) {
-    TUnicodeDef::Load("./src/glib/bin/UnicodeDef.Bin");
-    TQm::TEnv::Init();
-	TQm::TEnv::InitLogger(0, "std", true);
+    // guard against double-initialization: when the whole suite runs in one
+    // process, earlier tests may have loaded/initialized these already
+    if (!TUnicodeDef::IsDef()) {
+        TUnicodeDef::Load("./src/glib/bin/UnicodeDef.Bin");
+    }
+    if (!TQm::TEnv::IsInit()) {
+        TQm::TEnv::Init();
+        TQm::TEnv::InitLogger(0, "std", true);
+    }
 }
 
 TEST(Storage, TStore1) {

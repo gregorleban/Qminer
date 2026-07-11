@@ -70,16 +70,35 @@ foreach(broken test-aggr test_batch_delete)
   list(FILTER TEST_SOURCES EXCLUDE REGEX "/${broken}\\.cpp$")
 endforeach()
 
-add_executable(qminer_tests ${TEST_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/run-all-tests.cpp")
+# glib.a's mine.o wraps LIBSVM but the implementation is a separate third-party
+# TU (built by binding.gyp on the node path) - compile it into the test binary
+set(LIBSVM_SRC "${QMINER_ROOT}/src/third_party/libsvm/svm.cpp")
+include_directories("${QMINER_ROOT}/src/third_party/libsvm")
+
+add_executable(qminer_tests ${TEST_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/run-all-tests.cpp" "${LIBSVM_SRC}")
 target_link_libraries(qminer_tests
   PRIVATE gtest gtest_main
   "${QMINER_A}" "${GLIB_A}"
-  gomp pthread rt uuid uv re2)
+  gomp pthread rt)
 
-# copy data/ + files/ next to the binary so tests that read fixtures find them
-add_custom_command(TARGET qminer_tests POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-          "${CMAKE_CURRENT_SOURCE_DIR}/data" "$<TARGET_FILE_DIR:qminer_tests>/data" || true)
+# Optional system libs: needed only if the linker pulls glib.a members that use
+# them (sockets->uv, guid->uuid, regex->re2). Present on CI (apt); often absent
+# on a dev WSL without sudo - the tests don't touch those members, so skip them.
+foreach(optlib uuid uv re2)
+  find_library(OPTLIB_${optlib} ${optlib})
+  if(OPTLIB_${optlib})
+    target_link_libraries(qminer_tests PRIVATE ${OPTLIB_${optlib}})
+  endif()
+endforeach()
+
+# copy fixture dirs next to the binary so tests that read them find them
+foreach(fixdir data files)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${fixdir}")
+    add_custom_command(TARGET qminer_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              "${CMAKE_CURRENT_SOURCE_DIR}/${fixdir}" "$<TARGET_FILE_DIR:qminer_tests>/${fixdir}")
+  endif()
+endforeach()
 
 enable_testing()
 include(GoogleTest)

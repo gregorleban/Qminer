@@ -65,6 +65,10 @@ TEST(QmApplySplitLenTests, DefWithoutSplitLenIsNoOpAndSingleObjectAccepted)
     PJsonVal NameOnlyVal = TJsonVal::GetValFromStr("[{ \"name\": \"AppItem\" }]");
     ASSERT_NO_THROW(TStorage::ApplyIndexKeySplitLen(Base, NameOnlyVal));
     TStorage::SaveBase(Base);
+    // release the base BEFORE deleting its folder: ~TBase saves into FPath, and on
+    // Linux the delete succeeds on open files, so a live base would then throw
+    // inside a destructor (std::terminate). On Windows the delete just fails.
+    Base.Clr();
     TDir::DelNonEmptyDir(FPath);
 }
 
@@ -102,6 +106,10 @@ TEST(QmApplySplitLenTests, UnknownNamesOnlyRejectedWhenSplitLenPresent)
         "   \"joins\": [ { \"name\": \"hasRelated\", \"type\": \"index\", \"splitLen\": 100 } ] }]");
     ASSERT_NO_THROW(TStorage::ApplyIndexKeySplitLen(Base, GoodVal));
     TStorage::SaveBase(Base);
+    // release the base BEFORE deleting its folder: ~TBase saves into FPath, and on
+    // Linux the delete succeeds on open files, so a live base would then throw
+    // inside a destructor (std::terminate). On Windows the delete just fails.
+    Base.Clr();
     TDir::DelNonEmptyDir(FPath);
 }
 
@@ -124,6 +132,10 @@ TEST(QmApplySplitLenTests, NonPositiveSplitLenValuesAreIgnored)
         "[{ \"name\": \"NoSuchStore\", \"keys\": [ { \"field\": \"NoSuchField\", \"splitLen\": 0 } ] }]");
     ASSERT_NO_THROW(TStorage::ApplyIndexKeySplitLen(Base, BadNamesVal));
     TStorage::SaveBase(Base);
+    // release the base BEFORE deleting its folder: ~TBase saves into FPath, and on
+    // Linux the delete succeeds on open files, so a live base would then throw
+    // inside a destructor (std::terminate). On Windows the delete just fails.
+    Base.Clr();
     TDir::DelNonEmptyDir(FPath);
 }
 
@@ -141,6 +153,10 @@ TEST(QmApplySplitLenTests, SplitLenOnNonIndexJoinRejected)
         "[{ \"name\": \"AppItem\", \"joins\": [ { \"name\": \"parent\", \"type\": \"field\" } ] }]");
     ASSERT_NO_THROW(TStorage::ApplyIndexKeySplitLen(Base, FieldJoinNoLenVal));
     TStorage::SaveBase(Base);
+    // release the base BEFORE deleting its folder: ~TBase saves into FPath, and on
+    // Linux the delete succeeds on open files, so a live base would then throw
+    // inside a destructor (std::terminate). On Windows the delete just fails.
+    Base.Clr();
     TDir::DelNonEmptyDir(FPath);
 }
 
