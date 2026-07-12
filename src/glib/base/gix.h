@@ -336,8 +336,9 @@ private:
     uint64 CacheResetThreshold;
     /// Cache size change since last reset
     mutable uint64 NewCacheSizeInc;
-    /// flag indicating cache is full
-    bool CacheFullP;
+    /// flag indicating cache is full (mutable - the cache is refreshed/purged also
+    /// from the const read path, see GetItemSet)
+    mutable bool CacheFullP;
 
     /// Size of work-buffer
     TInt SplitLen;
@@ -511,8 +512,10 @@ public:
     uint64 GetMxMemUsed() const { return ItemSetCache.GetMxMemUsed(); }
     /// Is cache full?
     bool IsCacheFull() const { return CacheFullP; }
-    /// Refresh current memory computations
-    void RefreshMemUsed();
+    /// Refresh current memory computations and purge the cache if needed.
+    /// const so the read path (GetItemSet) can trigger it as well - reads grow the
+    /// cache too (loading itemsets and their child vectors)
+    void RefreshMemUsed() const;
     /// Update cache increment
     void AddToNewCacheSizeInc(const uint64& Diff) const { NewCacheSizeInc += Diff; }
     /// Update cache increment (or decrement)
