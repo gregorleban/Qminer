@@ -42,6 +42,11 @@ void TGixItemSet<TKey, TItem>::LoadChildVector(const int& ChildN) const {
         // mark that it is freshly loaded
         ChildInfoV[ChildN].LoadedP = true;
         ChildInfoV[ChildN].DirtyP = false;
+        // report the growth to the gix - this itemset most likely lives in the
+        // itemset cache and loaded children are its dominant memory (they stay
+        // loaded until the whole itemset is evicted). without this the cache
+        // accounting never saw read-driven growth
+        Gix->AddToNewCacheSizeInc(TMemUtils::GetExtraMemberSize(ChildV[ChildN]));
     }
 }
 
@@ -721,11 +726,20 @@ TPt<TGixItemSet<TKey, TItem> > TGix<TKey, TItem>::GetItemSet(const TBlobPt& KeyI
         // return empty itemset
         return TGixItemSet<TKey, TItem>::New(TKey(), this);
     }
+    // reads grow the cache as well (itemsets and their child vectors get loaded),
+    // so the size recomputation + purge has to be triggered from here too - with
+    // write-only triggering a query-mostly process would grow far beyond the
+    // configured cache size. done before touching the cache so the itemset
+    // returned by this call cannot be a purge victim
+    RefreshMemUsed();
     PGixItemSet ItemSet;
     if (!ItemSetCache.Get(KeyId, ItemSet)) {
         // have to load it from the hard drive...
         PSIn ItemSetSIn = ItemSetBlobBs->GetBlob(KeyId);
         ItemSet = TGixItemSet<TKey, TItem>::Load(*ItemSetSIn, this);
+        // account the freshly loaded itemset as cache growth (TCache::Put adds it
+        // to its running total, but that total is only trusted between refreshes)
+        AddToNewCacheSizeInc(ItemSet->GetMemUsed());
     }
     // bring the itemset to the top of the cache
     ItemSetCache.Put(KeyId, ItemSet);
@@ -925,12 +939,12 @@ int64 TGix<TKey, TItem>::GetMemUsed() const {
 }
 
 template <class TKey, class TItem>
-void TGix<TKey, TItem>::RefreshMemUsed() {
+void TGix<TKey, TItem>::RefreshMemUsed() const {
     // check if we have to drop anything from the cache
     if (NewCacheSizeInc > CacheResetThreshold) {
-        // only report when cache size bigger then 10GB
-        const bool ReportP = CacheResetThreshold > (uint64)(TInt::Giga);
-        if (ReportP) { printf("Cache clean-up [%s] ... ", TUInt64::GetMegaStr(NewCacheSizeInc).CStr()); }
+        printf("Gix cache clean-up start [accumulated growth: %s]\n",
+            TUInt64::GetMegaStr(NewCacheSizeInc).CStr());
+        TExeTm ExeTm;
         // pack all the item sets
         TBlobPt BlobPt;
         PGixItemSet ItemSet;
@@ -941,10 +955,10 @@ void TGix<TKey, TItem>::RefreshMemUsed() {
         // clean-up cache
         CacheFullP = ItemSetCache.RefreshMemUsed();
         NewCacheSizeInc = 0;
-        if (ReportP) {
-            const uint64 NewSize = ItemSetCache.GetMemUsed();
-            printf("Done [%s]\n", TUInt64::GetMegaStr(NewSize).CStr());
-        }
+        // GetCurMemUsed reuses the size just computed by RefreshMemUsed - calling
+        // GetMemUsed here would re-walk the whole cache a second time
+        printf("Gix cache clean-up done [new size: %s, took %s]\n",
+            TUInt64::GetMegaStr(uint64(ItemSetCache.GetCurMemUsed())).CStr(), ExeTm.GetTmStr());
     }
 }
 

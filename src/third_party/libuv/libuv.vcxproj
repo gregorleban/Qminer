@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Builds the vendored libuv (1.52.1) as a static lib. Output goes to
+     $(Platform)\$(Configuration)\libuv.lib (x64\Release\libuv.lib), which is the
+     path every consumer project in EventRegistry/cpp links against.
+     Source list mirrors CMakeLists.txt (uv_sources + the WIN32 block).
+     Replaces the pre-1.x-era libuv.vcxproj that produced the old stale lib. -->
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{5C111C82-52F1-4E44-B18C-0AAB6F5C71D6}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>libuv</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)$(Platform)\$(Configuration)\obj\</IntDir>
+    <TargetName>libuv</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <AdditionalIncludeDirectories>include;src</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;_WIN32_WINNT=0x0A00;_CRT_DECLARE_NONSTDC_NAMES=0;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\fs-poll.c" />
+    <ClCompile Include="src\idna.c" />
+    <ClCompile Include="src\inet.c" />
+    <ClCompile Include="src\random.c" />
+    <ClCompile Include="src\strscpy.c" />
+    <ClCompile Include="src\strtok.c" />
+    <ClCompile Include="src\thread-common.c" />
+    <ClCompile Include="src\threadpool.c" />
+    <ClCompile Include="src\timer.c" />
+    <ClCompile Include="src\uv-common.c" />
+    <ClCompile Include="src\uv-data-getter-setters.c" />
+    <ClCompile Include="src\version.c" />
+    <ClCompile Include="src\win\async.c" />
+    <ClCompile Include="src\win\core.c" />
+    <ClCompile Include="src\win\detect-wakeup.c" />
+    <ClCompile Include="src\win\dl.c" />
+    <ClCompile Include="src\win\error.c" />
+    <ClCompile Include="src\win\fs.c" />
+    <ClCompile Include="src\win\fs-event.c" />
+    <ClCompile Include="src\win\getaddrinfo.c" />
+    <ClCompile Include="src\win\getnameinfo.c" />
+    <ClCompile Include="src\win\handle.c" />
+    <ClCompile Include="src\win\loop-watcher.c" />
+    <ClCompile Include="src\win\pipe.c" />
+    <ClCompile Include="src\win\thread.c" />
+    <ClCompile Include="src\win\poll.c" />
+    <ClCompile Include="src\win\process.c" />
+    <ClCompile Include="src\win\process-stdio.c" />
+    <ClCompile Include="src\win\signal.c" />
+    <ClCompile Include="src\win\snprintf.c" />
+    <ClCompile Include="src\win\stream.c" />
+    <ClCompile Include="src\win\tcp.c" />
+    <ClCompile Include="src\win\tty.c" />
+    <ClCompile Include="src\win\udp.c" />
+    <ClCompile Include="src\win\util.c" />
+    <ClCompile Include="src\win\winapi.c" />
+    <ClCompile Include="src\win\winsock.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1340,6 +1340,9 @@ public:
     TCache& operator=(const TCache&);
     int64 GetMemUsed() const;
     int64 GetMxMemUsed() const { return MxMemUsed; }
+    /// last recomputed memory usage - valid right after RefreshMemUsed(), unlike
+    /// GetMemUsed() it does not re-walk the whole cache
+    int64 GetCurMemUsed() const { return CurMemUsed; }
     bool RefreshMemUsed();
 
     /// put the key to the cache and refresh it's usage timestamp 
