@@ -914,9 +914,9 @@ template <class TKey, class TItem>
 void TGix<TKey, TItem>::RefreshMemUsed() const {
     // check if we have to drop anything from the cache
     if (NewCacheSizeInc > CacheResetThreshold) {
-        // only report when cache size bigger then 10GB
-        const bool ReportP = CacheResetThreshold > (uint64)(TInt::Giga);
-        if (ReportP) { printf("Cache clean-up [%s] ... ", TUInt64::GetMegaStr(NewCacheSizeInc).CStr()); }
+        printf("Gix cache clean-up start [accumulated growth: %s]\n",
+            TUInt64::GetMegaStr(NewCacheSizeInc).CStr());
+        TExeTm ExeTm;
         // pack all the item sets
         TBlobPt BlobPt;
         PGixItemSet ItemSet;
@@ -927,10 +927,10 @@ void TGix<TKey, TItem>::RefreshMemUsed() const {
         // clean-up cache
         CacheFullP = ItemSetCache.RefreshMemUsed();
         NewCacheSizeInc = 0;
-        if (ReportP) {
-            const uint64 NewSize = ItemSetCache.GetMemUsed();
-            printf("Done [%s]\n", TUInt64::GetMegaStr(NewSize).CStr());
-        }
+        // GetCurMemUsed reuses the size just computed by RefreshMemUsed - calling
+        // GetMemUsed here would re-walk the whole cache a second time
+        printf("Gix cache clean-up done [new size: %s, took %s]\n",
+            TUInt64::GetMegaStr(uint64(ItemSetCache.GetCurMemUsed())).CStr(), ExeTm.GetTmStr());
     }
 }
 
