@@ -6136,7 +6136,7 @@ void TIndex::DeleteGix(const int& KeyId, const uint64& WordId, const uint64& Rec
     }
 }
 
-void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const std::function<void(int, const TStr&)>& OnProgress) {
+void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const TBatchDelProgressCb& OnProgress) {
     QmAssertR(!IsReadOnly(), "Cannot edit read-only index!");
     if (KeyIdSet.Empty() || RecIdSet.Empty()) { return; }
 
@@ -6155,67 +6155,110 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     // the upper bound is exclusive, so use MaxDelRecId + 1 (record ids never reach TUInt64::Mx)
     const uint64 HiDelRecId = MaxDelRecId + 1;
 
-    if (OnProgress) { OnProgress(0, "1/5 removing from GixFull"); }
+    // each gix phase advances by scanning that gix's keys, so the key count is the natural
+    // denominator for its progress. report roughly every 0.5% - a callback per key would drown
+    // a multi-million-key gix in console writes.
     if (!GixFull.Empty()) {
+        const TStr Phase = "1/5 GixFull";
         const TQmGixItemFull LoItem(MinDelRecId, 0), HiItem(HiDelRecId, 0);
+        const int64 TotalKeys = GixFull->GetKeys();
+        const int64 ReportEvery = TotalKeys / 200 + 1;
+        int64 KeysDone = 0, Removed = 0;
+        if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixFull->FFirstKeyId();
         while (GixFull->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixFull->GetKey(GixKeyId);
-            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
-            TVec<TQmGixItemFull> ItemV;
-            GixFull->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-            for (int N = 0; N < ItemV.Len(); N++) {
-                if (RecIdSet.IsKey(ItemV[N].Key)) {
-                    GixFull->DelItem(Key, ItemV[N]);
+            if (KeyIdSet.IsKey(Key.Val1)) {
+                TVec<TQmGixItemFull> ItemV;
+                GixFull->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                for (int N = 0; N < ItemV.Len(); N++) {
+                    if (RecIdSet.IsKey(ItemV[N].Key)) {
+                        GixFull->DelItem(Key, ItemV[N]);
+                        Removed++;
+                    }
                 }
+            }
+            KeysDone++;
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+                OnProgress(Phase, KeysDone, TotalKeys, Removed);
             }
         }
     }
-    if (OnProgress) { OnProgress(0, "2/5 removing from GixSmall"); }
     if (!GixSmall.Empty()) {
+        const TStr Phase = "2/5 GixSmall";
         const TQmGixItemSmall LoItem((uint)MinDelRecId, 0), HiItem((uint)HiDelRecId, 0);
+        const int64 TotalKeys = GixSmall->GetKeys();
+        const int64 ReportEvery = TotalKeys / 200 + 1;
+        int64 KeysDone = 0, Removed = 0;
+        if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixSmall->FFirstKeyId();
         while (GixSmall->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixSmall->GetKey(GixKeyId);
-            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
-            TVec<TQmGixItemSmall> ItemV;
-            GixSmall->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-            for (int N = 0; N < ItemV.Len(); N++) {
-                if (RecIdSet.IsKey((uint64)ItemV[N].Key)) {
-                    GixSmall->DelItem(Key, ItemV[N]);
+            if (KeyIdSet.IsKey(Key.Val1)) {
+                TVec<TQmGixItemSmall> ItemV;
+                GixSmall->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                for (int N = 0; N < ItemV.Len(); N++) {
+                    if (RecIdSet.IsKey((uint64)ItemV[N].Key)) {
+                        GixSmall->DelItem(Key, ItemV[N]);
+                        Removed++;
+                    }
                 }
+            }
+            KeysDone++;
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+                OnProgress(Phase, KeysDone, TotalKeys, Removed);
             }
         }
     }
-    if (OnProgress) { OnProgress(0, "3/5 removing from GixTiny"); }
     if (!GixTiny.Empty()) {
+        const TStr Phase = "3/5 GixTiny";
         const TQmGixItemTiny LoItem((uint)MinDelRecId), HiItem((uint)HiDelRecId);
+        const int64 TotalKeys = GixTiny->GetKeys();
+        const int64 ReportEvery = TotalKeys / 200 + 1;
+        int64 KeysDone = 0, Removed = 0;
+        if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixTiny->FFirstKeyId();
         while (GixTiny->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixTiny->GetKey(GixKeyId);
-            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
-            TVec<TQmGixItemTiny> ItemV;
-            GixTiny->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-            for (int N = 0; N < ItemV.Len(); N++) {
-                if (RecIdSet.IsKey((uint64)ItemV[N])) {
-                    GixTiny->DelItem(Key, ItemV[N]);
+            if (KeyIdSet.IsKey(Key.Val1)) {
+                TVec<TQmGixItemTiny> ItemV;
+                GixTiny->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                for (int N = 0; N < ItemV.Len(); N++) {
+                    if (RecIdSet.IsKey((uint64)ItemV[N])) {
+                        GixTiny->DelItem(Key, ItemV[N]);
+                        Removed++;
+                    }
                 }
+            }
+            KeysDone++;
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+                OnProgress(Phase, KeysDone, TotalKeys, Removed);
             }
         }
     }
-    if (OnProgress) { OnProgress(0, "4/5 removing from GixPos"); }
     if (!GixPos.Empty()) {
+        const TStr Phase = "4/5 GixPos";
         const TQmGixItemPos LoItem(MinDelRecId), HiItem(HiDelRecId);
+        const int64 TotalKeys = GixPos->GetKeys();
+        const int64 ReportEvery = TotalKeys / 200 + 1;
+        int64 KeysDone = 0, Removed = 0;
+        if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixPos->FFirstKeyId();
         while (GixPos->FNextKeyId(GixKeyId)) {
             const TQmGixKey& Key = GixPos->GetKey(GixKeyId);
-            if (!KeyIdSet.IsKey(Key.Val1)) { continue; }
-            TVec<TQmGixItemPos> ItemV;
-            GixPos->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-            for (int N = 0; N < ItemV.Len(); N++) {
-                if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) {
-                    GixPos->DelItem(Key, ItemV[N]);
+            if (KeyIdSet.IsKey(Key.Val1)) {
+                TVec<TQmGixItemPos> ItemV;
+                GixPos->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                for (int N = 0; N < ItemV.Len(); N++) {
+                    if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) {
+                        GixPos->DelItem(Key, ItemV[N]);
+                        Removed++;
+                    }
                 }
+            }
+            KeysDone++;
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+                OnProgress(Phase, KeysDone, TotalKeys, Removed);
             }
         }
     }

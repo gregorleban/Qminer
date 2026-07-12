@@ -598,6 +598,17 @@ typedef TPt<TStoreTrigger> PStoreTrigger;
 typedef TVec<PStoreTrigger> TStoreTriggerV;
 
 ///////////////////////////////
+/// Progress callback for batch deletes.
+/// Phase is a short name of the current phase ("1/5 GixFull" ... "5/5 Store").
+/// Done/Total is the work completed in that phase, in whatever unit the phase advances in:
+/// gix keys scanned for the index phases, records processed for the store phase. It is what
+/// the percentage should be computed from.
+/// Removed is the number of index items (resp. records) actually deleted so far in that phase.
+/// The callback is throttled - it fires roughly every 0.5% of a phase, not on every item.
+typedef std::function<void(const TStr& Phase, const int64& Done, const int64& Total,
+    const int64& Removed)> TBatchDelProgressCb;
+
+///////////////////////////////
 /// Store.
 /// Main interface to accessing records and their fields.
 /// Keeps meta-data descriptions of fields and joins associated with the store.
@@ -826,9 +837,9 @@ public:
     virtual void DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs = -1, const bool& AssertOK = true) = 0;
     /// Batch-delete records by scanning the GIX index directly instead of per-record deindexing.
     /// Avoids re-tokenizing text fields; efficient for large batches.
-    /// If OnProgress is provided, it is called during deletion with the number of items processed so far
-    /// and a short description of the current phase.
-    virtual void BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress = nullptr) { DeleteRecs(DelRecIdV, -1, false); }
+    /// If OnProgress is provided, it is called periodically with the current phase and its progress
+    /// (see TBatchDelProgressCb).
+    virtual void BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress = nullptr) { DeleteRecs(DelRecIdV, -1, false); }
 
     /// Check if the value of given field for a given record is NULL
     virtual bool IsFieldNull(const uint64& RecId, const int& FieldId) const { return false; }
@@ -3423,7 +3434,7 @@ public:
     /// restricted to the KeyIds listed in KeyIdSet. Does not handle BTree or Geo indices.
     /// If OnProgress is provided, it is called after each processed index key with the number of keys
     /// processed so far and a short description of the current phase.
-    void BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const std::function<void(int, const TStr&)>& OnProgress = nullptr);
+    void BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const TBatchDelProgressCb& OnProgress = nullptr);
 
     /// Index RecId using given keys and words. Words are extracted by tokenizing the given string.
     void IndexTextPos(const int& KeyId, const TStr& TextStr, const uint64& RecId);

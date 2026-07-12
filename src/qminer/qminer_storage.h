@@ -1062,7 +1062,7 @@ public:
     /// Batch-delete by scanning GIX directly; avoids re-tokenizing text fields.
     /// If OnProgress is provided, it is called during deletion with the number of items processed so far
     /// and a short description of the current phase.
-    void BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress = nullptr) override;
+    void BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress = nullptr) override;
 
     /// Check if the value of given field for a given record is NULL
     bool IsFieldNull(const uint64& RecId, const int& FieldId) const;
@@ -1369,7 +1369,7 @@ public:
     /// Batch-delete by scanning GIX directly; avoids re-tokenizing text fields.
     /// If OnProgress is provided, it is called during deletion with the number of items processed so far
     /// and a short description of the current phase.
-    void BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress = nullptr) override;
+    void BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress = nullptr) override;
 
     /// Check if the value of given field for a given record is NULL
     bool IsFieldNull(const uint64& RecId, const int& FieldId) const;

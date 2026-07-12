@@ -3562,7 +3562,7 @@ void TStoreImpl::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs, c
     }
 }
 
-void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress) {
+void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress) {
     if (DelRecIdV.Empty()) { return; }
 
     TUInt64H RecIdSet(DelRecIdV.Len());
@@ -3572,34 +3572,43 @@ void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<
     RecIndexer.GetGixKeyIdSet(KeyIdSet);
     GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, OnProgress);
 
-    int DeletedRecs = 0;
+    // the store phase advances one requested record at a time; ids that are no longer valid are
+    // skipped, so Done counts records looked at and Removed counts the ones actually deleted
+    const TStr Phase = "5/5 Store";
+    const int64 TotalRecs = DelRecIdV.Len();
+    const int64 ReportEvery = TotalRecs / 200 + 1;
+    int64 DeletedRecs = 0;
+    if (OnProgress) { OnProgress(Phase, 0, TotalRecs, 0); }
     for (int N = 0; N < DelRecIdV.Len(); N++) {
         const uint64 DelRecId = DelRecIdV[N];
-        if (!IsRecId(DelRecId)) { continue; }
-        OnDelete(DelRecId);
-        if (IsPrimaryField()) { DelPrimaryField(DelRecId); }
-        if (DataCacheP) {
-            TMem RecMem; DataCache.GetVal(DelRecId, RecMem);
-            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorCache);
-        }
-        if (DataMemP) {
-            TMem RecMem; DataMem.GetVal(DelRecId, RecMem);
-            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorMem);
-        }
-        TRec Rec(this, DelRecId);
-        for (int JoinN = 0; JoinN < GetJoins(); JoinN++) {
-            TJoinDesc JoinDesc = GetJoinDesc(JoinN);
-            PRecSet JoinRecSet = Rec.DoJoin(GetBase(), JoinDesc.GetJoinId());
-            for (int JoinRecN = 0; JoinRecN < JoinRecSet->GetRecs(); JoinRecN++) {
-                DelJoin(JoinDesc.GetJoinId(), DelRecId, JoinRecSet->GetRecId(JoinRecN));
+        if (IsRecId(DelRecId)) {
+            OnDelete(DelRecId);
+            if (IsPrimaryField()) { DelPrimaryField(DelRecId); }
+            if (DataCacheP) {
+                TMem RecMem; DataCache.GetVal(DelRecId, RecMem);
+                RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorCache);
             }
+            if (DataMemP) {
+                TMem RecMem; DataMem.GetVal(DelRecId, RecMem);
+                RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorMem);
+            }
+            TRec Rec(this, DelRecId);
+            for (int JoinN = 0; JoinN < GetJoins(); JoinN++) {
+                TJoinDesc JoinDesc = GetJoinDesc(JoinN);
+                PRecSet JoinRecSet = Rec.DoJoin(GetBase(), JoinDesc.GetJoinId());
+                for (int JoinRecN = 0; JoinRecN < JoinRecSet->GetRecs(); JoinRecN++) {
+                    DelJoin(JoinDesc.GetJoinId(), DelRecId, JoinRecSet->GetRecId(JoinRecN));
+                }
+            }
+            DeletedRecs++;
         }
-        DeletedRecs++;
-        // report progress to the caller after each deleted record
-        if (OnProgress) { OnProgress(DeletedRecs, "5/5 Store"); }
+        const int64 Done = N + 1;
+        if (OnProgress && (Done % ReportEvery == 0 || Done == TotalRecs)) {
+            OnProgress(Phase, Done, TotalRecs, DeletedRecs);
+        }
     }
-    if (DataCacheP) { DataCache.DelVals(DeletedRecs); }
-    if (DataMemP)   { DataMem.DelVals(DeletedRecs); }
+    if (DataCacheP) { DataCache.DelVals((int)DeletedRecs); }
+    if (DataMemP)   { DataMem.DelVals((int)DeletedRecs); }
 }
 
 bool TStoreImpl::IsFieldNull(const uint64& RecId, const int& FieldId) const {
@@ -5285,7 +5294,7 @@ void TStorePbBlob::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs,
     }
 }
 
-void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::function<void(int, const TStr&)>& OnProgress) {
+void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress) {
     if (DelRecIdV.Empty()) { return; }
 
     TUInt64H RecIdSet(DelRecIdV.Len());
@@ -5295,41 +5304,48 @@ void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV, const std::functio
     RecIndexer.GetGixKeyIdSet(KeyIdSet);
     GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, OnProgress);
 
-    int DeletedRecs = 0;
+    // the store phase advances one requested record at a time; ids that are no longer valid are
+    // skipped, so Done counts records looked at and Removed counts the ones actually deleted
+    const TStr Phase = "5/5 Store";
+    const int64 TotalRecs = DelRecIdV.Len();
+    const int64 ReportEvery = TotalRecs / 200 + 1;
+    int64 DeletedRecs = 0;
+    if (OnProgress) { OnProgress(Phase, 0, TotalRecs, 0); }
     for (int N = 0; N < DelRecIdV.Len(); N++) {
         const uint64 DelRecId = DelRecIdV[N];
-        if (!IsRecId(DelRecId)) {
-            continue;
-        }
-        OnDelete(DelRecId);
-        if (IsPrimaryField()) { DelPrimaryField(DelRecId); }
-        TRec Rec(this, DelRecId);
-        for (int JoinN = 0; JoinN < GetJoins(); JoinN++) {
-            TJoinDesc JoinDesc = GetJoinDesc(JoinN);
-            PRecSet JoinRecSet = Rec.DoJoin(GetBase(), JoinDesc.GetJoinId());
-            for (int JoinRecN = 0; JoinRecN < JoinRecSet->GetRecs(); JoinRecN++) {
-                DelJoin(JoinDesc.GetJoinId(), DelRecId, JoinRecSet->GetRecId(JoinRecN));
+        if (IsRecId(DelRecId)) {
+            OnDelete(DelRecId);
+            if (IsPrimaryField()) { DelPrimaryField(DelRecId); }
+            TRec Rec(this, DelRecId);
+            for (int JoinN = 0; JoinN < GetJoins(); JoinN++) {
+                TJoinDesc JoinDesc = GetJoinDesc(JoinN);
+                PRecSet JoinRecSet = Rec.DoJoin(GetBase(), JoinDesc.GetJoinId());
+                for (int JoinRecN = 0; JoinRecN < JoinRecSet->GetRecs(); JoinRecN++) {
+                    DelJoin(JoinDesc.GetJoinId(), DelRecId, JoinRecSet->GetRecId(JoinRecN));
+                }
             }
+            if (DataBlobP) {
+                TPgBlobPt Pt = RecIdBlobPtH.GetDat(DelRecId);
+                TMemBase RecMem = DataBlob->GetMemBase(Pt);
+                RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorCache);
+                SerializatorCache->DeleteToast(RecMem);
+                DataBlob->Del(Pt);
+                RecIdBlobPtH.DelKey(DelRecId);
+            }
+            if (DataMemP) {
+                TPgBlobPt Pt = RecIdBlobPtHMem.GetDat(DelRecId);
+                TMemBase RecMem = DataMem->GetMemBase(Pt);
+                RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorMem);
+                SerializatorMem->DeleteToast(RecMem);
+                DataMem->Del(Pt);
+                RecIdBlobPtHMem.DelKey(DelRecId);
+            }
+            DeletedRecs++;
         }
-        if (DataBlobP) {
-            TPgBlobPt Pt = RecIdBlobPtH.GetDat(DelRecId);
-            TMemBase RecMem = DataBlob->GetMemBase(Pt);
-            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorCache);
-            SerializatorCache->DeleteToast(RecMem);
-            DataBlob->Del(Pt);
-            RecIdBlobPtH.DelKey(DelRecId);
+        const int64 Done = N + 1;
+        if (OnProgress && (Done % ReportEvery == 0 || Done == TotalRecs)) {
+            OnProgress(Phase, Done, TotalRecs, DeletedRecs);
         }
-        if (DataMemP) {
-            TPgBlobPt Pt = RecIdBlobPtHMem.GetDat(DelRecId);
-            TMemBase RecMem = DataMem->GetMemBase(Pt);
-            RecIndexer.DeindexRecNonGix(RecMem, DelRecId, *SerializatorMem);
-            SerializatorMem->DeleteToast(RecMem);
-            DataMem->Del(Pt);
-            RecIdBlobPtHMem.DelKey(DelRecId);
-        }
-        DeletedRecs++;
-        // report progress to the caller after each deleted record
-        if (OnProgress) { OnProgress(DeletedRecs, "deleting records"); }
     }
     if (DelRecIdV.Len() > 1000) {
         TEnv::Logger->OnStatusFmt("  %s records at end", TUInt64::GetStr(GetRecs()).CStr());
