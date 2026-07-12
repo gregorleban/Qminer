@@ -364,7 +364,9 @@ bool TDir::GenDirs(const TStr& FPathFNm)
     TStrV PartV;
     TDir::SplitPath(FPathFNm, PartV);
     bool Ret = true;
-    TStr Path = "";
+    // preserve the root of absolute unix paths - without it all the directories
+    // would silently be created relative to the current working directory
+    TStr Path = (FPathFNm.Len() > 0 && FPathFNm[0] == '/') ? "/" : "";
     for (int N = 0; N < PartV.Len() && Ret == true; N++) {
         Path += (N > 0) ? "/" : "";
         Path += PartV[N];
