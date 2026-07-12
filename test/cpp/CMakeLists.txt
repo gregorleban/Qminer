@@ -65,8 +65,8 @@ endforeach()
 # fail to compile; they were never in the old 4-file Linux Makefile so this was
 # unnoticed). Excluded to keep CI green — FIX OR DELETE in a follow-up:
 #   test-aggr.cpp        -> uses TStreamAggrs::PSlottedHistogram (now TOnlineSlottedHistogram)
-#   test_batch_delete.cpp-> uses TStore::BatchDeleteRecs (now DeleteRecs; from unmerged batch-deletes branch)
-foreach(broken test-aggr test_batch_delete)
+# (test_batch_delete.cpp is enabled again on this branch - BatchDeleteRecs exists here)
+foreach(broken test-aggr)
   list(FILTER TEST_SOURCES EXCLUDE REGEX "/${broken}\\.cpp$")
 endforeach()
 
