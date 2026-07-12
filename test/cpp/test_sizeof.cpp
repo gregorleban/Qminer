@@ -2,9 +2,9 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-TEST(sizeofBasicTypes) {
+TEST(Sizeof, sizeofBasicTypes) {
     ASSERT_EQ(sizeof(TUCh), (uint)1);
     ASSERT_EQ(sizeof(TCh), (uint)1);
     ASSERT_EQ(sizeof(TSInt), (uint)2);
@@ -15,7 +15,7 @@ TEST(sizeofBasicTypes) {
     ASSERT_EQ(sizeof(TFlt), (uint)8);
 }
 
- TEST(sizeofBasicStructures) {
+ TEST(Sizeof, sizeofBasicStructures) {
      ASSERT_EQ(sizeof(TVec<TInt>), (uint)16);
      ASSERT_EQ(sizeof(THash<TInt, TInt>), (uint)48);
      ASSERT_EQ(sizeof(THashSet<TInt>), (uint)48);
@@ -32,7 +32,7 @@ TEST(sizeofBasicTypes) {
      ASSERT_EQ(sizeof(TPgBlobPt), (uint)8);
  }
 
- TEST(sizeofQMiner) {
+ TEST(Sizeof, sizeofQMiner) {
      /* ASSERT_EQ(sizeof(TQm::TRec), (uint)192); */ // TODO check on Mac and Windows
      ASSERT_EQ(sizeof(TQm::TRecSet), (uint)56);
      ASSERT_EQ(sizeof(TQm::TRecFilter), (uint)24);
@@ -42,12 +42,12 @@ TEST(sizeofBasicTypes) {
      ASSERT_EQ(sizeof(TQm::TFtrSpace), (uint)72);
  }
 
-TEST(GetExtraMemberSizeTStr) {
+TEST(Sizeof, GetExtraMemberSizeTStr) {
     const TStr Str = "abc";
     ASSERT_EQ((int)TMemUtils::GetExtraMemberSize(Str), Str.Len() + 1);
 }
 
-TEST(GetMemUsedTVec) {
+TEST(Sizeof, GetMemUsedTVec) {
     const TStr TargetStr = "abcdefg";
     const int NVecs = 4;
     const int StrMemUsed = TargetStr.GetMemUsed();
@@ -85,7 +85,7 @@ TEST(GetMemUsedTVec) {
     ASSERT_EQ(StrVVV.GetMemUsed(false), StrVVV.GetMemUsed());
 }
 
-TEST(GetMemUsedTHash) {
+TEST(Sizeof, GetMemUsedTHash) {
     const TStr TargetStr = "abcdefghijk";
 
     THash<TInt, TStr> TestH(2);
@@ -105,7 +105,7 @@ TEST(GetMemUsedTHash) {
     ASSERT_EQ(TestH.GetMemUsed(false), BaseMemUsed);
 }
 
-TEST(GetMemUsedpointer) {
+TEST(Sizeof, GetMemUsedpointer) {
     double* NullPtr = NULL;
     TStrV* Vec = new TStrV;
     Vec->Add("Hello");
@@ -122,7 +122,7 @@ TEST(GetMemUsedpointer) {
     ASSERT_EQ(TMemUtils::GetMemUsed(ConstVec), sizeof(TStrV*) + VecMem);
 }
 
-TEST(GetMemUsedreference) {
+TEST(Sizeof, GetMemUsedreference) {
     TStrV Vec;
     Vec.Add("Hello");
     Vec.Add("World");
@@ -134,12 +134,12 @@ TEST(GetMemUsedreference) {
     ASSERT_EQ(TMemUtils::GetMemUsed(ConstVecRef), Vec.GetMemUsed(true));
 }
 
-TEST(GetMemUsedfundamental) {
+TEST(Sizeof, GetMemUsedfundamental) {
     int Val = 3;
     ASSERT_EQ(TMemUtils::GetMemUsed(Val), sizeof(int));
 }
 
-TEST(GetMemUsedclazz) {
+TEST(Sizeof, GetMemUsedclazz) {
     const TStr StrVal = "abc";
     const TInt IntVal = 4;
     const TFlt FltVal = 5;

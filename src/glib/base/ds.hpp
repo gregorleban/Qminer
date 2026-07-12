@@ -159,14 +159,26 @@ void TVec<TVal, TSizeTy>::Load(TSIn& SIn){
   if ((ValT!=NULL)&&(MxVals!=-1)){delete[] ValT;}
   SIn.Load(MxVals); SIn.Load(Vals); MxVals=Vals;
   if (MxVals==0){ValT=NULL;} else {ValT=new TVal[MxVals];}
-  for (TSizeTy ValN=0; ValN<Vals; ValN++){ValT[ValN]=TVal(SIn);}
+  if (TIsFlatSerializable<TVal>::Val){
+    // flat element format == memory layout: read the whole array with one call;
+    // produces the same bytes and stream checksum as the element loop below
+    if (Vals>0){SIn.LoadBf(ValT, (TSize)Vals*sizeof(TVal));}
+  } else {
+    for (TSizeTy ValN=0; ValN<Vals; ValN++){ValT[ValN]=TVal(SIn);}
+  }
 }
 
 template <class TVal, class TSizeTy>
 void TVec<TVal, TSizeTy>::Save(TSOut& SOut) const {
   if (MxVals!=-1){SOut.Save(MxVals);} else {SOut.Save(Vals);}
   SOut.Save(Vals);
-  for (TSizeTy ValN=0; ValN<Vals; ValN++){ValT[ValN].Save(SOut);}
+  if (TIsFlatSerializable<TVal>::Val){
+    // flat element format == memory layout: write the whole array with one call;
+    // produces the same bytes and stream checksum as the element loop below
+    if (Vals>0){SOut.SaveBf(ValT, (TSize)Vals*sizeof(TVal));}
+  } else {
+    for (TSizeTy ValN=0; ValN<Vals; ValN++){ValT[ValN].Save(SOut);}
+  }
 }
 
 template <class TVal, class TSizeTy>

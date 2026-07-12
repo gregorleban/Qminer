@@ -44,11 +44,6 @@
 
 /* Do platform-specific initialization. */
 void platform_init(int argc, char **argv) {
-  const char* tap;
-
-  tap = getenv("UV_TAP_OUTPUT");
-  tap_output = (tap != NULL && atoi(tap) > 0);
-
   /* Disable the "application crashed" popup. */
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
       SEM_NOOPENFILEERRORBOX);
@@ -60,6 +55,12 @@ void platform_init(int argc, char **argv) {
   _setmode(0, _O_BINARY);
   _setmode(1, _O_BINARY);
   _setmode(2, _O_BINARY);
+
+#ifdef _MSC_VER
+  _set_fmode(_O_BINARY);
+#else
+  _fmode = _O_BINARY;
+#endif
 
   /* Disable stdio output buffering. */
   setvbuf(stdout, NULL, _IONBF, 0);
@@ -78,6 +79,11 @@ int process_start(char *name, char *part, process_info_t *p, int is_helper) {
   STARTUPINFOW si;
   PROCESS_INFORMATION pi;
   DWORD result;
+
+  if (!is_helper) {
+    /* Give the helpers time to settle. Race-y, fix this. */
+    uv_sleep(250);
+  }
 
   if (GetTempPathW(sizeof(path) / sizeof(WCHAR), (WCHAR*)&path) == 0)
     goto error;
@@ -110,7 +116,9 @@ int process_start(char *name, char *part, process_info_t *p, int is_helper) {
   if (!SetHandleInformation(nul, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
     goto error;
 
-  result = GetModuleFileNameW(NULL, (WCHAR*)&image, sizeof(image) / sizeof(WCHAR));
+  result = GetModuleFileNameW(NULL,
+                              (WCHAR*) &image,
+                              sizeof(image) / sizeof(WCHAR));
   if (result == 0 || result == sizeof(image))
     goto error;
 
@@ -166,8 +174,8 @@ error:
 }
 
 
-/* Timeout is is msecs. Set timeout < 0 to never time out. */
-/* Returns 0 when all processes are terminated, -2 on timeout. */
+/* Timeout is in msecs. Set timeout < 0 to never time out. Returns 0 when all
+ * processes are terminated, -2 on timeout. */
 int process_wait(process_info_t *vec, int n, int timeout) {
   int i;
   HANDLE handles[MAXIMUM_WAIT_OBJECTS];
@@ -177,7 +185,7 @@ int process_wait(process_info_t *vec, int n, int timeout) {
   if (n == 0)
     return 0;
 
-  ASSERT(n <= MAXIMUM_WAIT_OBJECTS);
+  ASSERT_LE(n, MAXIMUM_WAIT_OBJECTS);
 
   for (i = 0; i < n; i++)
     handles[i] = vec[i].process;
@@ -190,7 +198,7 @@ int process_wait(process_info_t *vec, int n, int timeout) {
 
   result = WaitForMultipleObjects(n, handles, TRUE, timeout_api);
 
-  if (result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + n) {
+  if (result < WAIT_OBJECT_0 + n) {
     /* All processes are terminated. */
     return 0;
   }
@@ -209,41 +217,24 @@ long int process_output_size(process_info_t *p) {
 }
 
 
-int process_copy_output(process_info_t *p, int fd) {
-  DWORD read;
+int process_copy_output(process_info_t* p, FILE* stream) {
   char buf[1024];
-  char *line, *start;
+  int partial;
+  int fd, r;
 
-  if (SetFilePointer(p->stdio_out, 0, 0, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
+  fd = _open_osfhandle((intptr_t)p->stdio_out, _O_RDONLY | _O_TEXT);
+  if (fd == -1)
     return -1;
 
-  if (tap_output)
-    write(fd, "#", 1);
-
-  while (ReadFile(p->stdio_out, (void*)&buf, sizeof(buf), &read, NULL) &&
-         read > 0) {
-    if (tap_output) {
-      start = buf;
-
-      while ((line = strchr(start, '\n')) != NULL) {
-        write(fd, start, line - start + 1);
-        write(fd, "#", 1);
-        start = line + 1;
-      }
-
-      if (start < buf + read)
-        write(fd, start, buf + read - start);
-    } else {
-      write(fd, buf, read);
-    }
-  }
-
-  if (tap_output)
-    write(fd, "\n", 1);
-
-  if (GetLastError() != ERROR_HANDLE_EOF)
+  r = _lseek(fd, 0, SEEK_SET);
+  if (r < 0)
     return -1;
 
+  partial = 0;
+  while ((r = _read(fd, buf, sizeof(buf))) != 0)
+    partial = print_lines(buf, r, stream, partial);
+
+  _close(fd);
   return 0;
 }
 
@@ -256,7 +247,7 @@ int process_read_last_line(process_info_t *p,
   DWORD start;
   OVERLAPPED overlapped;
 
-  ASSERT(buffer_len > 0);
+  ASSERT_GT(buffer_len, 0);
 
   size = GetFileSize(p->stdio_out, NULL);
   if (size == INVALID_FILE_SIZE)
@@ -274,7 +265,8 @@ int process_read_last_line(process_info_t *p,
   if (!ReadFile(p->stdio_out, buffer, buffer_len - 1, &read, &overlapped))
     return -1;
 
-  for (start = read - 1; start >= 0; start--) {
+  start = read;
+  while (start-- > 0) {
     if (buffer[start] == '\n' || buffer[start] == '\r')
       break;
   }
@@ -311,17 +303,16 @@ int process_reap(process_info_t *p) {
 void process_cleanup(process_info_t *p) {
   CloseHandle(p->process);
   CloseHandle(p->stdio_in);
-  CloseHandle(p->stdio_out);
 }
 
 
-static int clear_line() {
+static int clear_line(void) {
   HANDLE handle;
   CONSOLE_SCREEN_BUFFER_INFO info;
   COORD coord;
   DWORD written;
 
-  handle = (HANDLE)_get_osfhandle(fileno(stderr));
+  handle = (HANDLE)_get_osfhandle(_fileno(stderr));
   if (handle == INVALID_HANDLE_VALUE)
     return -1;
 
@@ -337,22 +328,21 @@ static int clear_line() {
   if (!SetConsoleCursorPosition(handle, coord))
     return -1;
 
-  if (!FillConsoleOutputCharacterW(handle, 0x20, info.dwSize.X, coord, &written))
+  if (!FillConsoleOutputCharacterW(handle,
+                                   0x20,
+                                   info.dwSize.X,
+                                   coord,
+                                   &written)) {
     return -1;
+  }
 
   return 0;
 }
 
 
-void rewind_cursor() {
+void rewind_cursor(void) {
   if (clear_line() == -1) {
     /* If clear_line fails (stdout is not a console), print a newline. */
     fprintf(stderr, "\n");
   }
-}
-
-
-/* Pause the calling thread for a number of milliseconds. */
-void uv_sleep(int msec) {
-  Sleep(msec);
 }

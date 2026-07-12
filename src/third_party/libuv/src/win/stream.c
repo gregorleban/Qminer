@@ -28,161 +28,228 @@
 
 
 int uv_listen(uv_stream_t* stream, int backlog, uv_connection_cb cb) {
+  int err;
+  if (uv__is_closing(stream)) {
+    return UV_EINVAL;
+  }
+  err = ERROR_INVALID_PARAMETER;
   switch (stream->type) {
     case UV_TCP:
-      return uv_tcp_listen((uv_tcp_t*)stream, backlog, cb);
+      err = uv__tcp_listen((uv_tcp_t*)stream, backlog, cb);
+      break;
     case UV_NAMED_PIPE:
-      return uv_pipe_listen((uv_pipe_t*)stream, backlog, cb);
+      err = uv__pipe_listen((uv_pipe_t*)stream, backlog, cb);
+      break;
     default:
       assert(0);
-      return -1;
   }
+
+  return uv_translate_sys_error(err);
 }
 
 
 int uv_accept(uv_stream_t* server, uv_stream_t* client) {
+  int err;
+
+  err = ERROR_INVALID_PARAMETER;
   switch (server->type) {
     case UV_TCP:
-      return uv_tcp_accept((uv_tcp_t*)server, (uv_tcp_t*)client);
+      err = uv__tcp_accept((uv_tcp_t*)server, (uv_tcp_t*)client);
+      break;
     case UV_NAMED_PIPE:
-      return uv_pipe_accept((uv_pipe_t*)server, client);
+      err = uv__pipe_accept((uv_pipe_t*)server, client);
+      break;
     default:
       assert(0);
-      return -1;
   }
+
+  return uv_translate_sys_error(err);
 }
 
 
-int uv_read_start(uv_stream_t* handle, uv_alloc_cb alloc_cb,
-    uv_read_cb read_cb) {
-  if (handle->flags & UV_HANDLE_READING) {
-    uv__set_artificial_error(handle->loop, UV_EALREADY);
-    return -1;
-  }
+int uv__read_start(uv_stream_t* handle,
+                   uv_alloc_cb alloc_cb,
+                   uv_read_cb read_cb) {
+  int err;
 
-  if (!(handle->flags & UV_HANDLE_READABLE)) {
-    uv__set_artificial_error(handle->loop, UV_ENOTCONN);
-    return -1;
-  }
-
+  err = ERROR_INVALID_PARAMETER;
   switch (handle->type) {
     case UV_TCP:
-      return uv_tcp_read_start((uv_tcp_t*)handle, alloc_cb, read_cb);
+      err = uv__tcp_read_start((uv_tcp_t*)handle, alloc_cb, read_cb);
+      break;
     case UV_NAMED_PIPE:
-      return uv_pipe_read_start((uv_pipe_t*)handle, alloc_cb, read_cb);
+      err = uv__pipe_read_start((uv_pipe_t*)handle, alloc_cb, read_cb);
+      break;
     case UV_TTY:
-      return uv_tty_read_start((uv_tty_t*) handle, alloc_cb, read_cb);
+      err = uv__tty_read_start((uv_tty_t*) handle, alloc_cb, read_cb);
+      break;
     default:
       assert(0);
-      return -1;
-  }
-}
-
-
-int uv_read2_start(uv_stream_t* handle, uv_alloc_cb alloc_cb,
-    uv_read2_cb read_cb) {
-  if (handle->flags & UV_HANDLE_READING) {
-    uv__set_artificial_error(handle->loop, UV_EALREADY);
-    return -1;
   }
 
-  if (!(handle->flags & UV_HANDLE_READABLE)) {
-    uv__set_artificial_error(handle->loop, UV_ENOTCONN);
-    return -1;
-  }
-
-  switch (handle->type) {
-    case UV_NAMED_PIPE:
-      return uv_pipe_read2_start((uv_pipe_t*)handle, alloc_cb, read_cb);
-    default:
-      assert(0);
-      return -1;
-  }
+  return uv_translate_sys_error(err);
 }
 
 
 int uv_read_stop(uv_stream_t* handle) {
+  int err;
+
   if (!(handle->flags & UV_HANDLE_READING))
     return 0;
 
+  err = 0;
   if (handle->type == UV_TTY) {
-    return uv_tty_read_stop((uv_tty_t*) handle);
+    err = uv__tty_read_stop((uv_tty_t*) handle);
+  } else if (handle->type == UV_NAMED_PIPE) {
+    uv__pipe_read_stop((uv_pipe_t*) handle);
   } else {
     handle->flags &= ~UV_HANDLE_READING;
     DECREASE_ACTIVE_COUNT(handle->loop, handle);
-    return 0;
   }
+
+  return uv_translate_sys_error(err);
 }
 
 
-int uv_write(uv_write_t* req, uv_stream_t* handle, uv_buf_t bufs[], int bufcnt,
-    uv_write_cb cb) {
-  uv_loop_t* loop = handle->loop;
-
-  if (!(handle->flags & UV_HANDLE_WRITABLE)) {
-    uv__set_artificial_error(loop, UV_EPIPE);
-    return -1;
+static int uv__check_before_write(uv_stream_t* handle, unsigned int nbufs) {
+  /* We're not beholden to IOV_MAX but limit the buffer count to catch sign
+   * conversion bugs where a caller passes in a signed negative number that
+   * then gets converted to a really large unsigned number.
+   */
+  if (nbufs < 1 || nbufs > 1024*1024) {
+    return UV_EINVAL;
   }
 
+  if (!(handle->flags & UV_HANDLE_WRITABLE)) {
+    return UV_EPIPE;
+  }
+
+  return 0;
+}
+
+
+int uv_write(uv_write_t* req,
+             uv_stream_t* handle,
+             const uv_buf_t bufs[],
+             unsigned int nbufs,
+             uv_write_cb cb) {
+  uv_loop_t* loop = handle->loop;
+  int err;
+
+  err = uv__check_before_write(handle, nbufs);
+  if (err != 0) {
+    return err;
+  }
+
+  err = ERROR_INVALID_PARAMETER;
   switch (handle->type) {
     case UV_TCP:
-      return uv_tcp_write(loop, req, (uv_tcp_t*) handle, bufs, bufcnt, cb);
+      err = uv__tcp_write(loop, req, (uv_tcp_t*) handle, bufs, nbufs, cb);
+      break;
     case UV_NAMED_PIPE:
-      return uv_pipe_write(loop, req, (uv_pipe_t*) handle, bufs, bufcnt, cb);
+      err = uv__pipe_write(
+          loop, req, (uv_pipe_t*) handle, bufs, nbufs, NULL, cb);
+      return uv_translate_write_sys_error(err);
     case UV_TTY:
-      return uv_tty_write(loop, req, (uv_tty_t*) handle, bufs, bufcnt, cb);
+      err = uv__tty_write(loop, req, (uv_tty_t*) handle, bufs, nbufs, cb);
+      break;
     default:
       assert(0);
-      uv__set_sys_error(loop, WSAEINVAL);
-      return -1;
+  }
+
+  return uv_translate_sys_error(err);
+}
+
+
+int uv_write2(uv_write_t* req,
+              uv_stream_t* handle,
+              const uv_buf_t bufs[],
+              unsigned int nbufs,
+              uv_stream_t* send_handle,
+              uv_write_cb cb) {
+  uv_loop_t* loop = handle->loop;
+  int err;
+
+  if (send_handle == NULL) {
+    return uv_write(req, handle, bufs, nbufs, cb);
+  }
+
+  err = uv__check_before_write(handle, nbufs);
+  if (err != 0) {
+    return err;
+  }
+
+  if (handle->type != UV_NAMED_PIPE || !((uv_pipe_t*) handle)->ipc) {
+    return UV_EINVAL;
+  }
+
+  err = uv__pipe_write(
+      loop, req, (uv_pipe_t*) handle, bufs, nbufs, send_handle, cb);
+  return uv_translate_write_sys_error(err);
+}
+
+
+int uv_try_write(uv_stream_t* stream,
+                 const uv_buf_t bufs[],
+                 unsigned int nbufs) {
+  int err;
+
+  err = uv__check_before_write(stream, nbufs);
+  if (err != 0) {
+    return err;
+  }
+
+  if (stream->flags & UV_HANDLE_CLOSING)
+    return UV_EBADF;
+
+  switch (stream->type) {
+    case UV_TCP:
+      return uv__tcp_try_write((uv_tcp_t*) stream, bufs, nbufs);
+    case UV_TTY:
+      return uv__tty_try_write((uv_tty_t*) stream, bufs, nbufs);
+    case UV_NAMED_PIPE:
+      return UV_EAGAIN;
+    default:
+      assert(0);
+      return UV_ENOSYS;
   }
 }
 
 
-int uv_write2(uv_write_t* req, uv_stream_t* handle, uv_buf_t bufs[], int bufcnt,
-    uv_stream_t* send_handle, uv_write_cb cb) {
-  uv_loop_t* loop = handle->loop;
-
-  if (!(handle->flags & UV_HANDLE_WRITABLE)) {
-    uv__set_artificial_error(loop, UV_EPIPE);
-    return -1;
-  }
-
-  switch (handle->type) {
-    case UV_NAMED_PIPE:
-      return uv_pipe_write2(loop, req, (uv_pipe_t*) handle, bufs, bufcnt, send_handle, cb);
-    default:
-      assert(0);
-      uv__set_sys_error(loop, WSAEINVAL);
-      return -1;
-  }
+int uv_try_write2(uv_stream_t* stream,
+                  const uv_buf_t bufs[],
+                  unsigned int nbufs,
+                  uv_stream_t* send_handle) {
+  if (send_handle != NULL)
+    return UV_EAGAIN;
+  return uv_try_write(stream, bufs, nbufs);
 }
 
 
 int uv_shutdown(uv_shutdown_t* req, uv_stream_t* handle, uv_shutdown_cb cb) {
   uv_loop_t* loop = handle->loop;
 
- if (!(handle->flags & UV_HANDLE_WRITABLE)) {
-    uv__set_artificial_error(loop, UV_EPIPE);
-    return -1;
+  if (!(handle->flags & UV_HANDLE_WRITABLE) ||
+      uv__is_stream_shutting(handle) ||
+      uv__is_closing(handle)) {
+    return UV_ENOTCONN;
   }
 
-  if (!(handle->flags & UV_HANDLE_WRITABLE)) {
-    uv__set_artificial_error(loop, UV_EPIPE);
-    return -1;
-  }
-
-  uv_req_init(loop, (uv_req_t*) req);
-  req->type = UV_SHUTDOWN;
+  UV_REQ_INIT(req, UV_SHUTDOWN);
   req->handle = handle;
   req->cb = cb;
 
   handle->flags &= ~UV_HANDLE_WRITABLE;
-  handle->shutdown_req = req;
+  handle->stream.conn.shutdown_req = req;
   handle->reqs_pending++;
-  REGISTER_HANDLE_REQ(loop, handle, req);
+  REGISTER_HANDLE_REQ(loop, handle);
 
-  uv_want_endgame(loop, (uv_handle_t*)handle);
+  if (handle->stream.conn.write_reqs_pending == 0) {
+    if (handle->type == UV_NAMED_PIPE)
+      uv__pipe_shutdown(loop, (uv_pipe_t*) handle, req);
+    else
+      uv__insert_pending_req(loop, (uv_req_t*) req);
+  }
 
   return 0;
 }
@@ -195,4 +262,17 @@ int uv_is_readable(const uv_stream_t* handle) {
 
 int uv_is_writable(const uv_stream_t* handle) {
   return !!(handle->flags & UV_HANDLE_WRITABLE);
+}
+
+
+int uv_stream_set_blocking(uv_stream_t* handle, int blocking) {
+  if (handle->type != UV_NAMED_PIPE)
+    return UV_EINVAL;
+
+  if (blocking != 0)
+    handle->flags |= UV_HANDLE_BLOCKING_WRITES;
+  else
+    handle->flags &= ~UV_HANDLE_BLOCKING_WRITES;
+
+  return 0;
 }

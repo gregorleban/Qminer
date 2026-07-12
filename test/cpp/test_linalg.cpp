@@ -2,7 +2,7 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 constexpr double Tol = 1e-8;
 
@@ -22,7 +22,7 @@ void InitFltV(TFltV& FltV) {
     }
 }
 
-TEST(TLinAlgOperatorsSubtract) {
+TEST(LinAlg, TLinAlgOperatorsSubtract) {
     int Dim{ 4 };
 
     TFltVV X{ Dim, Dim };
@@ -39,7 +39,7 @@ TEST(TLinAlgOperatorsSubtract) {
     ASSERT_ANY_THROW(X - BadDim);
 }
 
-TEST(TLinAlgOperatorsMultiply) {
+TEST(LinAlg, TLinAlgOperatorsMultiply) {
     // MATRICES
     TIntPr Dim1{ 3, 4 };
     TIntPr Dim2{ 4, 2 };
@@ -71,7 +71,7 @@ TEST(TLinAlgOperatorsMultiply) {
     ASSERT_ANY_THROW(Vec1 * BadVec);
 }
 
-TEST(TLinAlgOperatorsDivide) {
+TEST(LinAlg, TLinAlgOperatorsDivide) {
     const int Dim{ 5 };
 
     const TFltVV FltVV{ Dim, Dim };

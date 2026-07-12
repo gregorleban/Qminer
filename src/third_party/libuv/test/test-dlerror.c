@@ -26,31 +26,38 @@
 
 TEST_IMPL(dlerror) {
   const char* path = "test/fixtures/load_error.node";
+  const char* dlerror_no_error = "no error";
   const char* msg;
   uv_lib_t lib;
   int r;
 
-#ifdef __linux__
-  const char* dlerror_desc = "file too short";
-#elif defined (__sun__)
-  const char* dlerror_desc = "unknown file type";
-#elif defined (_WIN32)
-  const char* dlerror_desc = "%1 is not a valid Win32 application";
-#else
-  const char* dlerror_desc = "";
-#endif
+  lib.errmsg = NULL;
+  lib.handle = NULL;
+  msg = uv_dlerror(&lib);
+  ASSERT_NOT_NULL(msg);
+  ASSERT_NOT_NULL(strstr(msg, dlerror_no_error));
 
   r = uv_dlopen(path, &lib);
-  ASSERT(r == -1);
+  ASSERT_EQ(r, -1);
 
   msg = uv_dlerror(&lib);
-  ASSERT(msg != NULL);
-  ASSERT(strstr(msg, dlerror_desc) != NULL);
+  ASSERT_NOT_NULL(msg);
+#if !defined(__OpenBSD__) && !defined(__QNX__)
+  /* musl's libc.a does not support dlopen(), only libc.so does. */
+  if (NULL == strstr(msg, "Dynamic loading not supported"))
+    ASSERT_NOT_NULL(strstr(msg, path));
+#endif
+  ASSERT_NULL(strstr(msg, dlerror_no_error));
 
   /* Should return the same error twice in a row. */
   msg = uv_dlerror(&lib);
-  ASSERT(msg != NULL);
-  ASSERT(strstr(msg, dlerror_desc) != NULL);
+  ASSERT_NOT_NULL(msg);
+#if !defined(__OpenBSD__) && !defined(__QNX__)
+  /* musl's libc.a does not support dlopen(), only libc.so does. */
+  if (NULL == strstr(msg, "Dynamic loading not supported"))
+    ASSERT_NOT_NULL(strstr(msg, path));
+#endif
+  ASSERT_NULL(strstr(msg, dlerror_no_error));
 
   uv_dlclose(&lib);
 

@@ -49,18 +49,24 @@ class TSockSys {
     void RunLoop() { uv_run(Loop, UV_RUN_DEFAULT); }
     // stop event loop
     void StopLoop() { uv_stop(Loop); }
+    // run a single non-blocking iteration of the loop. used after the loop was stopped
+    // to process the pending close (endgame) callbacks of handles (e.g. timers) that
+    // were closed during shutdown - without this their close callbacks never run
+    void RunPendingLoop() { uv_run(Loop, UV_RUN_NOWAIT); }
     // reset loop
     void ResetLoop()
     {
-        uv_loop_delete(Loop);
-        Loop = uv_loop_new();
+        uv_loop_close(Loop);
+        uv_loop_init(Loop);
     }
     // increase reference count so it doesn't stop the loop when nothing to od
     void RefLoop();
     // decrease reference count, to stop the loop if nothing else to do
     void UnrefLoop();
     // empty callback used for keeping reference on the loop
-    static void LoopRefCallback(uv_timer_t* TimerHnd, int Status) {}
+    static void LoopRefCallback(uv_timer_t* TimerHnd) {}
+    // free the LoopRef handle only once the loop is done with it (uv_close is asynchronous)
+    static void LoopRefCloseCallback(uv_handle_t* TimerHnd) { free(TimerHnd); }
 
     // socket event
     bool IsSockEvent(const uint64& SockEventId) const;
@@ -105,22 +111,22 @@ class TSockSys {
     // called on write successful
     static void OnWrite(uv_write_t* WriteHnd, int Status);
     // called before on read to reserve space
-    static uv_buf_t OnAlloc(uv_handle_t* SockHnd, size_t SuggestedSize);
-    // called on read (if BufferLen == 0 then EOF)
-    static void OnRead(uv_stream_t* SockHnd, ssize_t BufferLen, uv_buf_t Buffer);
+    static void OnAlloc(uv_handle_t* SockHnd, size_t SuggestedSize, uv_buf_t* Buffer);
+    // called on read (if BufferLen < 0 then error or EOF)
+    static void OnRead(uv_stream_t* SockHnd, ssize_t BufferLen, const uv_buf_t* Buffer);
     // called when new connected accepted by listening socket
     static void OnAccept(uv_stream_t* SockHnd, int Status);
     // called on socket closed
     static void OnClose(uv_handle_t* SockHnd);
     // called on socket timeout
-    static void OnTimeOut(uv_timer_t* TimerHnd, int Status);
+    static void OnTimeOut(uv_timer_t* TimerHnd);
 
     // statistics
     // traffic count
     uint64 GetSockBytesRead() { return SockBytesRead; }
     uint64 GetSockBytesWritten() { return SockBytesWritten; }
     // status
-    TStr GetLastErr() const;
+    TStr GetError(const int Status) const;
     TStr GetStatusStr();
 
     // register a callback that should be called from the main thread (used for inter-thread
@@ -154,7 +160,8 @@ TSockSys::TSockSys()
     // only one instance alloved
     IAssert(!Active);
     // initialize loop
-    Loop = uv_loop_new();
+    Loop = (uv_loop_t*)malloc(sizeof(uv_loop_t));
+    uv_loop_init(Loop);
     // done
     Active = true;
 }
@@ -185,7 +192,8 @@ TSockSys::~TSockSys()
         uv_close((uv_handle_t*)TimerHnd, NULL);
     }
     // delete loop
-    uv_loop_delete(Loop);
+    uv_loop_close(Loop);
+    free(Loop);
     // mark we are off
     Active = false;
 }
@@ -225,9 +233,9 @@ void TSockSys::UnrefLoop()
     if (LoopRef != NULL) {
         // unrefernce the timer
         uv_unref((uv_handle_t*)LoopRef);
-        // kill the timer
-        uv_close((uv_handle_t*)LoopRef, NULL);
-        free(LoopRef);
+        // kill the timer. the handle is freed in the close callback since uv_close is
+        // asynchronous and the loop still touches the handle until the endgame is processed
+        uv_close((uv_handle_t*)LoopRef, LoopRefCloseCallback);
         LoopRef = NULL;
     }
 }
@@ -316,26 +324,28 @@ void TSockSys::Listen(const uint64& SockId, const int& PortN, const bool& IPv6P)
     // special handling for v4 and v6 when binding
     if (!IPv6P) {
         // get address
-        struct sockaddr_in Addr = uv_ip4_addr("0.0.0.0", PortN);
+        struct sockaddr_in Addr;
+        uv_ip4_addr("0.0.0.0", PortN, &Addr);
         // bind socket to port
-        const int BindResCd = uv_tcp_bind(SockHnd, Addr);
+        const int BindResCd = uv_tcp_bind(SockHnd, (const struct sockaddr*)&Addr, 0);
         EAssertR(BindResCd == 0,
-                 "SockSys.Listen: Error bidning socket to port: " + SockSys.GetLastErr());
+                 "SockSys.Listen: Error bidning socket to port: " + SockSys.GetError(BindResCd));
     }
     else {
         // get address
-        struct sockaddr_in6 Addr = uv_ip6_addr("::", PortN);
+        struct sockaddr_in6 Addr;
+        uv_ip6_addr("::", PortN, &Addr);
         // bind socket to port
-        const int BindResCd = uv_tcp_bind6(SockHnd, Addr);
+        const int BindResCd = uv_tcp_bind(SockHnd, (const struct sockaddr*)&Addr, 0);
         EAssertR(BindResCd == 0,
-                 "SockSys.Listen: Error bidning socket to port: " + SockSys.GetLastErr());
+                 "SockSys.Listen: Error binding socket to port: " + SockSys.GetError(BindResCd));
     }
     // make sure we have backlog of at least 128
     const int BacklogQueue = (SOMAXCONN < 128) ? 128 : SOMAXCONN;
     // enable callbacks
     const int ListenResCd = uv_listen((uv_stream_t*)SockHnd, BacklogQueue, TSockSys::OnAccept);
     EAssertR(ListenResCd == 0,
-             "SockSys.Listen: Error setting listener on socket: " + SockSys.GetLastErr());
+             "SockSys.Listen: Error setting listener on socket: " + SockSys.GetError(ListenResCd));
 }
 
 void TSockSys::Connect(const uint64& SockId, const PSockHost& SockHost, const int& PortN)
@@ -351,23 +361,27 @@ void TSockSys::Connect(const uint64& SockId, const PSockHost& SockHost, const in
     int ResCd = 0;
     if (SockHost->IsIpv4()) {
         // get address
-        struct sockaddr_in Addr = uv_ip4_addr(SockHost->GetIpNum().CStr(), PortN);
+        struct sockaddr_in Addr;
+        uv_ip4_addr(SockHost->GetIpNum().CStr(), PortN, &Addr);
         // establish connection
-        ResCd = uv_tcp_connect(ConnectHnd, SockHnd, Addr, TSockSys::OnConnect);
+        ResCd =
+            uv_tcp_connect(ConnectHnd, SockHnd, (const struct sockaddr*)&Addr, TSockSys::OnConnect);
     }
     else if (SockHost->IsIpv6()) {
         // get address
-        struct sockaddr_in6 Addr = uv_ip6_addr(SockHost->GetIpNum().CStr(), PortN);
+        struct sockaddr_in6 Addr;
+        uv_ip6_addr(SockHost->GetIpNum().CStr(), PortN, &Addr);
         // establish connection
-        ResCd = uv_tcp_connect6(ConnectHnd, SockHnd, Addr, TSockSys::OnConnect);
+        ResCd =
+            uv_tcp_connect(ConnectHnd, SockHnd, (const struct sockaddr*)&Addr, TSockSys::OnConnect);
     }
     // check for errors
     if (ResCd != 0) {
-        // cleanup first
-        free(SockHnd);
+        // cleanup first (the socket handle stays registered and is closed via DelSock)
+        free(ConnectHnd);
         // and throw exception
         throw TExcept::New("SockSys.Connect: Error establishing socket connection: " +
-                           SockSys.GetLastErr());
+                           SockSys.GetError(ResCd));
     }
 }
 
@@ -391,7 +405,7 @@ void TSockSys::Send(const uint64& SockId, const PSIn& SIn)
         free(WriteHnd->Buffer.base);
         free(WriteHnd);
         // and throw exception
-        throw TExcept::New("SockSys.Send: Error sending data: " + SockSys.GetLastErr());
+        throw TExcept::New("SockSys.Send: Error sending data: " + SockSys.GetError(ResCd));
     }
 }
 
@@ -442,7 +456,7 @@ TStr TSockSys::GetPeerIpNum(const uint64& SockId)
     struct sockaddr PeerName;
     int NameLen = sizeof(PeerName);
     const int ResCd = uv_tcp_getpeername(SockHnd, &PeerName, &NameLen);
-    EAssertR(ResCd == 0, "SockSys.GetLocalIpNum: " + SockSys.GetLastErr());
+    EAssertR(ResCd == 0, "SockSys.GetPeerIpNum: " + SockSys.GetError(ResCd));
     // decode IP
     char PeerIpNum[17];
     if (PeerName.sa_family == AF_INET) {
@@ -467,7 +481,7 @@ TStr TSockSys::GetLocalIpNum(const uint64& SockId)
     struct sockaddr SockName;
     int NameLen = sizeof(SockName);
     const int ResCd = uv_tcp_getsockname(SockHnd, &SockName, &NameLen);
-    EAssertR(ResCd == 0, "SockSys.GetLocalIpNum: " + SockSys.GetLastErr());
+    EAssertR(ResCd == 0, "SockSys.GetLocalIpNum: " + SockSys.GetError(ResCd));
     // decode IP
     char SockIpNum[64];
     if (SockName.sa_family == AF_INET) {
@@ -532,15 +546,10 @@ void TSockSys::OnGetHost(uv_getaddrinfo_t* RequestHnd, int Status, struct addrin
             AddrInfoIter = AddrInfoIter->ai_next;
         }
     }
-    else if (Status == -1) {
+    else {
         // something went wrong
         SockHost->Status = shsError;
-        SockHost->ErrMsg = "SockSys.OnGetHost: " + SockSys.GetLastErr();
-    }
-    else {
-        // unkown status
-        SockHost->Status = shsError;
-        SockHost->ErrMsg = TStr::Fmt("SockSys.OnGetHost: unkown status %d", Status);
+        SockHost->ErrMsg = "SockSys.OnGetHost: " + SockSys.GetError(Status);
     }
     // clean up
     free(RequestHnd);
@@ -574,8 +583,8 @@ void TSockSys::OnConnect(uv_connect_t* ConnectHnd, int Status)
         SockEvent->OnConnect(SockId);
     }
     else {
-        TStr ErrMsg = (Status == -1) ? "SockSys.OnConnect: " + SockSys.GetLastErr()
-                                     : "SockSys.OnConnect: Error connecting";
+        TStr ErrMsg = (Status < 0) ? "SockSys.OnConnect: " + SockSys.GetError(Status)
+                                   : "SockSys.OnConnect: Error connecting";
         SockEvent->OnError(SockId, Status, ErrMsg);
         return;
     }
@@ -583,8 +592,8 @@ void TSockSys::OnConnect(uv_connect_t* ConnectHnd, int Status)
     int ResCd = uv_read_start((uv_stream_t*)SockHnd, TSockSys::OnAlloc, TSockSys::OnRead);
     // check for errors
     if (ResCd != 0) {
-        TStr ErrMsg = (Status == -1) ? "SockSys.OnConnect: " + SockSys.GetLastErr()
-                                     : "SockSys.OnConnect: Error establishing read callbacks";
+        TStr ErrMsg = (ResCd < 0) ? "SockSys.OnConnect: " + SockSys.GetError(ResCd)
+                                  : "SockSys.OnConnect: Error establishing read callbacks";
         SockEvent->OnError(SockId, ResCd, ErrMsg);
     }
 }
@@ -617,23 +626,21 @@ void TSockSys::OnWrite(uv_write_t* WriteHnd, int Status)
         SockEvent->OnWrite(SockId);
     }
     else {
-        TStr ErrMsg = (Status == -1) ? "SockSys.OnWrite: " + SockSys.GetLastErr()
-                                     : "SockSys.OnWrite: Error writing to socket";
+        TStr ErrMsg = (Status < 0) ? "SockSys.OnWrite: " + SockSys.GetError(Status)
+                                   : "SockSys.OnWrite: Error writing to socket";
         SockEvent->OnError(SockId, Status, ErrMsg);
     }
 }
 
-uv_buf_t TSockSys::OnAlloc(uv_handle_t* SockHnd, size_t SuggestedSize)
+void TSockSys::OnAlloc(uv_handle_t* SockHnd, size_t SuggestedSize, uv_buf_t* Buffer)
 {
     // allocate buffer of max size 1MB
-    uv_buf_t Buffer;
-    Buffer.len = (ULONG)(SuggestedSize > (size_t)TInt::Mega ? (size_t)TInt::Mega : SuggestedSize);
+    Buffer->len = (ULONG)(SuggestedSize > (size_t)TInt::Mega ? (size_t)TInt::Mega : SuggestedSize);
     // this one is created using `new` as it is forwarded to TMIn after read completed
-    Buffer.base = new char[Buffer.len];
-    return Buffer;
+    Buffer->base = new char[Buffer->len];
 }
 
-void TSockSys::OnRead(uv_stream_t* SockHnd, ssize_t BufferLen, uv_buf_t Buffer)
+void TSockSys::OnRead(uv_stream_t* SockHnd, ssize_t BufferLen, const uv_buf_t* Buffer)
 {
     // TODO: check if we need to close _SockHnd
     // uv_tcp_t* _SockHnd = (uv_tcp_t*)SockHnd;
@@ -650,35 +657,32 @@ void TSockSys::OnRead(uv_stream_t* SockHnd, ssize_t BufferLen, uv_buf_t Buffer)
     }
     else {
         // cleanup (using delete as it was created in OnAlloc with new)
-        delete[] Buffer.base;
+        delete[] Buffer->base;
         SaveToErrLog("SockSys.OnRead: Socket without SockEvent");
         return;
     }
     // execute callback
     if (BufferLen > 0) {
         // we got data, move the ownership of buffer to TMIn
-        PSIn SIn = TMIn::New(Buffer.base, (int)BufferLen, true);
+        PSIn SIn = TMIn::New(Buffer->base, (int)BufferLen, true);
         // send
         SockEvent->OnRead(SockId, SIn);
     }
     else {
-        uv_err_code Status = uv_last_error(SockSys.Loop).code;
         // no data, might be error or end of stream
-        if (Status == UV_EOF) {
+        if (BufferLen == UV_EOF) {
             // no more data, close the socket handle
             SockEvent->OnReadEof(SockId);
             SockSys.DelIfSockTimer(SockId);
         }
-        else if (Status == UV_EAGAIN) {
-            // we'll wait
-        }
-        else {
+        else if (BufferLen < 0) {
             // error
-            TStr ErrMsg = "SockSys.OnRead: " + SockSys.GetLastErr();
-            SockEvent->OnError(SockId, Status, ErrMsg);
+            TStr ErrMsg = "SockSys.OnRead: " + SockSys.GetError((int)BufferLen);
+            SockEvent->OnError(SockId, (int)BufferLen, ErrMsg);
         }
+        // BufferLen == 0 is not an error - it's the equivalent of EAGAIN, we'll wait
         // cleanup (using delete as it was created in OnAlloc with new)
-        delete[] Buffer.base;
+        delete[] Buffer->base;
     }
 }
 
@@ -717,23 +721,24 @@ void TSockSys::OnAccept(uv_stream_t* ServerSockHnd, int Status)
                 SockEvent->OnAccept(ClientSock->GetSockId(), ClientSock);
             }
             else {
-                TStr ErrMsg = (Status == -1)
-                                  ? "SockSys.OnAccept: Error starting read " + SockSys.GetLastErr()
-                                  : "SockSys.OnAccept: Error starting read";
+                TStr ErrMsg = (ReadStartResCd < 0) ? "SockSys.OnAccept: Error starting read " +
+                                                         SockSys.GetError(ReadStartResCd)
+                                                   : "SockSys.OnAccept: Error starting read";
                 SockEvent->OnError(SockId, ReadStartResCd, ErrMsg);
             }
         }
         else {
             // handle errors
-            TStr ErrMsg = (Status == -1) ? "SockSys.OnAccept: Error accepting new connection " +
-                                               SockSys.GetLastErr()
-                                         : "SockSys.OnAccept: Error accepting new connection";
+            TStr ErrMsg = (AcceptResCd < 0) ? "SockSys.OnAccept: Error accepting new connection " +
+                                                  SockSys.GetError(AcceptResCd)
+                                            : "SockSys.OnAccept: Error accepting new connection";
             SockEvent->OnError(SockId, AcceptResCd, ErrMsg);
         }
     }
     else {
-        TStr ErrMsg = (Status == -1) ? "SockSys.OnAccept: Error connecting" + SockSys.GetLastErr()
-                                     : "SockSys.OnAccept: Error connecting";
+        TStr ErrMsg = (Status < 0)
+                          ? "SockSys.OnAccept: Error connecting" + SockSys.GetError(Status)
+                          : "SockSys.OnAccept: Error connecting";
         SockEvent->OnError(SockId, Status, ErrMsg);
     }
 }
@@ -761,7 +766,7 @@ void TSockSys::OnClose(uv_handle_t* SockHnd)
     }
 }
 
-void TSockSys::OnTimeOut(uv_timer_t* TimerHnd, int Status)
+void TSockSys::OnTimeOut(uv_timer_t* TimerHnd)
 {
     // check we have timer
     IAssert(SockSys.IsTimer((uint64)TimerHnd));
@@ -775,28 +780,21 @@ void TSockSys::OnTimeOut(uv_timer_t* TimerHnd, int Status)
     if (SockSys.IsSockEvent(SockEventId)) {
         SockEvent = SockSys.GetSockEvent(SockEventId);
         // execute callback
-        if (Status == 0) {
-            SockEvent->OnTimeOut(SockId);
-        }
-        else {
-            TStr ErrMsg = (Status == -1) ? "SockSys.OnTimeOut: " + SockSys.GetLastErr()
-                                         : "SockSys.OnTimeOut: Error in socket timeout";
-            SockEvent->OnError(SockId, Status, ErrMsg);
-        }
+        SockEvent->OnTimeOut(SockId);
     }
     else {
         SaveToErrLog("SockSys.OnTimeOut: Socket without SockEvent");
     }
-    // cleanup
-    uv_close((uv_handle_t*)TimerHnd, NULL);
+    // cleanup - the handle is freed in the close callback since uv_close is asynchronous
+    uv_close((uv_handle_t*)TimerHnd, (uv_close_cb)free);
     // remove shortcuts
     SockSys.SockIdToTimerHndH.DelKey(SockId);
     SockSys.TimerHndToSockIdH.DelKey((uint64)TimerHnd);
 }
 
-TStr TSockSys::GetLastErr() const
+TStr TSockSys::GetError(const int Status) const
 {
-    return TStr(uv_err_name(uv_last_error(Loop)));
+    return TStr(uv_strerror(Status));
 }
 
 TStr TSockSys::GetStatusStr()

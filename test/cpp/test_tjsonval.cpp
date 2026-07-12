@@ -2,10 +2,10 @@
 #include <mine.h>
 #include <qminer.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 
-TEST(TJsonValParsing) {
+TEST(TJsonVal, TJsonValParsing) {
     // test objects and arrays
     ASSERT_TRUE(TJsonVal::GetValFromStr("{ }")->IsObj());
     ASSERT_TRUE(TJsonVal::GetValFromStr("{\"a\":1}")->IsObj());
@@ -22,9 +22,9 @@ TEST(TJsonValParsing) {
      ASSERT_TRUE(StrNullVal->IsArr());
      ASSERT_EQ(StrNullVal->GetArrVals(), 1);
      ASSERT_TRUE(StrNullVal->GetArrVal(0)->IsStr());
-     ASSERT_EQ_TSTR(StrNullVal->GetArrVal(0)->GetStr(), TStr("xxx yyy"));
+     ASSERT_EQ(StrNullVal->GetArrVal(0)->GetStr(), TStr("xxx yyy"));
 
     // handling of escapes
-     ASSERT_EQ_TSTR(TJsonVal::GetValFromStr("\"\\t\"")->GetStr(), TStr("\t"));
-     ASSERT_EQ_TSTR(TJsonVal::GetValFromStr("\"\\R\"")->GetStr(), TStr("R"));
+     ASSERT_EQ(TJsonVal::GetValFromStr("\"\\t\"")->GetStr(), TStr("\t"));
+     ASSERT_EQ(TJsonVal::GetValFromStr("\"\\R\"")->GetStr(), TStr("R"));
 }

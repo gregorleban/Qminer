@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [production, staging-2026-07]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-linux:
+    name: Build + unit tests (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libre2-dev uuid-dev \
+            python3 python-is-python3
+          # node is preinstalled on ubuntu-latest runners; node-gyp comes via npm
+
+      # qminer's canonical build (node-gyp / binding.gyp) produces the intermediate
+      # static libs build/Release/glib.a and build/Release/qminer.a, plus vendored
+      # libuv 1.52.1 — the exact versions the code expects (apt libuv is too old).
+      - name: Build qminer libraries
+        run: npm install --build-from-source
+
+      - name: Configure tests (CMake + FetchContent GoogleTest)
+        run: >
+          cmake -S test/cpp -B test/cpp/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DQMINER_LIB_DIR=${{ github.workspace }}/build/Release
+
+      - name: Build tests
+        run: cmake --build test/cpp/build
+
+      - name: Run tests
+        working-directory: test/cpp
+        run: |
+          ctest --test-dir build --output-on-failure --output-junit ../../test-results.xml \
+          || build/qminer_tests --gtest_output=xml:${{ github.workspace }}/test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qminer-test-results
+          path: test-results.xml

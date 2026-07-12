@@ -163,3 +163,5 @@ test/cache/data/
 test/cache/test_base/
 test/cache/test_base.zip
 test/cache/test_cache
+src/third_party/*.zip
+src/third_party/*.gz

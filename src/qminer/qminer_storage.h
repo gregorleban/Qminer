@@ -532,6 +532,9 @@ public:
 
     /// Delete TOAST-ed values
     void DeleteToast(const TMemBase& RecMem);
+    /// Collect byte offsets (within the serialized record) of the blob pointers of
+    /// all TOAST-ed field values. Used when relocating records to a new blob storage.
+    void GetToastBlobPtOffsets(const TMemBase& RecMem, TIntV& OffsetV) const;
 
     /// Check if field inside this serializator
     bool IsFieldId(const int& FieldId) const { return FieldIdToSerialDescIdH.IsKey(FieldId); }
@@ -924,6 +927,10 @@ private:
     THash<TFlt, TUInt64> PrimaryFltIdH;
     /// Hash map from TTm primary field to record ID
     THash<TUInt64, TUInt64> PrimaryTmMSecsIdH;
+    /// Set when the store metadata saved to the .GenericStore file (primary-field
+    /// hash maps) was modified since creation/load. When still false at destruction
+    /// time, the .GenericStore and .BaseStore files are not rewritten.
+    TBool MetaDirtyP;
 
     /// Flag if we are using cache store
     TBool DataCacheP;
@@ -1225,6 +1232,11 @@ private:
 
     /// Counter for record IDs
     TUInt64 RecIdCounter;
+    /// Set when the store metadata saved to the PgBlobStore file (primary-field
+    /// hash maps, record-id blob-pointer maps, record counter) was modified since
+    /// creation/load. When still false at destruction time, the PgBlobStore and
+    /// .BaseStore files are not rewritten.
+    TBool MetaDirtyP;
 
     /// Serializator to disk
     TRecSerializator* SerializatorCache;
@@ -1241,6 +1253,12 @@ private:
 
     /// Load page with with given record and return pointer to it
     TThinMIn GetPgBf(const uint64& RecId, const bool& UseMem = false) const;
+
+    /// Copy one record's serialized data into NewBlob, relocating its TOAST-ed
+    /// values into NewToastBlob. The copied data is read back and verified.
+    /// Returns the pointer to the record in the destination blob. Used by DefragTo.
+    TPgBlobPt CopyRecToBlob(const uint64& RecId, const bool& UseMem,
+        const PPgBlob& NewToastBlob, const PPgBlob& NewBlob);
 
     /// Get serializator for given location
     TRecSerializator* GetSerializator(const TStoreLoc& StoreLoc);
@@ -1468,6 +1486,20 @@ public:
     virtual void UnToastVal(const TPgBlobPt& Pt, TMem& Mem);
     /// Delete TOAST-ed value from storage
     virtual void DelToastVal(const TPgBlobPt& Pt);
+
+    /// Store value into the given page blob using the TOAST method
+    static TPgBlobPt ToastValToBlob(const PPgBlob& Blob, const TMemBase& Mem);
+    /// Retrieve a TOAST-ed value from the given page blob
+    static void UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, TMem& Mem);
+
+    /// Rebuild (defragment) the record blobs into new page blob files with the given
+    /// file name prefix. Records are written in ascending record id order and keep
+    /// their record ids, so the index stays valid; gaps left by deleted records are
+    /// preserved. TOAST-ed values are relocated along with their records. Also writes
+    /// a new "<prefix>PgBlobStore" state file with the updated record-id-to-blob-pointer
+    /// maps. The source store is not modified, so this can run on a read-only base.
+    /// Every copied record is read back and verified. Returns the number of records.
+    uint64 DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize);
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -1583,6 +1615,14 @@ public:
 TVec<TWPt<TStore> > CreateStoresFromSchema(const TWPt<TBase>& Base, const PJsonVal& SchemaVal,
     const uint64& DefStoreCacheSize, const TStrUInt64H& StoreNmCacheSizeH = TStrUInt64H(),
     bool UsePaged = true);
+
+///////////////////////////////
+/// Apply per-index-key "splitLen" attributes from a schema definition to the base.
+/// Index keys and index joins can specify "splitLen" to override the default length
+/// of the inverted index child vectors for that key. Since split lengths are a runtime
+/// parameter (not persisted with the index), this must be called each time an existing
+/// base is loaded; CreateStoresFromSchema applies them automatically when creating.
+void ApplyIndexKeySplitLen(const TWPt<TBase>& Base, const PJsonVal& SchemaVal);
 
 ///////////////////////////////
 /// Create new base given a schema definition

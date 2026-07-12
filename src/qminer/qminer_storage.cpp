@@ -1179,6 +1179,23 @@ void TRecSerializator::CheckToast(TMOut& SOut, const int& Offset) {
     SOut.AppendBf(&Pt, sizeof(TPgBlobPt));
 }
 
+/// Collect byte offsets (within the serialized record) of the blob pointers of
+/// all TOAST-ed field values. Used when relocating records to a new blob storage.
+void TRecSerializator::GetToastBlobPtOffsets(const TMemBase& RecMem, TIntV& OffsetV) const {
+    OffsetV.Clr();
+    if (!UseToast) { return; }
+    for (int FieldSerialDescN = 0; FieldSerialDescN < FieldSerialDescV.Len(); FieldSerialDescN++) {
+        const TFieldSerialDesc& FieldSerialDesc = FieldSerialDescV[FieldSerialDescN];
+        if (FieldSerialDesc.FixedPartP) { continue; }
+        if (IsFieldNull(RecMem, FieldSerialDesc.FieldId)) { continue; }
+        char* Bf = GetLocationVar(RecMem, FieldSerialDesc);
+        if (*Bf == ToastYes) {
+            // the blob pointer is stored right after the TOAST marker character
+            OffsetV.Add((int) (Bf + 1 - RecMem.GetBf()));
+        }
+    }
+}
+
 /// Check if given field value is currently TOAST-ed and delete it
 void TRecSerializator::CheckToastDel(const TMemBase& InRecMem, const TFieldSerialDesc& FieldSerialDesc) {
     if (UseToast && !FieldSerialDesc.FixedPartP) {
@@ -2893,6 +2910,7 @@ const TRecSerializator* TStoreImpl::GetFieldSerializator(const int &FieldId) con
 }
 
 void TStoreImpl::SetPrimaryField(const uint64& RecId) {
+    MetaDirtyP = true;
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.AddDat(GetFieldStr(RecId, PrimaryFieldId)) = RecId;
     } else if (PrimaryFieldType == oftInt) {
@@ -2910,25 +2928,31 @@ void TStoreImpl::SetPrimaryField(const uint64& RecId) {
 
 void TStoreImpl::SetPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     PrimaryStrIdH.AddDat(Str) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldInt(const uint64& RecId, const int& Int) {
     PrimaryIntIdH.AddDat(Int) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     PrimaryUInt64IdH.AddDat(UInt64) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     PrimaryFltIdH.AddDat(Flt) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::SetPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     PrimaryTmMSecsIdH.AddDat(MSecs) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryField(const uint64& RecId) {
+    MetaDirtyP = true;
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.DelIfKey(GetFieldStr(RecId, PrimaryFieldId));
     } else if (PrimaryFieldType == oftInt) {
@@ -2947,26 +2971,31 @@ void TStoreImpl::DelPrimaryField(const uint64& RecId) {
 void TStoreImpl::DelPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     Assert(PrimaryStrIdH.GetDat(Str) == RecId);
     PrimaryStrIdH.DelIfKey(Str);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldInt(const uint64& RecId, const int& Int) {
     Assert(PrimaryIntIdH.GetDat(Int) == RecId);
     PrimaryIntIdH.DelIfKey(Int);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     Assert(PrimaryUInt64IdH.GetDat(UInt64) == RecId);
     PrimaryUInt64IdH.DelIfKey(UInt64);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     Assert(PrimaryFltIdH.GetDat(Flt) == RecId);
     PrimaryFltIdH.DelIfKey(Flt);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::DelPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     Assert(PrimaryTmMSecsIdH.GetDat(MSecs) == RecId);
     PrimaryTmMSecsIdH.DelIfKey(MSecs);
+    MetaDirtyP = true;
 }
 
 void TStoreImpl::InitFromSchema(const TStoreSchema& StoreSchema) {
@@ -3032,6 +3061,8 @@ TStoreImpl::TStoreImpl(const TWPt<TBase>& Base, const uint& StoreId,
         DataMem(_StoreFNm + ".MemCache", Base->GetStoreBlobBs(), BlockSize) {
 
     SetStoreType("TStoreImpl");
+    // freshly created store must write its metadata files at least once
+    MetaDirtyP = true;
     InitFromSchema(StoreSchema);
     // initialize data storage flags
     InitDataFlags();
@@ -3083,11 +3114,20 @@ TStoreImpl::TStoreImpl(const TWPt<TBase>& Base, const TStr& _StoreFNm,
 
     // initialize data storage flags
     InitDataFlags();
+
+    // nothing was modified yet with regards to the loaded metadata
+    MetaDirtyP = false;
 }
 
 TStoreImpl::~TStoreImpl() {
-    // save if necessary
-    if (FAccess != faRdOnly) {
+    // save if necessary; when the metadata (primary-field maps, which are the only
+    // parts that can change at runtime) is unchanged, skip the rewrite - it
+    // dominated shutdown time on large read-mostly stores
+    if (FAccess == faRdOnly) {
+        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
+    } else if (!MetaDirtyP) {
+        TEnv::Logger->OnStatus(TStr::Fmt("Store '%s' metadata unchanged - not saving", GetStoreNm().CStr()));
+    } else {
         TEnv::Logger->OnStatus(TStr::Fmt("Saving store '%s'...", GetStoreNm().CStr()));
         // save base store
         TFOut BaseFOut(StoreFNm + ".BaseStore");
@@ -3113,8 +3153,6 @@ TStoreImpl::~TStoreImpl() {
         // save data
         SerializatorCache->Save(FOut);
         SerializatorMem->Save(FOut);
-    } else {
-        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
     }
     delete SerializatorCache;
     delete SerializatorMem;
@@ -3418,6 +3456,7 @@ void TStoreImpl::DeleteAllRecs() {
     PrimaryUInt64IdH.Clr();
     PrimaryFltIdH.Clr();
     PrimaryTmMSecsIdH.Clr();
+    MetaDirtyP = true;
     DataCache.DelVals(TInt::Mx);
     DataMem.DelVals(TInt::Mx);
     PartialFlush(TInt::Mx);
@@ -4058,6 +4097,7 @@ uint64 TStorePbBlob::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
     TPgBlobPt CacheRecId;
     TPgBlobPt MemRecId;
     uint64 RecId = RecIdCounter++;
+    MetaDirtyP = true;
     // store to disk storage
     if (DataBlobP) {
         TMem CacheRecMem;
@@ -4238,47 +4278,57 @@ const TRecSerializator* TStorePbBlob::GetFieldSerializator(const int &FieldId) c
 
 void TStorePbBlob::SetPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     PrimaryStrIdH.AddDat(Str) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldInt(const uint64& RecId, const int& Int) {
     PrimaryIntIdH.AddDat(Int) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     PrimaryUInt64IdH.AddDat(UInt64) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     PrimaryFltIdH.AddDat(Flt) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::SetPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     PrimaryTmMSecsIdH.AddDat(MSecs) = RecId;
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     Assert(PrimaryStrIdH.GetDat(Str) == RecId);
     PrimaryStrIdH.DelIfKey(Str);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldInt(const uint64& RecId, const int& Int) {
     Assert(PrimaryIntIdH.GetDat(Int) == RecId);
     PrimaryIntIdH.DelIfKey(Int);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     Assert(PrimaryUInt64IdH.GetDat(UInt64) == RecId);
     PrimaryUInt64IdH.DelIfKey(UInt64);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     Assert(PrimaryFltIdH.GetDat(Flt) == RecId);
     PrimaryFltIdH.DelIfKey(Flt);
+    MetaDirtyP = true;
 }
 
 void TStorePbBlob::DelPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     Assert(PrimaryTmMSecsIdH.GetDat(MSecs) == RecId);
     PrimaryTmMSecsIdH.DelIfKey(MSecs);
+    MetaDirtyP = true;
 }
 
 /// Check if the value of given field for a given record is NULL
@@ -4409,6 +4459,9 @@ TThinMIn TStorePbBlob::GetEditableField(const uint64& RecId, const int& FieldId)
 
 void TStorePbBlob::GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem, THash<TUInt64, TPgBlobPt>* &RecIdBlobPtr, PPgBlob& Blob, TPgBlobPt* &PgPt)
 {
+    // callers (variable-length field setters) may re-point the returned hash
+    // entry to a new blob location, which changes the persisted metadata
+    MetaDirtyP = true;
     TMemBase MemInternal;
     if (FieldLocV[FieldId] == TStoreLoc::slDisk) {
         Blob = DataBlob;
@@ -5143,6 +5196,7 @@ void TStorePbBlob::DeleteAllRecs() {
     TEnv::Logger->OnStatus("Internal structures 2");
     RecIdBlobPtH.Clr();
     RecIdBlobPtHMem.Clr();
+    MetaDirtyP = true;
     DataBlob->Clr();
     DataMem->Clr();
     PartialFlush(TInt::Mx);
@@ -5176,6 +5230,7 @@ void TStorePbBlob::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs,
         }
     }
     // delete records
+    if (!DelRecIdV.Empty()) { MetaDirtyP = true; }
     TTmStopWatch StopWatch(true);
     for (int DelRecN = 0; DelRecN < DelRecIdV.Len(); DelRecN++) {
         // report progress
@@ -5360,6 +5415,8 @@ TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const uint& StoreId,
     TStore(Base, StoreId, StoreName), StoreFNm(_StoreFNm), FAccess(faCreate) {
 
     SetStoreType("TStorePbBlob");
+    // freshly created store must write its metadata files at least once
+    MetaDirtyP = true;
     DataBlob = new TPgBlob(_StoreFNm + "PgBlob", TFAccess::faCreate, _MxCacheSize);
     DataMem = new TPgBlob(_StoreFNm + "PgBlobMem", TFAccess::faCreate, TUInt64::Mx);
     InitFromSchema(StoreSchema);
@@ -5421,11 +5478,20 @@ TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const TStr& _StoreFNm,
 
     // initialize data storage flags
     InitDataFlags();
+
+    // nothing was modified yet with regards to the loaded metadata
+    MetaDirtyP = false;
 }
 
 TStorePbBlob::~TStorePbBlob() {
-    // save if necessary
-    if (FAccess != faRdOnly) {
+    // save if necessary; when the metadata (primary-field maps, record-id
+    // blob-pointer maps, record counter) is unchanged, skip the rewrite - it
+    // dominated shutdown time on large read-mostly stores
+    if (FAccess == faRdOnly) {
+        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
+    } else if (!MetaDirtyP) {
+        TEnv::Logger->OnStatus(TStr::Fmt("Store '%s' metadata unchanged - not saving", GetStoreNm().CStr()));
+    } else {
         TEnv::Logger->OnStatus(TStr::Fmt("Saving store '%s'...", GetStoreNm().CStr()));
         // save base store
         TFOut BaseFOut(StoreFNm + ".BaseStore");
@@ -5455,37 +5521,257 @@ TStorePbBlob::~TStorePbBlob() {
         RecIdBlobPtH.Save(FOut);
         RecIdBlobPtHMem.Save(FOut);
         RecIdCounter.Save(FOut);
-    } else {
-        TEnv::Logger->OnStatus("No saving of generic store " + GetStoreNm() + " neccessary!");
     }
 }
 
 /// Store value into internal storage using TOAST method
 TPgBlobPt TStorePbBlob::ToastVal(const TMemBase& Mem) {
+    return ToastValToBlob(DataBlob, Mem);
+}
+
+/// Retrieve value that is saved using TOAST method from storage
+void TStorePbBlob::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
+    UnToastValFromBlob(DataBlob, Pt, Mem);
+}
+
+/// Store value into the given page blob using the TOAST method
+TPgBlobPt TStorePbBlob::ToastValToBlob(const PPgBlob& Blob, const TMemBase& Mem) {
     TVec<TPgBlobPt> Pts;
-    int BlockLen = DataBlob->GetMxBlobLen();
+    int BlockLen = Blob->GetMxBlobLen();
     int curr_index = 0;
     while (curr_index < Mem.Len()) {
         int curr_len = MIN(BlockLen, Mem.Len() - curr_index);
-        TPgBlobPt PtTmp = DataBlob->Put(Mem.GetBf() + curr_index, curr_len);
+        TPgBlobPt PtTmp = Blob->Put(Mem.GetBf() + curr_index, curr_len);
         Pts.Add(PtTmp);
         curr_index += curr_len;
     }
     TMOut SOut;
     Pts.Save(SOut);
-    return DataBlob->Put(SOut.GetBfAddr(), SOut.Len());
+    return Blob->Put(SOut.GetBfAddr(), SOut.Len());
 }
 
-/// Retrieve value that is saved using TOAST method from storage
-void TStorePbBlob::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
+/// Retrieve a TOAST-ed value from the given page blob
+void TStorePbBlob::UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, TMem& Mem) {
     TVec<TPgBlobPt> Pts;
-    TThinMIn MIn = DataBlob->Get(Pt);
+    TThinMIn MIn = Blob->Get(Pt);
     Pts.Load(MIn);
     Mem.Clr();
     for (int i = 0; i < Pts.Len(); i++) {
-        TMemBase MemTmp = DataBlob->GetMemBase(Pts[i]);
+        TMemBase MemTmp = Blob->GetMemBase(Pts[i]);
         Mem.AddBf(MemTmp.GetBf(), MemTmp.Len());
     }
+}
+
+/// Copy one record's serialized data into NewBlob, relocating its TOAST-ed
+/// values into NewToastBlob. The copied data is read back and verified.
+TPgBlobPt TStorePbBlob::CopyRecToBlob(const uint64& RecId, const bool& UseMem,
+        const PPgBlob& NewToastBlob, const PPgBlob& NewBlob) {
+
+    // fetch the serialized record and copy it into a local buffer
+    const TPgBlobPt& OldPt = UseMem ? RecIdBlobPtHMem.GetDat(RecId) : RecIdBlobPtH.GetDat(RecId);
+    TMemBase OldRecMemBase = UseMem ? DataMem->GetMemBase(OldPt) : DataBlob->GetMemBase(OldPt);
+    TMem RecMem; RecMem.AddBf(OldRecMemBase.GetBf(), OldRecMemBase.Len());
+
+    // relocate TOAST-ed values. TOAST-ed values always live in the disk blob
+    // (DataBlob), also for fields of records stored in the in-memory blob
+    const TRecSerializator* Serializator = UseMem ? SerializatorMem : SerializatorCache;
+    TIntV PtOffsetV; Serializator->GetToastBlobPtOffsets(RecMem, PtOffsetV);
+    for (int PtOffsetN = 0; PtOffsetN < PtOffsetV.Len(); PtOffsetN++) {
+        char* PtBf = RecMem.GetBf() + PtOffsetV[PtOffsetN];
+        const TPgBlobPt OldToastPt = *((TPgBlobPt*) PtBf);
+        // read the value from the old blob and store it into the new one
+        TMem ToastMem; UnToastVal(OldToastPt, ToastMem);
+        const TPgBlobPt NewToastPt = ToastValToBlob(NewToastBlob, ToastMem);
+        // verify the relocated value reads back the same
+        TMem NewToastMem; UnToastValFromBlob(NewToastBlob, NewToastPt, NewToastMem);
+        EAssertR(ToastMem.Len() == NewToastMem.Len() && (ToastMem.Len() == 0 ||
+            memcmp(ToastMem.GetBf(), NewToastMem.GetBf(), ToastMem.Len()) == 0), TStr::Fmt(
+            "[TStorePbBlob::CopyRecToBlob] TOAST-ed value mismatch for record %s in store %s",
+            TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr()));
+        // point the record to the relocated value
+        *((TPgBlobPt*) PtBf) = NewToastPt;
+    }
+
+    // store the record into the destination blob and verify it reads back the same
+    const TPgBlobPt NewPt = NewBlob->Put(RecMem.GetBf(), RecMem.Len());
+    TMemBase NewRecMemBase = NewBlob->GetMemBase(NewPt);
+    EAssertR(NewRecMemBase.Len() == RecMem.Len() &&
+        memcmp(NewRecMemBase.GetBf(), RecMem.GetBf(), RecMem.Len()) == 0, TStr::Fmt(
+        "[TStorePbBlob::CopyRecToBlob] record data mismatch for record %s in store %s",
+        TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr()));
+    return NewPt;
+}
+
+/// Rebuild (defragment) the record blobs into new page blob files
+uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize) {
+    TEnv::Logger->OnStatus(TStr::Fmt("Defragmenting store '%s'...", GetStoreNm().CStr()));
+    // create the destination page blobs
+    PPgBlob NewDataBlob = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlob", TFAccess::faCreate, CacheSize));
+    PPgBlob NewDataMem = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlobMem", TFAccess::faCreate, CacheSize));
+    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtH;
+    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtHMem;
+
+    // --- source-side accounting, so any record-count change after the rebuild
+    // can be explained instead of discovered later as a shrunken store ---
+    const int SrcBlobRecs = RecIdBlobPtH.Len();
+    const int SrcMemRecs = RecIdBlobPtHMem.Len();
+    int SrcPrimaryRecs = -1;
+    if (PrimaryFieldId != -1) {
+        if (PrimaryFieldType == oftInt) { SrcPrimaryRecs = PrimaryIntIdH.Len(); }
+        else if (PrimaryFieldType == oftUInt64) { SrcPrimaryRecs = PrimaryUInt64IdH.Len(); }
+        else if (PrimaryFieldType == oftFlt) { SrcPrimaryRecs = PrimaryFltIdH.Len(); }
+        else if (PrimaryFieldType == oftTm) { SrcPrimaryRecs = PrimaryTmMSecsIdH.Len(); }
+        else if (PrimaryFieldType == oftStr) { SrcPrimaryRecs = PrimaryStrIdH.Len(); }
+    }
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Defrag] store '%s' source counts: GetRecs=%s, blob-hash=%s, mem-hash=%s, primary-hash=%s, RecIdCounter=%s",
+        GetStoreNm().CStr(), TStrUtil::GetStr(GetRecs()).CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(SrcMemRecs).CStr(),
+        SrcPrimaryRecs >= 0 ? TStrUtil::GetStr(SrcPrimaryRecs).CStr() : "n/a",
+        TStrUtil::GetStr(RecIdCounter).CStr()));
+
+    // collect the record ids and sort them, so the records are written in
+    // ascending record id order. Records keep their ids - gaps left by deleted
+    // records are preserved, so the ids stay valid for the index.
+    // For stores with BOTH a disk and an in-memory section the two id hashes
+    // must agree; iterate their UNION so a desynced record is copied (for the
+    // sections that have it) and REPORTED, instead of silently dropped (id only
+    // in the blob hash) or crashing GetDat (id only in the mem hash), which is
+    // what iterating a single hash did.
+    TUInt64V RecIdV;
+    int BlobOnlyRecs = 0, MemOnlyRecs = 0;
+    TUInt64V BlobOnlySampleV, MemOnlySampleV;
+    const int MxSamples = 10;
+    if (DataBlobP && DataMemP) {
+        TUInt64V BlobIdV; RecIdBlobPtH.GetKeyV(BlobIdV); BlobIdV.Sort();
+        TUInt64V MemIdV; RecIdBlobPtHMem.GetKeyV(MemIdV); MemIdV.Sort();
+        RecIdV.Gen(TInt::GetMx(BlobIdV.Len(), MemIdV.Len()), 0);
+        int BlobN = 0, MemN = 0;
+        while (BlobN < BlobIdV.Len() || MemN < MemIdV.Len()) {
+            const bool TakeBlob = MemN >= MemIdV.Len() || (BlobN < BlobIdV.Len() && BlobIdV[BlobN] <= MemIdV[MemN]);
+            const bool TakeMem = BlobN >= BlobIdV.Len() || (MemN < MemIdV.Len() && MemIdV[MemN] <= BlobIdV[BlobN]);
+            const uint64 RecId = TakeBlob ? BlobIdV[BlobN] : MemIdV[MemN];
+            if (TakeBlob && !TakeMem) {
+                BlobOnlyRecs++;
+                if (BlobOnlySampleV.Len() < MxSamples) { BlobOnlySampleV.Add(RecId); }
+            } else if (TakeMem && !TakeBlob) {
+                MemOnlyRecs++;
+                if (MemOnlySampleV.Len() < MxSamples) { MemOnlySampleV.Add(RecId); }
+            }
+            RecIdV.Add(RecId);
+            if (TakeBlob) { BlobN++; }
+            if (TakeMem) { MemN++; }
+        }
+    } else if (DataMemP) {
+        RecIdBlobPtHMem.GetKeyV(RecIdV); RecIdV.Sort();
+    } else {
+        RecIdBlobPtH.GetKeyV(RecIdV); RecIdV.Sort();
+    }
+
+    for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
+        const uint64 RecId = RecIdV[RecN];
+        if (DataBlobP && RecIdBlobPtH.IsKey(RecId)) {
+            NewRecIdBlobPtH.AddDat(RecId, CopyRecToBlob(RecId, false, NewDataBlob, NewDataBlob));
+        }
+        if (DataMemP && RecIdBlobPtHMem.IsKey(RecId)) {
+            NewRecIdBlobPtHMem.AddDat(RecId, CopyRecToBlob(RecId, true, NewDataBlob, NewDataMem));
+        }
+        if (RecN % 100000 == 0) {
+            printf("%d / %d records copied (%.1f%%)\r", RecN, RecIdV.Len(),
+                RecIdV.Len() > 0 ? 100.0 * RecN / RecIdV.Len() : 100.0);
+        }
+    }
+    printf("%d / %d records copied (100.0%%)\n", RecIdV.Len(), RecIdV.Len());
+
+    // --- cross-check the primary-key hash: every entry must point at a live
+    // record id; dangling entries make by-name lookups and primary-based counts
+    // disagree with the record hashes (a further source of "count changed") ---
+    int DanglingPrimaryRecs = 0;
+    TUInt64V DanglingPrimarySampleV;
+    if (PrimaryFieldId != -1) {
+        #define QM_DEFRAG_CHECK_PRIMARY(PrimaryH) { \
+            int KeyId = PrimaryH.FFirstKeyId(); \
+            while (PrimaryH.FNextKeyId(KeyId)) { \
+                const uint64 PrimaryRecId = PrimaryH[KeyId]; \
+                const bool LiveP = (DataBlobP && RecIdBlobPtH.IsKey(PrimaryRecId)) || \
+                                   (DataMemP && RecIdBlobPtHMem.IsKey(PrimaryRecId)); \
+                if (!LiveP) { \
+                    DanglingPrimaryRecs++; \
+                    if (DanglingPrimarySampleV.Len() < MxSamples) { DanglingPrimarySampleV.Add(PrimaryRecId); } \
+                } \
+            } }
+        if (PrimaryFieldType == oftInt) { QM_DEFRAG_CHECK_PRIMARY(PrimaryIntIdH); }
+        else if (PrimaryFieldType == oftUInt64) { QM_DEFRAG_CHECK_PRIMARY(PrimaryUInt64IdH); }
+        else if (PrimaryFieldType == oftFlt) { QM_DEFRAG_CHECK_PRIMARY(PrimaryFltIdH); }
+        else if (PrimaryFieldType == oftTm) { QM_DEFRAG_CHECK_PRIMARY(PrimaryTmMSecsIdH); }
+        else if (PrimaryFieldType == oftStr) { QM_DEFRAG_CHECK_PRIMARY(PrimaryStrIdH); }
+        #undef QM_DEFRAG_CHECK_PRIMARY
+    }
+
+    // --- rebuilt-side accounting: report and explain every difference ---
+    const auto SampleStr = [](const TUInt64V& SampleV) {
+        TChA ChA;
+        for (int SampleN = 0; SampleN < SampleV.Len(); SampleN++) {
+            if (SampleN > 0) { ChA += ", "; }
+            ChA += TUInt64::GetStr(SampleV[SampleN]);
+        }
+        return TStr(ChA);
+    };
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Defrag] store '%s' rebuilt counts: blob-hash %s -> %s, mem-hash %s -> %s",
+        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtH.Len()).CStr(),
+        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtHMem.Len()).CStr()));
+    if (DataBlobP && DataMemP && SrcBlobRecs != SrcMemRecs) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: store '%s' disk and in-memory sections disagree: %s records have only a disk part "
+            "(previously silently dropped by defrag; sample ids: %s), %s records have only an in-memory part "
+            "(previously crashed/corrupted the rebuild; sample ids: %s). Such records are typically left behind "
+            "by a partial delete or an interrupted add; their sections were copied as-is - inspect the sample ids "
+            "to decide whether they are live or garbage.",
+            GetStoreNm().CStr(), TStrUtil::GetStr(BlobOnlyRecs).CStr(), SampleStr(BlobOnlySampleV).CStr(),
+            TStrUtil::GetStr(MemOnlyRecs).CStr(), SampleStr(MemOnlySampleV).CStr()));
+    }
+    if (DanglingPrimaryRecs > 0) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: store '%s' primary-key hash has %s entries pointing at record ids with no data "
+            "(sample ids: %s). Counts based on the primary hash (%s) will disagree with the record hashes; "
+            "these entries are typically left behind when a record delete removed the data but not the "
+            "primary-key entry.",
+            GetStoreNm().CStr(), TStrUtil::GetStr(DanglingPrimaryRecs).CStr(), SampleStr(DanglingPrimarySampleV).CStr(),
+            TStrUtil::GetStr(SrcPrimaryRecs).CStr()));
+    }
+    if (NewRecIdBlobPtH.Len() != SrcBlobRecs || NewRecIdBlobPtHMem.Len() != SrcMemRecs) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: store '%s' rebuilt record count differs from the source - see the reasons above. "
+            "The rebuilt store keeps every record that had data in at least one section.",
+            GetStoreNm().CStr()));
+    }
+
+    // write the destination store state file - the format and content must match
+    // what the destructor writes, with the new record-id-to-blob-pointer maps
+    TFOut FOut(DestStoreFNm + "PgBlobStore");
+    RecNmFieldP.Save(FOut);
+    PrimaryFieldId.Save(FOut);
+    if (PrimaryFieldType == oftInt) {
+        PrimaryIntIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftUInt64) {
+        PrimaryUInt64IdH.Save(FOut);
+    } else if (PrimaryFieldType == oftFlt) {
+        PrimaryFltIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftTm) {
+        PrimaryTmMSecsIdH.Save(FOut);
+    } else {
+        PrimaryStrIdH.Save(FOut);
+    }
+    WndDesc.Save(FOut);
+    SerializatorCache->Save(FOut);
+    SerializatorMem->Save(FOut);
+    NewRecIdBlobPtH.Save(FOut);
+    NewRecIdBlobPtHMem.Save(FOut);
+    RecIdCounter.Save(FOut);
+
+    TEnv::Logger->OnStatus(TStr::Fmt("Defragmenting store '%s' done: %d records", GetStoreNm().CStr(), RecIdV.Len()));
+    // releasing the new page blobs flushes them to disk
+    return (uint64) RecIdV.Len();
 }
 
 /// Delete TOAST-ed value from storage
@@ -5785,8 +6071,53 @@ TVec<TWPt<TStore> > CreateStoresFromSchema(const TWPt<TBase>& Base, const PJsonV
         }
     }
 
+    // apply per-key split length overrides from the schema
+    ApplyIndexKeySplitLen(Base, SchemaVal);
+
     // done
     return NewStoreV;
+}
+
+void ApplyIndexKeySplitLen(const TWPt<TBase>& Base, const PJsonVal& SchemaVal) {
+    // the schema can be a single store definition or an array of them
+    PJsonVal SchemaArrVal = SchemaVal;
+    if (!SchemaVal->IsArr()) {
+        TJsonValV StoreValV; StoreValV.Add(SchemaVal);
+        SchemaArrVal = TJsonVal::NewArr(StoreValV);
+    }
+    for (int SchemaN = 0; SchemaN < SchemaArrVal->GetArrVals(); SchemaN++) {
+        PJsonVal StoreVal = SchemaArrVal->GetArrVal(SchemaN);
+        QmAssertR(StoreVal->IsObjKey("name"), "Missing store name in schema definition");
+        const TStr StoreNm = StoreVal->GetObjStr("name");
+        // index keys: key name defaults to the indexed field name
+        if (StoreVal->IsObjKey("keys")) {
+            PJsonVal KeyDefsVal = StoreVal->GetObjKey("keys");
+            for (int KeyN = 0; KeyN < KeyDefsVal->GetArrVals(); KeyN++) {
+                PJsonVal KeyVal = KeyDefsVal->GetArrVal(KeyN);
+                const int SplitLen = KeyVal->GetObjInt("splitLen", -1);
+                if (SplitLen > 0) {
+                    const TStr KeyNm = KeyVal->GetObjStr("name", KeyVal->GetObjStr("field", ""));
+                    Base->PutIndexKeySplitLen(StoreNm, KeyNm, SplitLen);
+                    InfoLog("Using split length " + TInt::GetStr(SplitLen) + " for index key " + StoreNm + "." + KeyNm);
+                }
+            }
+        }
+        // index joins: the internal index key is named "Join" + join name
+        if (StoreVal->IsObjKey("joins")) {
+            PJsonVal JoinDefsVal = StoreVal->GetObjKey("joins");
+            for (int JoinN = 0; JoinN < JoinDefsVal->GetArrVals(); JoinN++) {
+                PJsonVal JoinVal = JoinDefsVal->GetArrVal(JoinN);
+                const int SplitLen = JoinVal->GetObjInt("splitLen", -1);
+                if (SplitLen > 0) {
+                    QmAssertR(JoinVal->GetObjStr("type", "index") == "index",
+                        "'splitLen' is only supported on index joins (store " + StoreNm + ")");
+                    const TStr JoinNm = JoinVal->GetObjStr("name");
+                    Base->PutIndexKeySplitLen(StoreNm, "Join" + JoinNm, SplitLen);
+                    InfoLog("Using split length " + TInt::GetStr(SplitLen) + " for join key " + StoreNm + "." + JoinNm);
+                }
+            }
+        }
+    }
 }
 
 ///////////////////////////////

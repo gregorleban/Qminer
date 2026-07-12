@@ -263,9 +263,10 @@ void TPgBlob::DeleteItem(char* Pg, uint16 ItemIndex) {
     Header->SetDirty(true);
 
     // optimization - if all items are deleted, mark as empty page
+    // (Len == 0 marks a deleted slot; any slot with Len != 0 is still live)
     bool AllDeleted = true;
     for (int i = 0; i < Header->ItemCount; i++) {
-        if (GetItemRec(Pg, i)->Len == 0) {
+        if (GetItemRec(Pg, i)->Len != 0) {
             AllDeleted = false;
             break;
         }
@@ -305,6 +306,8 @@ TPgBlob::TPgBlob(const TStr& _FNm, const TFAccess& _Access, const uint64& CacheS
     default:
         FailR("Unsupported TFAccess flag for TPgBlob.");
     }
+    // main file matches the in-memory state at this point
+    MainDirtyP = false;
 
     // init cache
     LastExtentCnt = PG_EXTENT_PCOUNT; // this means the "last" extent is full, so use new one
@@ -321,7 +324,8 @@ TPgBlob::~TPgBlob() {
                 Files[a.Pt.GetFIx()]->SavePage(a.Pt.GetPg(), GetPageBf(i));
             }
         }
-        SaveMain();
+        // rewrite the main file (free-space map) only when it changed
+        if (MainDirtyP) { SaveMain(); }
         Files.Clr();
     }
 }
@@ -495,6 +499,7 @@ void TPgBlob::CreateNewPage(TPgBlobPgPt& Pt, char** Bf) {
     }
     TStr NewFNm = FNm + ".bin" + TStr::GetNrNumFExt(Files.Len());
     Files.Add(TPgBlobFile::New(NewFNm, TFAccess::faCreate, MxBlobFLen));
+    MainDirtyP = true;
     long Pg = Files.Last()->CreateNewPage();
     EAssert(Pg >= 0);
     Pt.Set(Files.Len() - 1, (uint32)Pg);
@@ -560,9 +565,25 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL) {
     }
 
     // add data
+    PgH = (TPgHeader*)PgBf;
+
+    // reuse a deleted item slot if one exists - otherwise pages that see
+    // delete/insert churn grow their item table monotonically until
+    // CanStoreBf fails and the page can never accept new records again
+    if (!IsNewPage) {
+        for (uint16 ItemN = 0; ItemN < PgH->ItemCount; ItemN++) {
+            if (GetItemRec(PgBf, ItemN)->Len == 0) {
+                ChangeItem(PgBf, ItemN, Bf, BfL);
+                TPgBlobPt Pt(PgPt.GetFIx(), PgPt.GetPg(), ItemN);
+                Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
+                MainDirtyP = true;
+                return Pt;
+            }
+        }
+    }
+
     uint16 ii = AddItem(PgBf, Bf, BfL);
     TPgBlobPt Pt(PgPt.GetFIx(), PgPt.GetPg(), ii);
-    PgH = (TPgHeader*)PgBf;
 
     // update free-space-map
     if (IsNewPage) {
@@ -570,6 +591,7 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL) {
     } else {
         Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
     }
+    MainDirtyP = true;
     return Pt;
 }
 
@@ -599,14 +621,27 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL, const TPgBlobPt& Pt) {
         // ok, everything can still be inside this page
         DeleteItem(PgBf, Pt.GetIIx());
 
+        if (PgH->ItemCount <= Pt.GetIIx()) {
+            // deleting the last live item reset the page (empty-page
+            // optimization in DeleteItem) - the old slot no longer exists,
+            // so allocate a fresh one instead of patching the stale index
+            uint16 ii = AddItem(PgBf, Bf, BfL);
+            TPgBlobPt Pt2(PgPt.GetFIx(), PgPt.GetPg(), ii);
+            Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
+            MainDirtyP = true;
+            return Pt2;
+        }
+
         ChangeItem(PgBf, Pt.GetIIx(), Bf, BfL);
         Fsm.FsmUpdatePage(Pt, PgH->GetFreeMem());
+        MainDirtyP = true;
         return Pt;
     }
     else {
         // bad luck, we need to move data to new page
         DeleteItem(PgBf, Pt.GetIIx());
         Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
+        MainDirtyP = true;
 
         CreateNewPage(PgPt, &PgBf);
         uint16 ii = AddItem(PgBf, Bf, BfL);
@@ -614,6 +649,7 @@ TPgBlobPt TPgBlob::Put(const char* Bf, const int& BfL, const TPgBlobPt& Pt) {
         TPgBlobPt Pt2(PgPt.GetFIx(), PgPt.GetPg(), ii);
         PgH = (TPgHeader*)PgBf;
         Fsm.FsmAddPage(PgPt, PgH->GetFreeMem());
+        MainDirtyP = true;
 
         return Pt2;
     }
@@ -639,10 +675,17 @@ void TPgBlob::Del(const TPgBlobPt& Pt) {
 
     DeleteItem(PgBf, Pt.GetIIx());
     if (PgH->ItemCount == 0) {
-        // optimization - empty pages are to be flushed as fast as possible
-        MoveToEndLru(Pt.GetPg());
+        // optimization - empty pages are to be flushed as fast as possible.
+        // MoveToEndLru takes the LoadedPages cache index, NOT the in-file page
+        // number (Pt.GetPg()) - this branch was dead code while the empty-page
+        // reset in DeleteItem was broken, so the mixup never fired before
+        int CachePg;
+        if (LoadedPagesH.IsKeyGetDat(PgPt, CachePg)) {
+            MoveToEndLru(CachePg);
+        }
     }
     Fsm.FsmUpdatePage(PgPt, PgH->GetFreeMem());
+    MainDirtyP = true;
 }
 
 /// Retrieve BLOB from storage
@@ -668,6 +711,7 @@ void TPgBlob::Clr() {
     LastExtentCnt = PG_EXTENT_PCOUNT;
     LruFirst = LruLast = -1;
     SaveMain();
+    MainDirtyP = false;
 }
 
 /// Save part of the data, given time-window

@@ -4329,7 +4329,7 @@ const PIndexWordVoc& TIndexVoc::GetWordVoc(const int& KeyId) const {
     return WordVocV[KeyH[KeyId].GetWordVocId()];
 }
 
-TIndexVoc::TIndexVoc(TSIn& SIn) {
+TIndexVoc::TIndexVoc(TSIn& SIn): DirtyP(false) {
     KeyH.Load(SIn);
     StoreIdKeyIdSetH.Load(SIn);
     WordVocV.Load(SIn);
@@ -4382,6 +4382,7 @@ int TIndexVoc::GetWordVoc(const TStr& WordVocNm) const {
 
 void TIndexVoc::SetWordVocNm(const int& WordVocId, const TStr& WordVocNm) {
     WordVocV[WordVocId]->SetWordVocNm(WordVocNm);
+    DirtyP = true;
 }
 
 int TIndexVoc::AddKey(const TWPt<TBase>& Base, const uint& StoreId, const TStr& KeyNm,
@@ -4395,6 +4396,7 @@ int TIndexVoc::AddKey(const TWPt<TBase>& Base, const uint& StoreId, const TStr& 
     KeyH[KeyId].PutKeyId(KeyId);
     // add the key to the associated store key set
     StoreIdKeyIdSetH.AddDat(StoreId).AddKey(KeyId);
+    DirtyP = true;
     return KeyId;
 }
 
@@ -4404,12 +4406,14 @@ int TIndexVoc::AddInternalKey(const TWPt<TBase>& Base, const uint& StoreId,
     const int KeyId = KeyH.AddKey(TUIntStrPr(StoreId, KeyNm));
     KeyH[KeyId] = TIndexKey(Base, StoreId, KeyNm, JoinNm, GixType);
     KeyH[KeyId].PutKeyId(KeyId);
+    DirtyP = true;
     return KeyId;
 }
 
 void TIndexVoc::AddKeyField(const int& KeyId, const uint& StoreId, const int& FieldId) {
     QmAssert(StoreId == KeyH[KeyId].GetStoreId());
     KeyH[KeyId].AddField(FieldId);
+    DirtyP = true;
 }
 
 bool TIndexVoc::IsStoreKeys(const uint& StoreId) const {
@@ -4474,6 +4478,9 @@ void TIndexVoc::GetWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& Word
 }
 
 uint64 TIndexVoc::AddWordStr(const int& KeyId, const TStr& WordStr) {
+    // AddWordStr also bumps the word frequency, so the vocabulary changes
+    // even when the word already exists
+    DirtyP = true;
     return GetWordVoc(KeyId)->AddWordStr(WordStr);
 }
 
@@ -4488,6 +4495,7 @@ void TIndexVoc::AddWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& Word
         WordIdV.Add(WordVoc->AddWordStr(TokV[TokN]));
     }
     WordVoc->IncRecs();
+    DirtyP = true;
 }
 
 void TIndexVoc::AddWordIdV(const int& KeyId, const TStrV& WordV, TUInt64V& WordIdV) {
@@ -4499,6 +4507,7 @@ void TIndexVoc::AddWordIdV(const int& KeyId, const TStrV& WordV, TUInt64V& WordI
         WordIdV.Add(WordVoc->AddWordStr(WordV[WordN]));
     }
     WordVoc->IncRecs();
+    DirtyP = true;
 }
 
 void TIndexVoc::GetWcWordIdV(const int& KeyId, const TStr& WcStr, TUInt64V& WcWordIdV) {
@@ -4538,6 +4547,7 @@ const PTokenizer& TIndexVoc::GetTokenizer(const int& KeyId) const {
 
 void TIndexVoc::PutTokenizer(const int& KeyId, const PTokenizer& Tokenizer) {
     KeyH[KeyId].PutTokenizer(Tokenizer);
+    DirtyP = true;
 }
 
 void TIndexVoc::SaveTxt(const TWPt<TBase>& Base, const TStr& FNm) const {
@@ -5738,6 +5748,26 @@ void TIndex::GetPosItemV(const int& KeyId, const TUInt64& WordId, TVec<TQmGixIte
     GixPos->GetItemV(TQmGixKey(KeyId, WordId), ItemPosV);
 }
 
+// return the first position >= StartN in ItemV (sorted by record id) where GetRecId() >= RecId, or ItemV.Len()
+// uses exponential (galloping) search so that the cost depends on the distance to the target and not on ItemV.Len()
+static int GallopToRecIdPos(const TVec<TIndex::TQmGixItemPos>& ItemV, const uint64& RecId, const int& StartN) {
+    const int Len = ItemV.Len();
+    int Lo = StartN;
+    int Cur = StartN;
+    int Step = 1;
+    while (Cur < Len && ItemV[Cur].GetRecId() < RecId) {
+        Lo = Cur + 1;
+        Cur += Step;
+        Step *= 2;
+    }
+    int Hi = (Cur < Len) ? Cur : Len;
+    while (Lo < Hi) {
+        const int Mid = Lo + (Hi - Lo) / 2;
+        if (ItemV[Mid].GetRecId() < RecId) { Lo = Mid + 1; } else { Hi = Mid; }
+    }
+    return Lo;
+}
+
 void TIndex::DoQueryPos(const int& KeyId, const TUInt64V& WordIdV,
         const TIntV& MaxDiffV, TUInt64IntKdV& RecIdFqV) const {
 
@@ -5764,31 +5794,43 @@ void TIndex::DoQueryPos(const int& KeyId, const TUInt64V& WordIdV,
         TVec<TQmGixItemPos> WordItemV;
         GixPos->GetItemV(TQmGixKey(KeyId, WordIdV[WordN]), WordItemV);
         Assert(WordItemV.IsSorted());
-        // intersect the lists
-        TVec<TQmGixItemPos> _ItemV; int CurrentItemN = 0;
-        for (const TQmGixItemPos& WordItem : WordItemV) {
-            // find next matching items
-            while (CurrentItemN < CurrentItemV.Len() && CurrentItemV[CurrentItemN].GetRecId() < WordItem.GetRecId()) { CurrentItemN++; }
-            // break if we are at the end of running candidate vector
-            if (CurrentItemN == CurrentItemV.Len()) { break; }
-            // skip if we iterated beyond WordItem
-            if (WordItem.GetRecId() < CurrentItemV[CurrentItemN].GetRecId()) { continue; }
-            // if all checks pass, we have a matching positions
-            // since we can have multiple items with same rec id we have to go through all of them. Because next WordItem could have the same recid
-            // we need to keep the CurrentItemN intact and increase a substitute variable
-            int SameRecIdN = CurrentItemN;
-            while (SameRecIdN < CurrentItemV.Len() && CurrentItemV[SameRecIdN].GetRecId() == WordItem.GetRecId()) {
-                const TQmGixItemPos& CurrentItem = CurrentItemV[SameRecIdN];
-                Assert(CurrentItem.GetRecId() == WordItem.GetRecId());
-                // find any intersections of words
-                TQmGixItemPos _Item = CurrentItem.Intersect(WordItem, MaxDiff, MinFoundDist);
-                // keep if there is intersection
-                if (!_Item.Empty()) { _ItemV.Add(_Item); }
-                SameRecIdN++;
+        // intersect the lists. both vectors are sorted by record id so we merge them run by run, using
+        // galloping search to skip the long stretches of the (typically much longer) word vector that
+        // can't match the remaining candidates
+        TVec<TQmGixItemPos> _ItemV;
+        const int CurLen = CurrentItemV.Len();
+        const int WordLen = WordItemV.Len();
+        int CurN = 0, WordItemN = 0;
+        while (CurN < CurLen && WordItemN < WordLen) {
+            const uint64 CurRecId = CurrentItemV[CurN].GetRecId();
+            const uint64 WordRecId = WordItemV[WordItemN].GetRecId();
+            if (WordRecId < CurRecId) {
+                WordItemN = GallopToRecIdPos(WordItemV, CurRecId, WordItemN);
+            }
+            else if (CurRecId < WordRecId) {
+                CurN = GallopToRecIdPos(CurrentItemV, WordRecId, CurN);
+            }
+            else {
+                // matching record: several items can share the record id (positions are split over multiple
+                // items) so intersect each pair of items from the two runs
+                int WordRunEnd = WordItemN;
+                while (WordRunEnd < WordLen && WordItemV[WordRunEnd].GetRecId() == CurRecId) { WordRunEnd++; }
+                int CurRunEnd = CurN;
+                while (CurRunEnd < CurLen && CurrentItemV[CurRunEnd].GetRecId() == CurRecId) { CurRunEnd++; }
+                for (int W = WordItemN; W < WordRunEnd; W++) {
+                    for (int C = CurN; C < CurRunEnd; C++) {
+                        // find any intersections of words
+                        TQmGixItemPos _Item = CurrentItemV[C].Intersect(WordItemV[W], MaxDiff, MinFoundDist);
+                        // keep if there is intersection
+                        if (!_Item.Empty()) { _ItemV.Add(_Item); }
+                    }
+                }
+                WordItemN = WordRunEnd;
+                CurN = CurRunEnd;
             }
         }
-        // update running candidate vector
-        CurrentItemV = _ItemV;
+        // update running candidate vector (take over the data, no need to copy it)
+        CurrentItemV.MoveFrom(_ItemV);
     }
 
     // prepare final results by getting record ids that survived the intersecting.
@@ -5825,25 +5867,31 @@ TIndex::TIndex(const TStr& _IndexFPath, const TFAccess& _Access, const PIndexVoc
 
     IndexFPath = _IndexFPath;
     Access = _Access;
+    // initialize per-key split length overrides, shared by all gix instances
+    SplitLenProvider = new TQmGixSplitLenProvider;
     // initialize full invered index
     SumItemHandlerFull = new TQmGixSumItemHandler<TQmGixItemFull>;
     GixFull = TGix<TQmGixKey, TQmGixItemFull>::New("Index.GixFull",
         IndexFPath, Access, SumItemHandlerFull, CacheSizeFull, SplitLen);
+    GixFull->SetSplitLenProvider(SplitLenProvider);
     SumMergerFull = new TQmGixSumWithFqMerger<TQmGixItemFull>;
     // initialize small inverted index
     SumItemHandlerSmall = new TQmGixSumItemHandler<TQmGixItemSmall>;
     GixSmall = TGix<TQmGixKey, TQmGixItemSmall>::New("Index.GixSmall",
         IndexFPath, Access, SumItemHandlerSmall, CacheSizeSmall, SplitLen);
+    GixSmall->SetSplitLenProvider(SplitLenProvider);
     SumMergerSmall = new TQmGixSumWithFqMerger<TQmGixItemSmall>;
     // initialize tiny inverted index
     ItemHandlerTiny = new TGixDefItemHandler<TQmGixKey, TQmGixItemTiny>;
     GixTiny = TGix<TQmGixKey, TQmGixItemTiny>::New("Index.GixTiny",
         IndexFPath, Access, ItemHandlerTiny, CacheSizeTiny, SplitLen);
+    GixTiny->SetSplitLenProvider(SplitLenProvider);
     MergerTiny = new TQmGixSumWithoutFqMerger<TQmGixItemTiny, TQmGixItemFull>;
     // initialize position inverted index
     ItemHandlerPos = new TGixDefItemHandler<TQmGixKey, TQmGixItemPos>;
     GixPos = TGix<TQmGixKey, TQmGixItemPos>::New("Index.GixPos",
         IndexFPath, Access, ItemHandlerPos, CacheSizePos, SplitLen);
+    GixPos->SetSplitLenProvider(SplitLenProvider);
     MergerPos = new TGixDefMerger<TQmGixKey, TQmGixItemPos, TQmGixItemPos>;
     // initialize location index
     TStr SphereFNm = IndexFPath + "Index.Geo";
@@ -5896,6 +5944,7 @@ TIndex::~TIndex() {
             GixPos.Clr();
             delete ItemHandlerPos;
             delete MergerPos;
+            delete SplitLenProvider;
         }
         {
             TEnv::Logger->OnStatus("Saving and closing location index");
@@ -5918,6 +5967,11 @@ TIndex::~TIndex() {
         TEnv::Logger->OnStatus("Index closed");
     } else {
         TEnv::Logger->OnStatus("Index opened in read-only mode, no saving needed");
+        // release the gix instances before deleting the handlers and split length provider they use
+        GixFull.Clr();
+        GixSmall.Clr();
+        GixTiny.Clr();
+        GixPos.Clr();
         // we still need to delete all item handlers and mergers
         delete SumItemHandlerFull;
         delete SumMergerFull;
@@ -5927,6 +5981,7 @@ TIndex::~TIndex() {
         delete MergerTiny;
         delete ItemHandlerPos;
         delete MergerPos;
+        delete SplitLenProvider;
     }
 }
 
@@ -6703,6 +6758,74 @@ int TIndex::GetSplitLen() const {
     return GixFull->GetSplitLen();
 }
 
+void TIndex::PutKeySplitLen(const int& KeyId, const int& SplitLen) {
+    QmAssertR(SplitLen > 0, "[TIndex::PutKeySplitLen] Split length must be positive");
+    SplitLenProvider->PutKeySplitLen(KeyId, SplitLen);
+}
+
+template <class TQmGixItem>
+void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const int64& CacheSize, const int& VerifySampleKeys) const {
+
+    TEnv::Logger->OnStatus("Defragmenting " + GixNm + " ...");
+    // create the destination gix. it shares the split length provider, so per-key
+    // split lengths (e.g. from the store definition) are applied to all copied data
+    TPt<TGix<TQmGixKey, TQmGixItem> > DestGix = TGix<TQmGixKey, TQmGixItem>::New(GixNm,
+        DestFPath, faCreate, GixItemHandler, CacheSize, SrcGix->GetSplitLen(),
+        SrcGix->CanFirstChildBeUnfilled(), SrcGix->GetSplitLenMin(), SrcGix->GetSplitLenMax());
+    DestGix->SetSplitLenProvider(SplitLenProvider);
+    // copy all keys; each key's data is verified by count during the copy
+    const int SrcKeys = SrcGix->GetKeys();
+    uint64 CopiedItems = 0; int EmptyKeys = 0;
+    SrcGix->CopyTo(*DestGix, &CopiedItems, &EmptyKeys);
+    // before/after accounting: the only legitimate key-count difference is source
+    // keys whose posting list is fully deleted (they are not created in the rebuilt
+    // gix and cannot match any search). Anything else means keys were lost or invented.
+    const int DestKeys = DestGix->GetKeys();
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Defrag] %s: source keys %s (of which %s empty - skipped), rebuilt keys %s, items copied %s",
+        GixNm.CStr(), TStrUtil::GetStr(SrcKeys).CStr(), TStrUtil::GetStr(EmptyKeys).CStr(),
+        TStrUtil::GetStr(DestKeys).CStr(), TStrUtil::GetStr(CopiedItems).CStr()));
+    if (DestKeys != SrcKeys - EmptyKeys) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Defrag] WARNING: %s rebuilt key count %s does not match the %s non-empty source keys - "
+            "index entries were lost or duplicated by the rebuild, do not swap this index in!",
+            GixNm.CStr(), TStrUtil::GetStr(DestKeys).CStr(), TStrUtil::GetStr(SrcKeys - EmptyKeys).CStr()));
+    }
+    // deep-compare a sample of keys between the source and the destination
+    if (VerifySampleKeys > 0) {
+        QmAssertR(SrcGix->VerifySample(*DestGix, VerifySampleKeys),
+            "[TIndex::DefragGix] Verification of " + GixNm + " failed - the rebuilt index does not match the source");
+    }
+    // releasing the destination gix flushes it and saves its key hash table
+    DestGix.Clr();
+    TEnv::Logger->OnStatus("Defragmenting " + GixNm + " done");
+}
+
+void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
+        const int& VerifySampleKeys) const {
+
+    // make sure the destination folder exists
+    TDir::GenDir(DestFPath);
+    // empty list means all indices
+    TStrV LcGixNmV;
+    for (int GixNmN = 0; GixNmN < GixNmV.Len(); GixNmN++) { LcGixNmV.Add(GixNmV[GixNmN].GetLc()); }
+    const bool AllP = LcGixNmV.Empty();
+    if (AllP || LcGixNmV.IsIn("full")) {
+        DefragOneGix<TQmGixItemFull>(GixFull, "Index.GixFull", DestFPath, SumItemHandlerFull, CacheSize, VerifySampleKeys);
+    }
+    if (AllP || LcGixNmV.IsIn("small")) {
+        DefragOneGix<TQmGixItemSmall>(GixSmall, "Index.GixSmall", DestFPath, SumItemHandlerSmall, CacheSize, VerifySampleKeys);
+    }
+    if (AllP || LcGixNmV.IsIn("tiny")) {
+        DefragOneGix<TQmGixItemTiny>(GixTiny, "Index.GixTiny", DestFPath, ItemHandlerTiny, CacheSize, VerifySampleKeys);
+    }
+    if (AllP || LcGixNmV.IsIn("pos")) {
+        DefragOneGix<TQmGixItemPos>(GixPos, "Index.GixPos", DestFPath, ItemHandlerPos, CacheSize, VerifySampleKeys);
+    }
+}
+
 void TIndex::ResetStats() {
     GixFull->ResetStats();
     GixSmall->ResetStats();
@@ -7270,10 +7393,16 @@ TBase::TBase(const TStr& _FPath, const TFAccess& _FAccess, const int64& IndexCac
 
 TBase::~TBase() {
     if (FAccess != faRdOnly) {
-        TEnv::Logger->OnStatus("Saving index vocabulary ... ");
-
-        TFOut IndexVocFOut(FPath + "IndexVoc.dat");
-        IndexVoc->Save(IndexVocFOut);
+        // rewrite the vocabulary only when something was added/changed since load;
+        // rewriting the unchanged (potentially huge) file dominated shutdown time
+        // on large read-mostly bases
+        if (IndexVoc->IsDirty()) {
+            TEnv::Logger->OnStatus("Saving index vocabulary ... ");
+            TFOut IndexVocFOut(FPath + "IndexVoc.dat");
+            IndexVoc->Save(IndexVocFOut);
+        } else {
+            TEnv::Logger->OnStatus("Index vocabulary unchanged - not saving");
+        }
 
         SaveBaseConf(FPath);
     } else {
@@ -7388,6 +7517,15 @@ int TBase::NewFieldIndexKey(const TWPt<TStore>& Store, const TStr& KeyNm, const 
     Store->AddFieldKey(FieldId, KeyId);
     // return id of created key
     return KeyId;
+}
+
+void TBase::PutIndexKeySplitLen(const TStr& StoreNm, const TStr& KeyNm, const int& SplitLen) {
+    QmAssertR(IsStoreNm(StoreNm), "[TBase::PutIndexKeySplitLen] Unknown store " + StoreNm);
+    const uint StoreId = GetStoreByStoreNm(StoreNm)->GetStoreId();
+    QmAssertR(IndexVoc->IsKeyNm(StoreId, KeyNm),
+        "[TBase::PutIndexKeySplitLen] Unknown index key " + StoreNm + "." + KeyNm);
+    const int KeyId = IndexVoc->GetKeyId(StoreId, KeyNm);
+    Index->PutKeySplitLen(KeyId, SplitLen);
 }
 
 uint64 TBase::AddRec(const TWPt<TStore>& Store, const PJsonVal& RecVal) {

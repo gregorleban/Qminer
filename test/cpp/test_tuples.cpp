@@ -1,8 +1,8 @@
 #include <base.h>
 #include <mine.h>
-#include "microtest.h"
+#include "gtest/gtest.h"
 
-TEST(Tuples) {
+TEST(Tuples, Tuples) {
 
     TIntPr IntPair1{ 3, 4 };
     TIntPr IntPair2 = { 3, 4 };

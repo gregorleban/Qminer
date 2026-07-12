@@ -1,4 +1,4 @@
-/* Copyright Joyent, Inc. and other Node contributors. All rights reserved.
+/* Copyright libuv project contributors. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -19,38 +19,27 @@
  * IN THE SOFTWARE.
  */
 
-#ifndef UV_WIN_ATOMICOPS_INL_H_
-#define UV_WIN_ATOMICOPS_INL_H_
-
 #include "uv.h"
+#include "internal.h"
 
+#include <stddef.h>
+#include <unistd.h>
 
-/* Atomic set operation on char */
-#ifdef _MSC_VER /* MSVC */
+int uv_exepath(char* buffer, size_t* size) {
+  ssize_t n;
 
-/* _InterlockedOr8 is supported by MSVC on x32 and x64. It is  slightly less */
-/* efficient than InterlockedExchange, but InterlockedExchange8 does not */
-/* exist, and interlocked operations on larger targets might require the */
-/* target to be aligned. */
-#pragma intrinsic(_InterlockedOr8)
+  if (buffer == NULL || size == NULL || *size == 0)
+    return UV_EINVAL;
 
-static char __declspec(inline) uv__atomic_exchange_set(char volatile* target) {
-  return _InterlockedOr8(target, 1);
+  n = *size - 1;
+  if (n > 0)
+    n = readlink("/proc/self/exe", buffer, n);
+
+  if (n == -1)
+    return UV__ERR(errno);
+
+  buffer[n] = '\0';
+  *size = n;
+
+  return 0;
 }
-
-#else /* GCC */
-
-/* Mingw-32 version, hopefully this works for 64-bit gcc as well. */
-static inline char uv__atomic_exchange_set(char volatile* target) {
-  const char one = 1;
-  char old_value;
-  __asm__ __volatile__ ("lock xchgb %0, %1\n\t"
-                        : "=r"(old_value), "=m"(*target)
-                        : "0"(one), "m"(*target)
-                        : "memory");
-  return old_value;
-}
-
-#endif
-
-#endif /* UV_WIN_ATOMICOPS_INL_H_ */

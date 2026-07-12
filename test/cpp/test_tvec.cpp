@@ -1,9 +1,9 @@
 #include <base.h>
 #include <mine.h>
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 
-TEST(TVecDelMemCpy) {
+TEST(TVec, TVecDelMemCpy) {
     //ASSERT_EQ(20, 5);
     TIntV Vec;
     for (int i = 0; i < 20; i++) {

@@ -1,7 +1,7 @@
 #include <qminer.h>
 #include <qminer_storage.h>
 
-#include "microtest.h"
+#include "gtest/gtest.h"
 
 using namespace TQm;
 using namespace TQm::TStorage;
@@ -65,13 +65,19 @@ double FileSize() {
     return TFile::GetSize("./test/cpp/data/ArticlePgBlob.bin000") * 1.0;
 }
 
-TEST(TInit) {
-    TUnicodeDef::Load("./src/glib/bin/UnicodeDef.Bin");
-    TQm::TEnv::Init();
-	TQm::TEnv::InitLogger(0, "std", true);
+TEST(Storage, TInit) {
+    // guard against double-initialization: when the whole suite runs in one
+    // process, earlier tests may have loaded/initialized these already
+    if (!TUnicodeDef::IsDef()) {
+        TUnicodeDef::Load("./src/glib/bin/UnicodeDef.Bin");
+    }
+    if (!TQm::TEnv::IsInit()) {
+        TQm::TEnv::Init();
+        TQm::TEnv::InitLogger(0, "std", true);
+    }
 }
 
-TEST(TStore1) {
+TEST(Storage, TStore1) {
     // return;
 
     TStr StoreJsonFNm = "./test/cpp/files/store1.def";
@@ -168,7 +174,7 @@ TEST(TStore1) {
 }
 
 
-TEST(TStore2) {
+TEST(Storage, TStore2) {
     TStr StoreJsonFNm = "./test/cpp/files/store1.def";
     PJsonVal StoreDefVal = TJsonVal::GetValFromStr(TStr::LoadTxt(StoreJsonFNm));
 
@@ -201,7 +207,7 @@ TEST(TStore2) {
     }
 }
 
-TEST(TStore3) {
+TEST(Storage, TStore3) {
     TStr StoreJsonFNm = "./test/cpp/files/store1.def";
     PJsonVal StoreDefVal = TJsonVal::GetValFromStr(TStr::LoadTxt(StoreJsonFNm));
 
@@ -220,7 +226,7 @@ TEST(TStore3) {
     }
 }
 
-TEST(TStore4) {
+TEST(Storage, TStore4) {
     TStr StoreJsonFNm = "./test/cpp/files/store1.def";
     PJsonVal StoreDefVal = TJsonVal::GetValFromStr(TStr::LoadTxt(StoreJsonFNm));
 

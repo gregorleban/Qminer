@@ -28,6 +28,13 @@ uint64 TGixItemSet<TKey, TItem>::TChildInfo::GetMemUsed() const {
 }
 
 template <class TKey, class TItem>
+void TGixItemSet<TKey, TItem>::ResolveSplitLen() {
+    SplitLen = Gix->GetSplitLen(ItemSetKey);
+    SplitLenMin = Gix->GetSplitLenMin(ItemSetKey);
+    SplitLenMax = Gix->GetSplitLenMax(ItemSetKey);
+}
+
+template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::LoadChildVector(const int& ChildN) const {
     if (!ChildInfoV[ChildN].LoadedP) {
         // load child vector from disk
@@ -56,10 +63,10 @@ void TGixItemSet<TKey, TItem>::RecalcTotalCnt() {
 template <class TKey, class TItem>
 int TGixItemSet<TKey, TItem>::FirstDirtyChild() {
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
-        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len < Gix->GetSplitLenMin()) {
+        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len < SplitLenMin) {
             return ChildN;
         }
-        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len > Gix->GetSplitLenMax()) {
+        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len > SplitLenMax) {
             return ChildN;
         }
     }
@@ -75,13 +82,13 @@ int TGixItemSet<TKey, TItem>::GetFirstChildToMerge() {
             continue;
         }
         // if child is not out of the size boundaries it also doesn't need to be merged
-        if (ChildInfoV[ChildN].Len >= Gix->GetSplitLenMin() && ChildInfoV[ChildN].Len <= Gix->GetSplitLenMax()) {
+        if (ChildInfoV[ChildN].Len >= SplitLenMin && ChildInfoV[ChildN].Len <= SplitLenMax) {
             continue;
         }
         // for the first child we might allow it to be extra short, without need for merge
         // when removing oldest items, the first vector will be becoming shorter and shorter
         // and will be removed completely once empty
-        if (ChildN == 0 && Gix->CanFirstChildBeUnfilled() && ChildInfoV[ChildN].Len <= Gix->GetSplitLenMax()) {
+        if (ChildN == 0 && Gix->CanFirstChildBeUnfilled() && ChildInfoV[ChildN].Len <= SplitLenMax) {
             continue;
         }
         // otherwise, yes, it needs to be merged
@@ -93,7 +100,6 @@ int TGixItemSet<TKey, TItem>::GetFirstChildToMerge() {
 template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::PushWorkBufferToChildren() {
     // push work-buffer into children array
-    int SplitLen = Gix->GetSplitLen();
     while (ItemV.Len() >= SplitLen) {
         // create a vector of SplitLen items
         TVec<TItem> SplitItemV;
@@ -179,9 +185,9 @@ void TGixItemSet<TKey, TItem>::PushMergedDataBackToChildren(
     int Remaining = MergedItems.Len() - MergedItemN;
     int ChildN = FirstChildToMerge;
     while (MergedItemN < MergedItems.Len()) {
-        if (ChildN < ChildInfoV.Len() && Remaining > Gix->GetSplitLen()) {
+        if (ChildN < ChildInfoV.Len() && Remaining > SplitLen) {
             ChildV[ChildN].Clr();
-            MergedItems.GetSubValV(MergedItemN, MergedItemN + Gix->GetSplitLen() - 1, ChildV[ChildN]);
+            MergedItems.GetSubValV(MergedItemN, MergedItemN + SplitLen - 1, ChildV[ChildN]);
             ChildInfoV[ChildN].Len = ChildV[ChildN].Len();
             ChildInfoV[ChildN].MinItem = ChildV[ChildN][0];
             ChildInfoV[ChildN].MaxItem = ChildV[ChildN].Last();
@@ -262,6 +268,7 @@ template <class TKey, class TItem>
 TGixItemSet<TKey, TItem>::TGixItemSet(TSIn& SIn, const TGix<TKey, TItem>* _Gix):
     ItemSetKey(SIn), ItemV(SIn), ChildInfoV(SIn), MergedP(true), DirtyP(false), Gix(_Gix) {
 
+    ResolveSplitLen();
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
         ChildV.Add(TVec<TItem>());
     };
@@ -582,6 +589,7 @@ TBlobPt TGix<TKey, TItem>::AddKeyId(const TKey& Key) {
     PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, &ItemHandler, this);
     TBlobPt KeyId = EnlistItemSet(ItemSet);
     KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+    KeyIdHDirtyP = true;
     return KeyId;
 }
 
@@ -660,9 +668,10 @@ template <class TKey, class TItem>
 TGix<TKey, TItem>::TGix(const TStr& Nm, const TStr& FPath, const TFAccess& _Access,
     const TGixItemHandler<TKey, TItem>* _ItemHandler, const int64& CacheSize, const int _SplitLen,
     const bool _FirstChildBeUnfilledP, const int _SplitLenMin, const int _SplitLenMax) :
-        Access(_Access), ItemHandler(_ItemHandler), ItemSetCache(CacheSize, 1000000, GetVoidThis()),
+        Access(_Access), KeyIdHDirtyP(false), ItemHandler(_ItemHandler),
+        ItemSetCache(CacheSize, 1000000, GetVoidThis()),
         SplitLen(_SplitLen), SplitLenMin(_SplitLenMin), SplitLenMax(_SplitLenMax),
-        FirstChildBeUnfilledP(_FirstChildBeUnfilledP) {
+        FirstChildBeUnfilledP(_FirstChildBeUnfilledP), SplitLenProvider(NULL) {
 
     // prepare filenames of the GIX datastore
     GixFNm = TStr::GetNrFPath(FPath) + Nm.GetFBase() + ".Gix";
@@ -689,9 +698,14 @@ template <class TKey, class TItem>
 TGix<TKey, TItem>::~TGix() {
     if ((Access == faCreate) || (Access == faUpdate)) {
         // flush all the latest changes in cache to the disk
+        // (storing a dirty itemset updates KeyIdH and sets KeyIdHDirtyP)
         ItemSetCache.Flush();
-        // save the rest to GixFNm
-        TFOut FOut(GixFNm); KeyIdH.Save(FOut);
+        // save the key hash to GixFNm; skipped in update mode when no key was
+        // added/moved/removed - rewriting the unchanged (potentially huge) hash
+        // dominated shutdown time on large read-mostly indexes
+        if ((Access == faCreate) || KeyIdHDirtyP) {
+            TFOut FOut(GixFNm); KeyIdH.Save(FOut);
+        }
     }
 }
 
@@ -757,6 +771,7 @@ TBlobPt TGix<TKey, TItem>::StoreItemSet(const TBlobPt& KeyId) {
         // itemset is empty after all deletes were processed => remove it
         ItemSetBlobBs->DelBlob(KeyId);
         KeyIdH.DelKey(ItemSet->GetKey());
+        KeyIdHDirtyP = true;
         return TBlobPt(); // return NULL pointer
     } else {
         // store the current version to the blob
@@ -765,7 +780,10 @@ TBlobPt TGix<TKey, TItem>::StoreItemSet(const TBlobPt& KeyId) {
         int ReleasedSize;
         TBlobPt NewKeyId = ItemSetBlobBs->PutBlob(KeyId, MOut.GetSIn(), ReleasedSize);
         // and update the KeyId in the hash table
-        KeyIdH.GetDat(ItemSet->GetKey()) = NewKeyId;
+        if (!(KeyIdH.GetDat(ItemSet->GetKey()) == NewKeyId)) {
+            KeyIdH.GetDat(ItemSet->GetKey()) = NewKeyId;
+            KeyIdHDirtyP = true;
+        }
         return NewKeyId;
     }
 }
@@ -779,6 +797,7 @@ void TGix<TKey, TItem>::DeleteItemSet(const TKey& Key) {
         ItemSetCache.Del(Pt, false);
         ItemSetBlobBs->DelBlob(Pt);
         KeyIdH.DelKey(Key);
+        KeyIdHDirtyP = true;
     }
 }
 
@@ -808,6 +827,7 @@ void TGix<TKey, TItem>::AddItem(const TKey& Key, const TItem& Item) {
         ItemSet->AddItem(Item, false);
         TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to a blob
         KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+        KeyIdHDirtyP = true;
         ItemSetCache.Put(KeyId, ItemSet); // add it to cache
     }
     // check if we have to drop anything from the cache
@@ -829,6 +849,7 @@ void TGix<TKey, TItem>::AddItemV(const TKey& Key, const TVec<TItem>& ItemV) {
         ItemSet->AddItemV(ItemV);
         TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to disk
         KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+        KeyIdHDirtyP = true;
     }
     // check if we have to drop anything from the cache
     RefreshMemUsed();
@@ -947,6 +968,100 @@ void TGix<TKey, TItem>::AddToNewCacheSizeInc(const uint64& OldSize, const uint64
             NewCacheSizeInc = 0;
         }
     }
+}
+
+template <class TKey, class TItem>
+void TGix<TKey, TItem>::DropFromCache(const TKey& Key) const {
+    if (IsKey(Key)) {
+        const TBlobPt KeyId = KeyIdH.GetDat(Key);
+        PGixItemSet ItemSet;
+        // only clean itemsets can be dropped without storing - discarding a dirty
+        // itemset would lose all its changes that are not yet written to the blob
+        if (ItemSetCache.Get(KeyId, ItemSet) && !ItemSet->IsDirty()) {
+            ItemSetCache.Del(KeyId, false);
+        }
+    }
+}
+
+template <class TKey, class TItem>
+void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut, int* EmptyKeysOut) const {
+    // collect and sort the keys, so that the data of all words belonging to the
+    // same index key is also stored together in the destination
+    TVec<TKey> KeyV; KeyIdH.GetKeyV(KeyV); KeyV.Sort();
+    printf("Copying %s: %d keys\n", GixFNm.GetFMid().CStr(), KeyV.Len());
+    uint64 TotalItems = 0;
+    int EmptyKeys = 0;
+    for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
+        const TKey& Key = KeyV[KeyN];
+        // load the itemset and stream its content (child vectors + work buffer) into the destination
+        PGixItemSet ItemSet = GetItemSet(Key);
+        ItemSet->Def();
+        const int SrcItems = ItemSet->GetItems();
+        if (SrcItems > 0) {
+            TCopyToHandler Handler(DestGix, Key);
+            ItemSet->GetItemV(Handler);
+            TotalItems += (uint64) SrcItems;
+            // validate that the destination received all the items
+            const int DestItems = DestGix.GetItemSet(Key)->GetItems();
+            EAssertR(DestItems == SrcItems, TStr::Fmt(
+                "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination",
+                KeyN, KeyV.Len(), SrcItems, DestItems));
+        } else {
+            // fully deleted posting list - the key is not created in the destination
+            EmptyKeys++;
+        }
+        // release the source itemset so the full scan does not grow the cache without bound
+        DropFromCache(Key);
+        if (KeyN % 1000 == 0) {
+            printf("%s / %s keys (%.1f%%), %s items copied\r", TStrUtil::GetStr(KeyN).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(),
+                KeyV.Len() > 0 ? 100.0 * KeyN / KeyV.Len() : 100.0, TStrUtil::GetStr(TotalItems).CStr());
+        }
+    }
+    printf("%s / %s keys (100.0%%), %s items copied, %s empty keys skipped\n",
+        TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(TotalItems).CStr(), TStrUtil::GetStr(EmptyKeys).CStr());
+    if (CopiedItemsOut != NULL) { *CopiedItemsOut = TotalItems; }
+    if (EmptyKeysOut != NULL) { *EmptyKeysOut = EmptyKeys; }
+}
+
+template <class TKey, class TItem>
+bool TGix<TKey, TItem>::IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const TKey& Key, const int& MxItems) const {
+    PGixItemSet ItemSet = GetItemSet(Key);
+    PGixItemSet OtherItemSet = OtherGix.GetItemSet(Key);
+    const int Items = ItemSet->GetItems();
+    bool EqualP = (Items == OtherItemSet->GetItems());
+    if (EqualP && Items > 0) {
+        if (Items <= MxItems) {
+            // compare complete item vectors
+            TVec<TItem> ItemV; ItemSet->GetItemV(ItemV);
+            TVec<TItem> OtherItemV; OtherItemSet->GetItemV(OtherItemV);
+            EqualP = (ItemV == OtherItemV);
+        } else {
+            // too large to fully materialize twice - compare the boundary items
+            EqualP = (ItemSet->GetItem(0) == OtherItemSet->GetItem(0)) &&
+                (ItemSet->GetItem(Items - 1) == OtherItemSet->GetItem(Items - 1));
+        }
+    }
+    // release both itemsets so verification does not grow the caches
+    DropFromCache(Key);
+    OtherGix.DropFromCache(Key);
+    return EqualP;
+}
+
+template <class TKey, class TItem>
+bool TGix<TKey, TItem>::VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys) const {
+    if (SampleKeys <= 0) { return true; }
+    TVec<TKey> KeyV; KeyIdH.GetKeyV(KeyV); KeyV.Sort();
+    const int Step = KeyV.Len() > SampleKeys ? KeyV.Len() / SampleKeys : 1;
+    int Checked = 0, Failed = 0;
+    for (int KeyN = 0; KeyN < KeyV.Len(); KeyN += Step) {
+        if (!IsKeyDataEqual(OtherGix, KeyV[KeyN])) {
+            printf("VerifySample: data mismatch for key %d of %d\n", KeyN, KeyV.Len());
+            Failed++;
+        }
+        Checked++;
+    }
+    printf("VerifySample: %d keys checked, %d mismatches\n", Checked, Failed);
+    return Failed == 0;
 }
 
 template <class TKey, class TItem>

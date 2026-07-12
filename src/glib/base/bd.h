@@ -855,4 +855,18 @@ namespace TMemUtils {
   typedef TPairHashImpl2 TPairHashImpl;
 #endif
 
+/////////////////////////////////////////////////
+// Flat-serialization trait
+// TIsFlatSerializable<T>::Val == 1 declares that T's stream format produced by
+// T::Save(TSOut&) / consumed by T(TSIn&) is byte-identical to its in-memory
+// representation (members saved in declaration order, no padding, no pointers).
+// TVec then loads/saves arrays of such types with a single bulk GetBf/PutBf call
+// instead of one call per element, which keeps the produced bytes (and stream
+// checksums) identical while being an order of magnitude faster.
+// Opt-in only: never specialize for a type unless the above guarantee holds
+// (composite specializations in ds.h/hash.h verify the no-padding part with a
+// sizeof check at compile time).
+template <class TVal>
+struct TIsFlatSerializable { enum { Val = 0 }; };
+
 #endif

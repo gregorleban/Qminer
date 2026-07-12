@@ -2487,13 +2487,17 @@ private:
     TIndexWordVocV WordVocV;
     /// Used to return empty set by reference
     TIntSet EmptySet;
+    /// Set when keys, tokenizers or words were added/changed since creation/load.
+    /// When still false at shutdown, the (potentially huge) vocabulary file does
+    /// not have to be rewritten.
+    TBool DirtyP;
 
     /// Get editable word vocabulary for a given key
     PIndexWordVoc& GetWordVoc(const int& KeyId);
     /// Get constant word vocabulary for a given key
     const PIndexWordVoc& GetWordVoc(const int& KeyId) const;
 
-    TIndexVoc() { }
+    TIndexVoc(): DirtyP(true) { }
     TIndexVoc(TSIn& SIn);
 public:
     /// Create new index vocabulary
@@ -2502,6 +2506,9 @@ public:
     static PIndexVoc Load(TSIn& SIn) { return new TIndexVoc(SIn); }
     /// Serialize vocabulary to stream
     void Save(TSOut& SOut) const;
+
+    /// Was the vocabulary modified since it was created/loaded?
+    bool IsDirty() const { return DirtyP; }
 
     /// Get number of keys
     int GetKeys() const { return KeyH.Len(); }
@@ -2521,7 +2528,7 @@ public:
     const TIndexKey& GetKey(const uint& StoreId, const TStr& KeyNm) const;
 
     /// Create new word vocabulary, returns its ID
-    int NewWordVoc() { return WordVocV.Add(TIndexWordVoc::New()); }
+    int NewWordVoc() { DirtyP = true; return WordVocV.Add(TIndexWordVoc::New()); }
     /// Get Id of word vocabulary with a given name if one exists, -1 otherwise
     int GetWordVoc(const TStr& WordVocNm) const;
     /// Set the name of word vocabulary
@@ -3134,6 +3141,24 @@ private:
     /// Expression for executing gix queries for tiny records
     typedef TGixExpItem<TQmGixKey, TQmGixItemTiny, TQmGixItemFull> TQmGixExpItemTiny;
 
+    /// Per-key split length overrides for the inverted indices.
+    /// Since a gix key is a (KeyId, WordId) pair, all words of one index key
+    /// share the same split length.
+    class TQmGixSplitLenProvider : public TGixSplitLenProvider<TQmGixKey> {
+    private:
+        /// Mapping from index key id to its split length
+        TIntH KeyIdSplitLenH;
+    public:
+        /// Return split length for given gix key, or -1 to use the gix default
+        int GetSplitLen(const TQmGixKey& Key) const {
+            TInt KeySplitLen;
+            if (KeyIdSplitLenH.IsKeyGetDat(Key.Val1, KeySplitLen)) { return KeySplitLen; }
+            return -1;
+        }
+        /// Set split length override for given index key
+        void PutKeySplitLen(const int& KeyId, const int& SplitLen) { KeyIdSplitLenH.AddDat(KeyId, SplitLen); }
+    };
+
     /// Giving pretty names to GIX keys when printing debug statistics
     class TQmGixKeyStr : public TGixKeyStr<TQmGixKey> {
     private:
@@ -3310,6 +3335,9 @@ private:
     /// Inverted Index Default Merger Position
     const TGixMerger<TQmGixKey, TQmGixItemPos, TQmGixItemPos>* MergerPos;
 
+    /// Per-key split length overrides, shared by all gix instances
+    TQmGixSplitLenProvider* SplitLenProvider;
+
     /// Determines which Gix should be used for given KeyId
     TIndexKeyGixType GetGixType(const int& KeyId) const { return IndexVoc->GetKey(KeyId).GetGixType(); }
     /// Executes GIX query expression against the full index
@@ -3318,6 +3346,12 @@ private:
     bool DoQuerySmall(const TPt<TQmGixExpItemSmall>& ExpItem, TVec<TQmGixItemFull>& RecIdFqV) const;
     /// Executes GIX query expression against the tiny index
     bool DoQueryTiny(const TPt<TQmGixExpItemTiny>& ExpItem, TVec<TQmGixItemFull>& RecIdFqV) const;
+
+    /// Rebuild one gix into DestFPath - used by DefragGix
+    template <class TQmGixItem>
+    void DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const int64& CacheSize, const int& VerifySampleKeys) const;
 
     /// Executes GIX join query against the full index
     void DoJoinQueryFull(const int& KeyId, const TUInt64V& RecIdV, TUInt64IntKdV& RecIdFqV) const;
@@ -3508,6 +3542,20 @@ public:
     TGixStats GetGixStats(const bool& RefreshP = true) const;
     /// Get split length of inner Gix
     int GetSplitLen() const;
+    /// Set per-key split length override for given index key. Split lengths are a runtime
+    /// parameter (not persisted), so this must be called each time the index is opened,
+    /// before any data is indexed or queried.
+    void PutKeySplitLen(const int& KeyId, const int& SplitLen);
+
+    /// Rebuild (defragment) the inverted indices into DestFPath. Each key's child
+    /// vectors are written contiguously and the current per-key split lengths are
+    /// applied, so this also serves to re-chunk existing data after split lengths
+    /// change. GixNmV selects which of "full", "small", "tiny" and "pos" to rebuild
+    /// (empty = all). When VerifySampleKeys > 0, a sample of that many keys is re-read
+    /// from both indices and compared in depth after each rebuild.
+    void DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
+        const int& VerifySampleKeys) const;
+
     /// reset blob stats
     void ResetStats();
 
@@ -3975,6 +4023,11 @@ public:
     int NewFieldIndexKey(const TWPt<TStore>& Store, const TStr& KeyNm, const int& FieldId,
         const int& WordVocId, const TIndexKeyType& Type, const TIndexKeyGixType& GixType,
         const TIndexKeySortType& SortType);
+
+    /// Set per-key split length override for given index key (for index joins the key
+    /// name is "Join" + join name). Split lengths are a runtime parameter (not persisted),
+    /// so this must be called each time the base is opened, before indexing or querying.
+    void PutIndexKeySplitLen(const TStr& StoreNm, const TStr& KeyNm, const int& SplitLen);
 
     /// Add new record to a give store
     uint64 AddRec(const TWPt<TStore>& Store, const PJsonVal& RecVal);

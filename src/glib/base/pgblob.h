@@ -141,6 +141,13 @@ public:
     TStr GetStr() const { return TStr::Fmt("%d:%d:%d", FileIndex, Page, ItemIndex); }
 };
 
+// Flat-serialization opt-in (see TIsFlatSerializable in bd.h): Save() writes
+// Page, FileIndex, ItemIndex in declaration order and uint32+int16+uint16
+// packs without padding. Makes THash<TUInt64, TPgBlobPt> (the per-record
+// blob-pointer maps in TStorePbBlob) bulk-loadable.
+template <> struct TIsFlatSerializable<TPgBlobPt> { enum { Val =
+    (sizeof(TPgBlobPt) == sizeof(uint32) + sizeof(int16) + sizeof(uint16)) }; };
+
 ///////////////////////////////////////////////////////////////////////
 /// Binary tree of max values
 //template <class TVal>
@@ -350,6 +357,9 @@ protected:
     TVec<TLoadedPage> LoadedPages;
     /// Heap structure that keeps track of free space in pages
     TPgBlobFsm Fsm;
+    /// Set when Fsm or the file list changed since creation/load; when still
+    /// false at destruction time the main file does not have to be rewritten
+    bool MainDirtyP;
 
     /// Next item in LRU list - this one was accessed last
     int LruFirst;

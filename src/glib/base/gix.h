@@ -51,6 +51,19 @@ public:
 };
 
 /////////////////////////////////////////////////
+/// Split-Length provider.
+/// Allows specifying per-key work-buffer/child vector lengths. Keys for which
+/// the provider returns a value <= 0 use the default split length of the gix.
+template <class TKey>
+class TGixSplitLenProvider {
+public:
+    virtual ~TGixSplitLenProvider() {}
+
+    /// Return split length for given key, or -1 to use the gix default
+    virtual int GetSplitLen(const TKey& Key) const = 0;
+};
+
+/////////////////////////////////////////////////
 /// Key-To-String transformer
 template <class TKey>
 class TGixKeyStr {
@@ -140,7 +153,17 @@ private:
     /// (serialization of self, loading children, notifying about changes...)
     const TGix<TKey, TItem>* Gix;
 
+    /// Size of work-buffer and child vectors for this itemset's key.
+    /// Resolved once at construction from the gix (which can have per-key overrides).
+    TInt SplitLen;
+    /// Minimal tolerated length for child vectors of this itemset
+    TInt SplitLenMin;
+    /// Maximal tolerated length for child vectors of this itemset
+    TInt SplitLenMax;
+
 private:
+    /// Resolve split lengths for this itemset's key from the gix
+    void ResolveSplitLen();
     /// Load single child vector into memory if not present already
     void LoadChildVector(const int& ChildN) const;
     /// Load all child vectors into memory and get pointers to them
@@ -167,7 +190,8 @@ private:
 public:
     /// Create empty itemset
     TGixItemSet(const TKey& _ItemSetKey, const TGix<TKey, TItem>* _Gix) :
-        ItemSetKey(_ItemSetKey), TotalCnt(0), MergedP(true), DirtyP(true), Gix(_Gix) {}
+        ItemSetKey(_ItemSetKey), TotalCnt(0), MergedP(true), DirtyP(true), Gix(_Gix) {
+        ResolveSplitLen(); }
     /// Create empty itemset
     static PGixItemSet New(const TKey& ItemSetKey, const TGix<TKey, TItem>* Gix) {
         return new TGixItemSet(ItemSetKey, Gix); }
@@ -226,7 +250,11 @@ public:
     /// Flag if itemset is dirty
     bool IsDirty() const { return DirtyP; }
     /// Tests if current itemset is full and subsequent item should be pushed to children
-    bool IsFull() const { return (ItemV.Len() >= Gix->GetSplitLen()); }
+    bool IsFull() const { return (ItemV.Len() >= SplitLen); }
+    /// Get number of child vectors of this itemset
+    int GetChildVectors() const { return ChildInfoV.Len(); }
+    /// Get split length used by this itemset
+    int GetSplitLen() const { return SplitLen; }
 
     /// Compute percentage of loaded child vectors
     double GetLoadedPerc() const;
@@ -298,6 +326,9 @@ private:
     TStr GixBlobFNm;
     /// mapping between key and BLOB pointer
     THash<TKey, TBlobPt> KeyIdH;
+    /// set when KeyIdH was modified since load; when still false at destruction
+    /// time the (potentially huge) hash is not rewritten to GixFNm
+    bool KeyIdHDirtyP;
 
     /// ItemHandler used for packing item vectors in item sets
     const TGixItemHandler<TKey, TItem>* ItemHandler;
@@ -323,15 +354,37 @@ private:
     /// Can the first child vector be of any non-empty size and not be merged with following vectors
     /// This can significantly speed-up deleting items from Gix
     TBool FirstChildBeUnfilledP;
+    /// Optional provider of per-key split lengths. When NULL or when the provider
+    /// returns -1 for a key, the default SplitLen/SplitLenMin/SplitLenMax are used.
+    /// Not owned by gix. Must be set before any itemsets are created or loaded.
+    const TGixSplitLenProvider<TKey>* SplitLenProvider;
 
     /// Internal member for holding statistics
     mutable TGixStats Stats;
+
+private:
+    /// Handler used by CopyTo that appends the streamed item vectors
+    /// (child vectors + work buffer) into another gix under a fixed key
+    class TCopyToHandler {
+    private:
+        TGix<TKey, TItem>& DestGix;
+        TKey Key;
+    public:
+        TCopyToHandler(TGix<TKey, TItem>& _DestGix, const TKey& _Key): DestGix(_DestGix), Key(_Key) {}
+        void operator()(const TVec<TItem>& ItemV) { if (!ItemV.Empty()) { DestGix.AddItemV(Key, ItemV); } }
+    };
 
 private:
     /// Returns pointer to this object. Used in cache call-backs
     void* GetVoidThis() const { return (void*)this; }
     /// asserts if we are allowed to change this index
     void AssertReadOnly() const;
+
+    /// Remove the itemset for given key from the cache without storing it.
+    /// Used during full index scans (CopyTo, VerifySample) - loading child vectors
+    /// is not accounted in the cache size, so a scan would otherwise grow the
+    /// cache without bound.
+    void DropFromCache(const TKey& Key) const;
 
     /// get keyid of a given key and create it if does not exist
     TBlobPt AddKeyId(const TKey& Key);
@@ -378,12 +431,46 @@ public:
     int GetSplitLenMin() const { return SplitLenMin; }
     bool CanFirstChildBeUnfilled() const { return FirstChildBeUnfilledP; }
 
+    /// Set provider of per-key split lengths. Must be called right after creating
+    /// the gix, before any itemsets are created or loaded (their split lengths are
+    /// resolved once, at construction). Provider is not owned by the gix.
+    void SetSplitLenProvider(const TGixSplitLenProvider<TKey>* Provider) { SplitLenProvider = Provider; }
+    /// Get split length for given key (per-key override or default)
+    int GetSplitLen(const TKey& Key) const {
+        if (SplitLenProvider != NULL) {
+            const int KeySplitLen = SplitLenProvider->GetSplitLen(Key);
+            if (KeySplitLen > 0) { return KeySplitLen; }
+        }
+        return SplitLen;
+    }
+    /// Get minimal tolerated child vector length for given key
+    int GetSplitLenMin(const TKey& Key) const {
+        if (SplitLenProvider != NULL) {
+            const int KeySplitLen = SplitLenProvider->GetSplitLen(Key);
+            // derive min the same way as the defaults (SplitLenMin = SplitLen / 2)
+            if (KeySplitLen > 0) { return KeySplitLen / 2; }
+        }
+        return SplitLenMin;
+    }
+    /// Get maximal tolerated child vector length for given key
+    int GetSplitLenMax(const TKey& Key) const {
+        if (SplitLenProvider != NULL) {
+            const int KeySplitLen = SplitLenProvider->GetSplitLen(Key);
+            // derive max the same way as the defaults (SplitLenMax = SplitLen * 2)
+            if (KeySplitLen > 0) { return 2 * KeySplitLen; }
+        }
+        return SplitLenMax;
+    }
+
     /// do we have Key in the index?
     bool IsKey(const TKey& Key) const { return KeyIdH.IsKey(Key); }
     /// number of keys in the index
     int GetKeys() const { return KeyIdH.Len(); }
     /// sort keys
-    void SortKeys() { KeyIdH.SortByKey(true); }
+    void SortKeys() { KeyIdH.SortByKey(true); KeyIdHDirtyP = true; }
+
+    /// was the key hash modified since the gix was created/loaded?
+    bool IsKeyIdHDirty() const { return KeyIdHDirtyP; }
 
     /// get item set for given key
     PGixItemSet GetItemSet(const TKey& Key) const;
@@ -440,6 +527,25 @@ public:
     /// Update cache increment (or decrement)
     void AddToNewCacheSizeInc(const uint64& OldSize, const uint64& NewSize) const;
 
+    /// Copy the complete content of this gix into DestGix. Keys are processed in
+    /// sorted order and one key at a time, so all child vectors of one key (and of
+    /// neighboring words of the same index key) end up stored contiguously in the
+    /// destination blob base. Data is streamed one child vector at a time, so memory
+    /// use stays bounded even for very large keys. The destination applies its own
+    /// (possibly different) split lengths. Item counts are verified for every key.
+    /// Copy the full content of this gix into DestGix. Every copied key's item count
+    /// is asserted against the destination. Optionally reports the total items copied
+    /// and the number of source keys with no items (fully deleted posting lists) -
+    /// such keys are not created in the destination, which is the one legitimate way
+    /// the destination key count may be lower than the source key count.
+    void CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut = NULL, int* EmptyKeysOut = NULL) const;
+    /// Compare data stored under the given key in this and the other gix.
+    /// Keys with more than MxItems items are compared by count and first/last item only.
+    bool IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const TKey& Key, const int& MxItems = 5000000) const;
+    /// Compare data of (approximately) SampleKeys keys, evenly sampled over all keys,
+    /// between this and the other gix. Returns false if any compared key differs.
+    bool VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys) const;
+
     /// print statistics for index keys
     void SaveTxt(const TStr& FNm, const PGixKeyStr& KeyStr) const;
     /// print simple statistics for cache
@@ -454,7 +560,7 @@ public:
 
 #ifdef XTEST
     friend class XTest;
-    void KillHash() { this->KeyIdH.Clr(); }
+    void KillHash() { this->KeyIdH.Clr(); this->KeyIdHDirtyP = true; }
     void KillCache() { this->ItemSetCache.FlushAndClr(); }
 #endif
 

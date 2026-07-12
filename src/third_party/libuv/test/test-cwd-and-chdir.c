@@ -23,42 +23,35 @@
 #include "task.h"
 #include <string.h>
 
-#define PATHMAX 1024
-extern char executable_path[];
+#define PATHMAX 4096
 
 TEST_IMPL(cwd_and_chdir) {
   char buffer_orig[PATHMAX];
   char buffer_new[PATHMAX];
-  size_t size;
-  char* last_slash;
-  uv_err_t err;
+  size_t size1;
+  size_t size2;
+  int err;
 
-  size = sizeof(buffer_orig) / sizeof(buffer_orig[0]);
-  err = uv_cwd(buffer_orig, size);
-  ASSERT(err.code == UV_OK);
+  size1 = 1;
+  err = uv_cwd(buffer_orig, &size1);
+  ASSERT_EQ(err, UV_ENOBUFS);
+  ASSERT_GT(size1, 1);
 
-  /* Remove trailing slash unless at a root directory. */
-#ifdef _WIN32
-  last_slash = strrchr(buffer_orig, '\\');
-  ASSERT(last_slash);
-  if (last_slash > buffer_orig && *(last_slash - 1) != ':') {
-    *last_slash = '\0';
-  }
-#else /* Unix */
-  last_slash = strrchr(buffer_orig, '/');
-  ASSERT(last_slash);
-  if (last_slash != buffer_orig) {
-    *last_slash = '\0';
-  }
-#endif
+  size1 = sizeof buffer_orig;
+  err = uv_cwd(buffer_orig, &size1);
+  ASSERT_OK(err);
+  ASSERT_GT(size1, 0);
+  ASSERT_NE(buffer_orig[size1], '/');
 
   err = uv_chdir(buffer_orig);
-  ASSERT(err.code == UV_OK);
+  ASSERT_OK(err);
 
-  err = uv_cwd(buffer_new, size);
-  ASSERT(err.code == UV_OK);
+  size2 = sizeof buffer_new;
+  err = uv_cwd(buffer_new, &size2);
+  ASSERT_OK(err);
 
-  ASSERT(strcmp(buffer_orig, buffer_new) == 0);
+  ASSERT_EQ(size1, size2);
+  ASSERT_OK(strcmp(buffer_orig, buffer_new));
 
   return 0;
 }

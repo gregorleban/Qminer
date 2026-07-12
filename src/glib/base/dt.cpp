@@ -3427,27 +3427,29 @@ void TBool::SaveXml(TSOut &SOut, const TStr &Nm) const
     XSaveBETagArg(Nm, "Val", TBool::GetStr(Val));
 }
 
+// accepted value strings (case-insensitive): T/F, Y/N, Yes/No, True/False.
+// compare against uppercase literals - the class constants are mixed-case
+// output formats ("Yes"/"No"), so comparing the uppercased input against them
+// would never match (the old bug: "-flag:false" was silently ignored).
 bool TBool::IsValStr(const TStr &Str)
 {
     TStr UcStr = Str.GetUc();
-    return (UcStr == FalseStr) || (UcStr == TrueStr) || (UcStr == YStr) || (UcStr == NStr) ||
-           (UcStr == YesStr) || (UcStr == NoStr);
+    return (UcStr == "F") || (UcStr == "T") || (UcStr == "Y") || (UcStr == "N") ||
+           (UcStr == "YES") || (UcStr == "NO") || (UcStr == "TRUE") || (UcStr == "FALSE");
 }
 
 bool TBool::GetValFromStr(const TStr &Str)
 {
-    return (Str == TrueStr) || (Str == YStr) || (Str == YesStr);
+    TStr UcStr = Str.GetUc();
+    return (UcStr == "T") || (UcStr == "Y") || (UcStr == "YES") || (UcStr == "TRUE");
 }
 
 bool TBool::GetValFromStr(const TStr &Str, const bool &DfVal)
 {
-    TStr UcStr = Str.GetUc();
-    if (IsValStr(UcStr)) {
-        return (UcStr == TrueStr) || (UcStr == YStr) || (UcStr == YesStr);
+    if (IsValStr(Str)) {
+        return GetValFromStr(Str);
     }
-    else {
-        return DfVal;
-    }
+    return DfVal;
 }
 
 /////////////////////////////////////////////////

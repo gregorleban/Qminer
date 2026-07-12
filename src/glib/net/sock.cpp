@@ -18,6 +18,11 @@ void TLoop::Stop()
     SockSys.StopLoop();
 }
 
+void TLoop::RunPending()
+{
+    SockSys.RunPendingLoop();
+}
+
 void TLoop::Reset()
 {
     SockSys.ResetLoop();
@@ -281,10 +286,20 @@ typedef struct {
 } uv_timer_req_t;
 
 // declaration of callback, since sock.h is not aware of libuv
-void TTTimer_OnTimeOut(uv_timer_t* TimerHnd, int Status)
+void TTTimer_OnTimeOut(uv_timer_t* TimerHnd)
 {
     uv_timer_req_t* _TimerHnd = (uv_timer_req_t*)TimerHnd;
-    _TimerHnd->Timer->OnTimeOut();
+    // Timer is set to NULL in ~TTTimer, so a callback that was already scheduled
+    // must not call into the deleted object
+    if (_TimerHnd->Timer != NULL) {
+        _TimerHnd->Timer->OnTimeOut();
+    }
+}
+
+// called by the loop once the handle is fully closed - only then is it safe to free it
+void TTTimer_OnClose(uv_handle_t* TimerHnd)
+{
+    free(TimerHnd);
 }
 
 TTTimer::TTTimer(const int& _TimeOutMSecs, const bool& _Repeat)
@@ -305,13 +320,23 @@ TTTimer::TTTimer(const int& _TimeOutMSecs, const bool& _Repeat)
 
 TTTimer::~TTTimer()
 {
-    // stop the timer
-    StopTimer();
-    // close handle
-    uv_close((uv_handle_t*)TimerHnd.Val, NULL);
-    // cleanup after it
     uv_timer_req_t* _TimerHnd = (uv_timer_req_t*)TimerHnd.Val;
-    free(_TimerHnd);
+    // clear the back-pointer so a timer event that is already scheduled in the loop
+    // cannot call into this deleted object
+    _TimerHnd->Timer = NULL;
+    if (TSockSys::Active) {
+        // stop the timer
+        StopTimer();
+        // uv_close is asynchronous - the handle stays queued in the loop (endgame) until
+        // the close callback runs, so it must not be freed here. Freeing it immediately
+        // caused an access violation in uv_process_endgames when exiting the process
+        // (exit code was 0xC0000005 instead of the requested one).
+        uv_close((uv_handle_t*)_TimerHnd, TTTimer_OnClose);
+    }
+    else {
+        // the loop was already deleted (static destruction), uv calls are not safe anymore
+        free(_TimerHnd);
+    }
 }
 
 void TTTimer::StartTimer(const int& _TimeOutMSecs)
