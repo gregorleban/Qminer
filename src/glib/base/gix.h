@@ -51,6 +51,25 @@ public:
 };
 
 /////////////////////////////////////////////////
+/// Comparator for delete markers, i.e. (item-to-delete, position in the work buffer) pairs.
+/// Orders by item through the item handler - the handler's IsLt is the authoritative order of a
+/// gix, and equality under it coincides with TItem::operator==, which is what a delete matches on.
+/// Ties (repeats of the same value) are broken by ascending position, so the last marker of a
+/// value sorts last within its group.
+template <class TKey, class TItem>
+class TGixDelMarkerCmp {
+private:
+    const TGixItemHandler<TKey, TItem>* ItemHandler;
+public:
+    TGixDelMarkerCmp(const TGixItemHandler<TKey, TItem>* _ItemHandler) : ItemHandler(_ItemHandler) {}
+    bool operator () (const TPair<TItem, TInt>& Pr1, const TPair<TItem, TInt>& Pr2) const {
+        if (ItemHandler->IsLt(Pr1.Val1, Pr2.Val1)) { return true; }
+        if (ItemHandler->IsLt(Pr2.Val1, Pr1.Val1)) { return false; }
+        return Pr1.Val2 < Pr2.Val2;
+    }
+};
+
+/////////////////////////////////////////////////
 /// Split-Length provider.
 /// Allows specifying per-key work-buffer/child vector lengths. Keys for which
 /// the provider returns a value <= 0 use the default split length of the gix.
@@ -181,6 +200,11 @@ private:
     void InjectWorkBufferToChildren();
     /// Data has been merged in memory and needs to be pushed to child vectors (overwrite them)
     void PushMergedDataBackToChildren(const int& FirstChildToMerge, const TVec<TItem>& MergedItems);
+    /// Index of the child vector whose [MinItem, MaxItem] range can hold Item, or -1 if none can.
+    /// Child ranges are disjoint and ascending, so this is a binary search rather than a scan.
+    int FindChildToDeleteFrom(const TItem& Item) const;
+    /// Position of Item in SortedV (sorted under the item handler's order), or -1 if not present
+    int FindInSorted(const TVec<TItem>& SortedV, const TItem& Item) const;
     /// Process any pending "delete" commands
     void ProcessDeletes();
 

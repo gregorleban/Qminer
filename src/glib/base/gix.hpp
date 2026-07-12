@@ -224,49 +224,109 @@ void TGixItemSet<TKey, TItem>::PushMergedDataBackToChildren(
 }
 
 template <class TKey, class TItem>
-void TGixItemSet<TKey, TItem>::ProcessDeletes() {
-    if (ItemVDel.Len() > 0) {
-        TVec<TItem> ItemVNew;
-        int ItemVNewI = 0;
-
-        // go over all indices in ItemVDel that represent which items in ItemV are keys to delete
-        for (int ItemVDelN = 0; ItemVDelN < ItemVDel.Len(); ItemVDelN++) {
-            // get the value to delete
-            const TItem& ValToDel = ItemV[ItemVDel[ItemVDelN]];
-            // find the children vector from which we need to delete the value.
-            // since deletes are often called on the oldest items we immediately test
-            // if val is in the first vector - if not, go from last vector backward
-            int ChildN = (ChildInfoV.Len() > 0 && Gix->GetItemHandler()->IsLtE(ValToDel, ChildInfoV[0].MaxItem)) ? 0 : ChildInfoV.Len() - 1;
-            while (ChildN >= 0 && Gix->GetItemHandler()->IsLtE(ValToDel, ChildInfoV[ChildN].MaxItem)) {
-                if (Gix->GetItemHandler()->IsLtE(ChildInfoV[ChildN].MinItem, ValToDel)) {
-                    LoadChildVector(ChildN);
-                    Gix->GetItemHandler()->Delete(ValToDel, ChildV[ChildN]);
-                    ChildInfoV[ChildN].Len = ChildV[ChildN].Len();
-                    ChildInfoV[ChildN].DirtyP = true;
-                    // since we have already found and deleted the item, we can stop iterating over children vectors
-                    break;
-                    // we don't update stats (min & max), because they are still usable.
-                }
-                ChildN--;
-            }
-            // copy from ItemV to ItemVNew items up to index ItemVDel[i]
-            while (ItemVNewI <= ItemVDel[ItemVDelN]) {
-                ItemVNew.Add(ItemV[ItemVNewI++]);
-            }
-            // it is possible that value val appears multiple times in ItemVNew so we have to delete all it's instances
-            Gix->GetItemHandler()->Delete(ValToDel, ItemVNew);
-        }
-        // copy the remaining items from the last item to delete to the end of the vector ItemV and copy items to ItemVNew
-        while (ItemVNewI < ItemV.Len()) {
-            ItemVNew.Add(ItemV[ItemVNewI++]);
-        }
-
-        ItemV.Clr();
-        ItemVDel.Clr();
-        //ItemV.AddVMemCpy(ItemVNew);
-        ItemV.AddV(ItemVNew);
-        DirtyP = true;
+int TGixItemSet<TKey, TItem>::FindInSorted(const TVec<TItem>& SortedV, const TItem& Item) const {
+    const TGixItemHandler<TKey, TItem>* ItemHandler = Gix->GetItemHandler();
+    int Lo = 0, Hi = SortedV.Len() - 1;
+    while (Lo <= Hi) {
+        const int Mid = Lo + (Hi - Lo) / 2;
+        if (ItemHandler->IsLt(SortedV[Mid], Item)) { Lo = Mid + 1; }
+        else if (ItemHandler->IsLt(Item, SortedV[Mid])) { Hi = Mid - 1; }
+        else { return Mid; }
     }
+    return -1;
+}
+
+template <class TKey, class TItem>
+int TGixItemSet<TKey, TItem>::FindChildToDeleteFrom(const TItem& Item) const {
+    const TGixItemHandler<TKey, TItem>* ItemHandler = Gix->GetItemHandler();
+    // child vectors hold disjoint item ranges in ascending order, so the only child that can
+    // hold Item is the first one whose MaxItem reaches it
+    int Lo = 0, Hi = ChildInfoV.Len() - 1, ChildN = -1;
+    while (Lo <= Hi) {
+        const int Mid = Lo + (Hi - Lo) / 2;
+        if (ItemHandler->IsLtE(Item, ChildInfoV[Mid].MaxItem)) { ChildN = Mid; Hi = Mid - 1; }
+        else { Lo = Mid + 1; }
+    }
+    // that child actually holds Item only if its range starts at or below it
+    if (ChildN >= 0 && ItemHandler->IsLtE(ChildInfoV[ChildN].MinItem, Item)) { return ChildN; }
+    return -1;
+}
+
+template <class TKey, class TItem>
+void TGixItemSet<TKey, TItem>::ProcessDeletes() {
+    if (ItemVDel.Empty()) { return; }
+    const TGixItemHandler<TKey, TItem>* ItemHandler = Gix->GetItemHandler();
+
+    // ItemVDel holds ascending positions into the work buffer ItemV; ItemV[Pos] is the value that
+    // the marker at Pos deletes. The previous implementation replayed the markers one at a time,
+    // and each replay called Delete() - a linear DelAll - once on the child vector and once on the
+    // output buffer built so far. That is O(#markers * #items), and both counts are bounded by
+    // SplitLen, so with a per-key split length of 100k a single full work buffer of deletes cost
+    // on the order of 10^10 operations. A batch delete fills the work buffer with markers over and
+    // over, which is what made deleting a large number of records collapse.
+    //
+    // Instead, collect the markers once, then do a single pass over the work buffer and a single
+    // pass over each affected child. Semantics are unchanged: a marker removes every occurrence of
+    // its value at or *before* its own position and leaves later re-adds of the same value alone,
+    // so an item at position N survives iff no marker for the same value sits at a position >= N.
+    // Only the last marker position per distinct value matters.
+    TVec<TPair<TItem, TInt> > DelMarkerV(ItemVDel.Len(), 0);
+    for (int MarkerN = 0; MarkerN < ItemVDel.Len(); MarkerN++) {
+        const int Pos = ItemVDel[MarkerN];
+        DelMarkerV.Add(TPair<TItem, TInt>(ItemV[Pos], Pos));
+    }
+    DelMarkerV.SortCmp(TGixDelMarkerCmp<TKey, TItem>(ItemHandler));
+
+    // collapse the markers to distinct values, keeping the last marker position of each. the sort
+    // tie-breaks on ascending position, so within a run of equal values the last one wins.
+    TVec<TItem> DelItemV(DelMarkerV.Len(), 0);
+    TVec<TInt> DelLastPosV(DelMarkerV.Len(), 0);
+    for (int MarkerN = 0; MarkerN < DelMarkerV.Len(); MarkerN++) {
+        const TItem& DelItem = DelMarkerV[MarkerN].Val1;
+        if (!DelItemV.Empty() && !ItemHandler->IsLt(DelItemV.Last(), DelItem)) {
+            DelLastPosV.Last() = DelMarkerV[MarkerN].Val2;
+        } else {
+            DelItemV.Add(DelItem);
+            DelLastPosV.Add(DelMarkerV[MarkerN].Val2);
+        }
+    }
+
+    // rebuild the work buffer in one pass, dropping each item killed by a marker at or after it
+    TVec<TItem> ItemVNew(ItemV.Len(), 0);
+    for (int ItemN = 0; ItemN < ItemV.Len(); ItemN++) {
+        const int DelN = FindInSorted(DelItemV, ItemV[ItemN]);
+        if (DelN >= 0 && DelLastPosV[DelN] >= ItemN) { continue; }
+        ItemVNew.Add(ItemV[ItemN]);
+    }
+
+    // apply the deletes to the child vectors. group the values by the child that holds them so
+    // each affected child is rewritten once, instead of being rescanned once per deleted value.
+    // DelItemV is sorted and we append in order, so every per-child list comes out sorted too.
+    THash<TInt, TVec<TItem> > ChildDelH;
+    for (int DelN = 0; DelN < DelItemV.Len(); DelN++) {
+        const int ChildN = FindChildToDeleteFrom(DelItemV[DelN]);
+        if (ChildN >= 0) { ChildDelH.AddDat(ChildN).Add(DelItemV[DelN]); }
+    }
+    for (int KeyId = ChildDelH.FFirstKeyId(); ChildDelH.FNextKeyId(KeyId); ) {
+        const int ChildN = ChildDelH.GetKey(KeyId);
+        const TVec<TItem>& ChildDelItemV = ChildDelH[KeyId];
+        LoadChildVector(ChildN);
+        TVec<TItem>& ChildItemV = ChildV[ChildN];
+        int KeepN = 0;
+        for (int ItemN = 0; ItemN < ChildItemV.Len(); ItemN++) {
+            if (FindInSorted(ChildDelItemV, ChildItemV[ItemN]) >= 0) { continue; }
+            ChildItemV[KeepN++] = ChildItemV[ItemN];
+        }
+        ChildItemV.Trunc(KeepN);
+        ChildInfoV[ChildN].Len = ChildItemV.Len();
+        ChildInfoV[ChildN].DirtyP = true;
+        // we don't update stats (min & max), because they are still usable.
+    }
+
+    ItemV.Clr();
+    ItemVDel.Clr();
+    ItemV.AddV(ItemVNew);
+    DirtyP = true;
 }
 
 template <class TKey, class TItem>
