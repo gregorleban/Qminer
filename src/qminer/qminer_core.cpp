@@ -6156,14 +6156,15 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     const uint64 HiDelRecId = MaxDelRecId + 1;
 
     // each gix phase advances by scanning that gix's keys, so the key count is the natural
-    // denominator for its progress. report roughly every 0.5% - a callback per key would drown
-    // a multi-million-key gix in console writes.
+    // denominator for its progress. report roughly every 0.5% and at least every ~10s - a
+    // callback per key would drown a multi-million-key gix in console writes.
     if (!GixFull.Empty()) {
         const TStr Phase = "1/5 GixFull";
         const TQmGixItemFull LoItem(MinDelRecId, 0), HiItem(HiDelRecId, 0);
         const int64 TotalKeys = GixFull->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
+        TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixFull->FFirstKeyId();
         while (GixFull->FNextKeyId(GixKeyId)) {
@@ -6183,8 +6184,13 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
                 }
             }
             KeysDone++;
-            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+            // report on key-count steps, but at least every ~10s: keys with actual deletions can
+            // be arbitrarily expensive (loading and rewriting posting lists), so a pure key-count
+            // throttle can stay silent for the entire heavy stretch of the scan
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys ||
+                (KeysDone % 1024 == 0 && ReportTm.GetSecs() >= 10.0))) {
                 OnProgress(Phase, KeysDone, TotalKeys, Removed);
+                ReportTm.Tick();
             }
         }
     }
@@ -6194,6 +6200,7 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
         const int64 TotalKeys = GixSmall->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
+        TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixSmall->FFirstKeyId();
         while (GixSmall->FNextKeyId(GixKeyId)) {
@@ -6213,8 +6220,13 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
                 }
             }
             KeysDone++;
-            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+            // report on key-count steps, but at least every ~10s: keys with actual deletions can
+            // be arbitrarily expensive (loading and rewriting posting lists), so a pure key-count
+            // throttle can stay silent for the entire heavy stretch of the scan
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys ||
+                (KeysDone % 1024 == 0 && ReportTm.GetSecs() >= 10.0))) {
                 OnProgress(Phase, KeysDone, TotalKeys, Removed);
+                ReportTm.Tick();
             }
         }
     }
@@ -6224,6 +6236,7 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
         const int64 TotalKeys = GixTiny->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
+        TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixTiny->FFirstKeyId();
         while (GixTiny->FNextKeyId(GixKeyId)) {
@@ -6243,8 +6256,13 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
                 }
             }
             KeysDone++;
-            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+            // report on key-count steps, but at least every ~10s: keys with actual deletions can
+            // be arbitrarily expensive (loading and rewriting posting lists), so a pure key-count
+            // throttle can stay silent for the entire heavy stretch of the scan
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys ||
+                (KeysDone % 1024 == 0 && ReportTm.GetSecs() >= 10.0))) {
                 OnProgress(Phase, KeysDone, TotalKeys, Removed);
+                ReportTm.Tick();
             }
         }
     }
@@ -6254,6 +6272,7 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
         const int64 TotalKeys = GixPos->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
+        TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
         int GixKeyId = GixPos->FFirstKeyId();
         while (GixPos->FNextKeyId(GixKeyId)) {
@@ -6273,8 +6292,13 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
                 }
             }
             KeysDone++;
-            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys)) {
+            // report on key-count steps, but at least every ~10s: keys with actual deletions can
+            // be arbitrarily expensive (loading and rewriting posting lists), so a pure key-count
+            // throttle can stay silent for the entire heavy stretch of the scan
+            if (OnProgress && (KeysDone % ReportEvery == 0 || KeysDone == TotalKeys ||
+                (KeysDone % 1024 == 0 && ReportTm.GetSecs() >= 10.0))) {
                 OnProgress(Phase, KeysDone, TotalKeys, Removed);
+                ReportTm.Tick();
             }
         }
     }
