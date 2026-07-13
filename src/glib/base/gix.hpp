@@ -1106,10 +1106,12 @@ template <class TKey, class TItem>
 void TGix<TKey, TItem>::RefreshMemUsed() const {
     // check if we have to drop anything from the cache
     if (NewCacheSizeInc > CacheResetThreshold) {
-        // leading newline: the console may hold an in-place (\r) progress line - e.g. the batch
-        // delete progress - and printing over it leaves garbled output
-        printf("\nGix cache clean-up start [accumulated growth: %s]\n",
-            TUInt64::GetMegaStr(NewCacheSizeInc).CStr());
+        // start with \r and pad the line: the console may hold an in-place (\r) progress line -
+        // e.g. the batch delete progress - which this overwrites cleanly (the pad erases any
+        // longer leftover text). a bare leading \n would instead print a blank line whenever the
+        // cursor already sits on an empty line
+        printf("\r%-120s\n", TStr::Fmt("Gix cache clean-up start [accumulated growth: %s]",
+            TUInt64::GetMegaStr(NewCacheSizeInc).CStr()).CStr());
         TExeTm ExeTm;
         // pack all the item sets
         TBlobPt BlobPt;
