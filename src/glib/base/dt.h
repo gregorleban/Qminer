@@ -1646,17 +1646,6 @@ static TStr GetStr(const TNum& Int){return TStr::Fmt("%llu", Int.Val);}
 static TStr GetHexStr(const TNum& Int){return TStr::Fmt("%llX", Int.Val);}
   #endif
 
-  // get the number as string using the thousands separator (1234 -> 1,234)
-  static TStr GetSepStr(const uint64& Val, const char& Sep = ','){
-    TStr StrVal = GetStr(Val).Reverse();
-    TChA Out;
-    for (int N = 0; N < StrVal.Len(); N++) {
-      if (N > 0 && N % 3 == 0) { Out += Sep; }
-      Out += StrVal[N];
-    }
-    Out.Reverse();
-    return Out;}
-
   static TStr GetKiloStr(const uint64& Val){
     if (Val>100*1000){return GetStr(Val/1000)+"K";}
     else if (Val>1000){return GetStr(Val/1000)+"."+GetStr((Val%1000)/100)+"K";}
