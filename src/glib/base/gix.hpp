@@ -103,6 +103,49 @@ int TGixItemSet<TKey, TItem>::GetFirstChildToMerge() {
 }
 
 template <class TKey, class TItem>
+bool TGixItemSet<TKey, TItem>::HasOversizedChild() const {
+    for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
+        if (ChildInfoV[ChildN].Len > SplitLenMax) { return true; }
+    }
+    return false;
+}
+
+template <class TKey, class TItem>
+void TGixItemSet<TKey, TItem>::CoalesceUndersizedChildren() {
+    // drop children that deletes emptied completely - anywhere, not just at the front
+    for (int ChildN = ChildInfoV.Len() - 1; ChildN >= 0; ChildN--) {
+        if (ChildInfoV[ChildN].Len == 0) {
+            Gix->DeleteChildVector(ChildInfoV[ChildN].Pt);
+            ChildInfoV.Del(ChildN);
+            ChildV.Del(ChildN);
+        }
+    }
+    // merge adjacent undersized children so repeated batch deletes don't accumulate fragments.
+    // items are globally sorted across children, so gluing neighbors preserves the order
+    int ChildN = 0;
+    while (ChildN + 1 < ChildInfoV.Len()) {
+        if (ChildInfoV[ChildN].Len < SplitLenMin && ChildInfoV[ChildN + 1].Len < SplitLenMin &&
+            ChildInfoV[ChildN].Len + ChildInfoV[ChildN + 1].Len <= SplitLenMax) {
+            LoadChildVector(ChildN);
+            LoadChildVector(ChildN + 1);
+            ChildV[ChildN].AddV(ChildV[ChildN + 1]);
+            ChildInfoV[ChildN].Len = ChildV[ChildN].Len();
+            // stats stay usable the same way deletes keep them usable: Min can only be
+            // conservative, Max comes from the absorbed right neighbor
+            ChildInfoV[ChildN].MaxItem = ChildInfoV[ChildN + 1].MaxItem;
+            ChildInfoV[ChildN].DirtyP = true;
+            Gix->DeleteChildVector(ChildInfoV[ChildN + 1].Pt);
+            ChildInfoV.Del(ChildN + 1);
+            ChildV.Del(ChildN + 1);
+            // stay on ChildN - the merged child may absorb its next neighbor too
+        } else {
+            ChildN++;
+        }
+    }
+    DirtyP = true;
+}
+
+template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::PushWorkBufferToChildren() {
     // push work-buffer into children array
     while (ItemV.Len() >= SplitLen) {
@@ -523,6 +566,35 @@ void TGixItemSet<TKey, TItem>::DelItem(const TItem& Item) {
 }
 
 template <class TKey, class TItem>
+void TGixItemSet<TKey, TItem>::DelItemV(const TVec<TItem>& DelV) {
+    if (DelV.Empty()) { return; }
+    if (IsFull()) {
+        const uint64 OldSize = GetMemUsed();
+        Def();
+        if (IsFull()) {
+            PushWorkBufferToChildren();
+        }
+        RecalcTotalCnt(); // work buffer might have been merged
+        Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed());
+    }
+
+    // append every delete marker before any further flushing - the work buffer may temporarily
+    // exceed SplitLen, but in exchange the whole batch is drained by ONE linear ProcessDeletes
+    // pass on the next Def(). Calling DelItem per item instead would trigger a Def() for every
+    // single item once the buffer is at SplitLen, i.e. O(SplitLen) work per deleted item.
+    const uint64 OldSize = ItemVDel.GetMemUsed() + ItemV.GetMemUsed();
+    for (int ItemN = 0; ItemN < DelV.Len(); ItemN++) {
+        ItemVDel.Add(ItemV.Len());
+        ItemV.Add(DelV[ItemN]);
+    }
+    const uint64 NewSize = ItemVDel.GetMemUsed() + ItemV.GetMemUsed();
+    Gix->AddToNewCacheSizeInc(OldSize, NewSize);
+    MergedP = false;
+    DirtyP = true;
+    TotalCnt += DelV.Len();
+}
+
+template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::Clr() {
     const int OldSize = GetMemUsed();
     if (ChildInfoV.Len() > 0) {
@@ -550,11 +622,27 @@ void TGixItemSet<TKey, TItem>::Def() {
         InjectWorkBufferToChildren(); // inject data into child vectors
 
         int FirstChildToMerge = GetFirstChildToMerge();
-        if (FirstChildToMerge >= 0 || (ChildInfoV.Len() > 0 && ItemV.Len() > 0)) {
-            if (FirstChildToMerge < 0) {
-                FirstChildToMerge = ChildInfoV.Len();
-            }
-
+        if (FirstChildToMerge >= 0 && ItemV.Empty() && !HasOversizedChild()) {
+            // deletes-only flush: the work buffer is drained and children only shrank, so they
+            // are still sorted and mutually disjoint - the itemset is already globally merged.
+            // The global merge below would collect and rewrite the ENTIRE posting list from
+            // FirstChildToMerge onward just because deletes left some children undersized; on a
+            // huge key (per-key splitLen 100k, tens of millions of items) that is gigabytes of
+            // memcpy on every work-buffer flush, which is what made batch deletes crawl even
+            // after ProcessDeletes itself was made linear. Fix the fragmentation locally instead.
+            CoalesceUndersizedChildren();
+            FirstChildToMerge = -1;
+        }
+        // merge only when children actually need rebalancing. A non-empty work buffer is NOT a
+        // reason: InjectWorkBufferToChildren just moved every item overlapping the children into
+        // its child, so whatever remains in ItemV lies strictly beyond the last child's MaxItem
+        // and the itemset is already globally merged (the same state DefLocal accepts). The old
+        // additional `ItemV.Len() > 0` trigger re-merged the whole work buffer on every Def -
+        // with per-item deletes on a mature key (work buffer sitting just under SplitLen) that
+        // meant O(SplitLen) work for every deleted item, which the profile of a 600k-article
+        // batch delete showed as 88% of all CPU (TQmGixItemPos construction under Def/AddV/Merge
+        // on GixPos word keys).
+        if (FirstChildToMerge >= 0) {
             // collect all data from subsequent child vectors and work-buffer
             TVec<TItem> MergedItems;
             for (int i = FirstChildToMerge; i < ChildInfoV.Len(); i++) {
@@ -565,8 +653,10 @@ void TGixItemSet<TKey, TItem>::Def() {
             Gix->GetItemHandler()->Merge(MergedItems, false); // perform global merge
 
             PushMergedDataBackToChildren(FirstChildToMerge, MergedItems); // now save them back
-            PushWorkBufferToChildren(); // it could happen that data in work buffer is still too large
         }
+        // if the work buffer holds SplitLen or more (post-inject it lies entirely beyond the last
+        // child), split it off into children - self-guarding, no-op for a smaller buffer
+        PushWorkBufferToChildren();
 
         // in case deletes emptied the first children completely, remove them
         while (ChildInfoV.Len() > 0 && ChildInfoV[0].Len == 0) {
@@ -937,6 +1027,20 @@ void TGix<TKey, TItem>::DelItem(const TKey& Key, const TItem& Item) {
         PGixItemSet ItemSet = GetItemSet(Key);
         // clear the items from the ItemSet
         ItemSet->DelItem(Item);
+        if (ItemSet->Empty()) {
+            DeleteItemSet(Key);
+        }
+    }
+}
+
+template <class TKey, class TItem>
+void TGix<TKey, TItem>::DelItemV(const TKey& Key, const TVec<TItem>& DelV) {
+    AssertReadOnly(); // check if we are allowed to write
+    if (IsKey(Key)) { // check if this key exists
+        // load the current item set
+        PGixItemSet ItemSet = GetItemSet(Key);
+        // enqueue all deletes with a single flush
+        ItemSet->DelItemV(DelV);
         if (ItemSet->Empty()) {
             DeleteItemSet(Key);
         }

@@ -194,6 +194,14 @@ private:
     /// Get the index of the first child index from which onward the content needs to be merged
     /// There can be other children with smaller indices that are dirty, but we might not want to merge them
     int GetFirstChildToMerge();
+    /// True if any child vector exceeds SplitLenMax. Only adds can oversize a child, so a
+    /// deletes-only flush never sees one.
+    bool HasOversizedChild() const;
+    /// Drop empty children and merge adjacent undersized ones. Used by deletes-only flushes in
+    /// Def() instead of the global merge: deletes leave the children sorted and disjoint, so the
+    /// itemset is already merged and only fragmentation needs fixing. Copy cost is bounded by the
+    /// children actually touched, not by the length of the whole posting list.
+    void CoalesceUndersizedChildren();
     /// Work buffer is merged and still full, add new children collections with the data in work buffer
     void PushWorkBufferToChildren();
     /// If work buffer contains data that belongs to child vectors then push that content to them
@@ -261,6 +269,10 @@ public:
     template <typename THandler> void GetItemV(THandler& Handler);
     /// Delete specified item from this itemset
     void DelItem(const TItem& Item);
+    /// Delete a batch of items from this itemset in one go. Appends all delete markers before
+    /// any flush, so the whole batch is drained by a single linear ProcessDeletes pass instead
+    /// of paying a Def() per deleted item (the work buffer may temporarily exceed SplitLen).
+    void DelItemV(const TVec<TItem>& DelV);
     /// Clear all items from this itemset
     void Clr();
 
@@ -521,6 +533,8 @@ public:
     void AddItemV(const TKey& Key, const TVec<TItem>& ItemV);
     // delete one item
     void DelItem(const TKey& Key, const TItem& Item);
+    /// delete a batch of items under one key with a single work-buffer flush
+    void DelItemV(const TKey& Key, const TVec<TItem>& DelV);
     /// clears items
     void Clr(const TKey& Key);
     /// flush all data from cache to disk

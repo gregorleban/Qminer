@@ -6171,11 +6171,15 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             if (KeyIdSet.IsKey(Key.Val1)) {
                 TVec<TQmGixItemFull> ItemV;
                 GixFull->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                // collect this key's deletions and submit them as one batch - one work-buffer
+                // flush per key instead of a Def() per deleted item
+                TVec<TQmGixItemFull> DelV;
                 for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey(ItemV[N].Key)) {
-                        GixFull->DelItem(Key, ItemV[N]);
-                        Removed++;
-                    }
+                    if (RecIdSet.IsKey(ItemV[N].Key)) { DelV.Add(ItemV[N]); }
+                }
+                if (!DelV.Empty()) {
+                    GixFull->DelItemV(Key, DelV);
+                    Removed += DelV.Len();
                 }
             }
             KeysDone++;
@@ -6197,11 +6201,15 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             if (KeyIdSet.IsKey(Key.Val1)) {
                 TVec<TQmGixItemSmall> ItemV;
                 GixSmall->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                // collect this key's deletions and submit them as one batch - one work-buffer
+                // flush per key instead of a Def() per deleted item
+                TVec<TQmGixItemSmall> DelV;
                 for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey((uint64)ItemV[N].Key)) {
-                        GixSmall->DelItem(Key, ItemV[N]);
-                        Removed++;
-                    }
+                    if (RecIdSet.IsKey((uint64)ItemV[N].Key)) { DelV.Add(ItemV[N]); }
+                }
+                if (!DelV.Empty()) {
+                    GixSmall->DelItemV(Key, DelV);
+                    Removed += DelV.Len();
                 }
             }
             KeysDone++;
@@ -6223,11 +6231,15 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             if (KeyIdSet.IsKey(Key.Val1)) {
                 TVec<TQmGixItemTiny> ItemV;
                 GixTiny->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                // collect this key's deletions and submit them as one batch - one work-buffer
+                // flush per key instead of a Def() per deleted item
+                TVec<TQmGixItemTiny> DelV;
                 for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey((uint64)ItemV[N])) {
-                        GixTiny->DelItem(Key, ItemV[N]);
-                        Removed++;
-                    }
+                    if (RecIdSet.IsKey((uint64)ItemV[N])) { DelV.Add(ItemV[N]); }
+                }
+                if (!DelV.Empty()) {
+                    GixTiny->DelItemV(Key, DelV);
+                    Removed += DelV.Len();
                 }
             }
             KeysDone++;
@@ -6249,11 +6261,15 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             if (KeyIdSet.IsKey(Key.Val1)) {
                 TVec<TQmGixItemPos> ItemV;
                 GixPos->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                // collect this key's deletions and submit them as one batch - one work-buffer
+                // flush per key instead of a Def() per deleted item
+                TVec<TQmGixItemPos> DelV;
                 for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) {
-                        GixPos->DelItem(Key, ItemV[N]);
-                        Removed++;
-                    }
+                    if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) { DelV.Add(ItemV[N]); }
+                }
+                if (!DelV.Empty()) {
+                    GixPos->DelItemV(Key, DelV);
+                    Removed += DelV.Len();
                 }
             }
             KeysDone++;
