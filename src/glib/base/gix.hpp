@@ -1106,7 +1106,9 @@ template <class TKey, class TItem>
 void TGix<TKey, TItem>::RefreshMemUsed() const {
     // check if we have to drop anything from the cache
     if (NewCacheSizeInc > CacheResetThreshold) {
-        printf("Gix cache clean-up start [accumulated growth: %s]\n",
+        // leading newline: the console may hold an in-place (\r) progress line - e.g. the batch
+        // delete progress - and printing over it leaves garbled output
+        printf("\nGix cache clean-up start [accumulated growth: %s]\n",
             TUInt64::GetMegaStr(NewCacheSizeInc).CStr());
         TExeTm ExeTm;
         // pack all the item sets
