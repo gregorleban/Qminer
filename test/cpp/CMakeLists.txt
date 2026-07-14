@@ -100,6 +100,13 @@ foreach(fixdir data files)
   endif()
 endforeach()
 
+# The Storage tests write their bases into ./test/cpp/data (relative to the repository
+# root, where the tests run). That directory holds only generated data and is therefore
+# gitignored, so it is absent from a fresh checkout - and the tests then quietly caught
+# the resulting "cannot open file" exceptions and reported success without testing
+# anything. Create it up front.
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 enable_testing()
 
 # Register the whole binary as ONE ctest test, deliberately not gtest_discover_tests:

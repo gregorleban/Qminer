@@ -1661,7 +1661,15 @@ uint64 TFile::GetLastWriteTm(const TStr& FNm)
     if (stat(FNm.CStr(), &st) != 0) {
         TExcept::Throw("Cannot read tile from file " + FNm + "!");
     }
-    return uint64(st.st_mtime);
+    // milliseconds, matching the resolution of the Windows implementation (which divides
+    // the 100ns FILETIME by 10000). Returning whole seconds here made two writes to the
+    // same file within one second indistinguishable
+#if defined(__APPLE__)
+    const long NanoSec = st.st_mtimespec.tv_nsec;
+#else
+    const long NanoSec = st.st_mtim.tv_nsec;
+#endif
+    return uint64(st.st_mtime) * uint64(1000) + uint64(NanoSec / 1000000);
 }
 
 #endif
