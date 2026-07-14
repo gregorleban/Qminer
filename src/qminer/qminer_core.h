@@ -3434,7 +3434,12 @@ public:
     /// restricted to the KeyIds listed in KeyIdSet. Does not handle BTree or Geo indices.
     /// If OnProgress is provided, it is called after each processed index key with the number of keys
     /// processed so far and a short description of the current phase.
-    void BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const TBatchDelProgressCb& OnProgress = nullptr);
+    /// MinKeepRecId is the smallest record id that survives the delete: every index item below it
+    /// references either a record in RecIdSet or one already deleted, so whole posting-list
+    /// children below it are dropped from their headers alone, without reading their data. Pass 0
+    /// when the caller cannot provide it - the scan then reads and filters everything.
+    void BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const uint64& MinKeepRecId,
+        const TBatchDelProgressCb& OnProgress = nullptr);
 
     /// Index RecId using given keys and words. Words are extracted by tokenizing the given string.
     void IndexTextPos(const int& KeyId, const TStr& TextStr, const uint64& RecId);

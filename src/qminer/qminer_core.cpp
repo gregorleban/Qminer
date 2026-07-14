@@ -6136,9 +6136,27 @@ void TIndex::DeleteGix(const int& KeyId, const uint64& WordId, const uint64& Rec
     }
 }
 
-void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const TBatchDelProgressCb& OnProgress) {
+void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSet, const uint64& MinKeepRecId,
+        const TBatchDelProgressCb& OnProgress) {
     QmAssertR(!IsReadOnly(), "Cannot edit read-only index!");
     if (KeyIdSet.Empty() || RecIdSet.Empty()) { return; }
+
+    // fewer, larger cache clean-up passes for the duration of the scan: every pass walks the
+    // whole itemset cache, and at the default threshold (10% of the cache size) a large delete
+    // spends minutes just re-walking it. The cache can temporarily overshoot its configured
+    // limit by up to the raised threshold. Restored at the end of the function.
+    // record ids in the 32-bit gix item types (Small/Tiny/Pos) must stay below TUInt::Mx, so
+    // clamp the keep threshold accordingly (only reachable when no record survives the delete)
+    const uint64 MinKeepId = (MinKeepRecId < (uint64)TUInt::Mx) ? MinKeepRecId : (uint64)TUInt::Mx - 1;
+
+    const uint64 OldThrFull = !GixFull.Empty() ? GixFull->GetCacheResetThreshold() : 0;
+    const uint64 OldThrSmall = !GixSmall.Empty() ? GixSmall->GetCacheResetThreshold() : 0;
+    const uint64 OldThrTiny = !GixTiny.Empty() ? GixTiny->GetCacheResetThreshold() : 0;
+    const uint64 OldThrPos = !GixPos.Empty() ? GixPos->GetCacheResetThreshold() : 0;
+    if (!GixFull.Empty()) { GixFull->SetCacheResetThreshold(OldThrFull * 4); }
+    if (!GixSmall.Empty()) { GixSmall->SetCacheResetThreshold(OldThrSmall * 4); }
+    if (!GixTiny.Empty()) { GixTiny->SetCacheResetThreshold(OldThrTiny * 4); }
+    if (!GixPos.Empty()) { GixPos->SetCacheResetThreshold(OldThrPos * 4); }
 
     // find the smallest and largest record id we are about to delete. the gix posting lists are sorted
     // by record id and split into child vectors, each of which stores its own [min, max] record id. we
@@ -6161,26 +6179,44 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     if (!GixFull.Empty()) {
         const TStr Phase = "1/5 GixFull";
         const TQmGixItemFull LoItem(MinDelRecId, 0), HiItem(HiDelRecId, 0);
+        const TQmGixItemFull MinKeepItem(MinKeepId, 0);
         const int64 TotalKeys = GixFull->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
         TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
-        int GixKeyId = GixFull->FFirstKeyId();
-        while (GixFull->FNextKeyId(GixKeyId)) {
-            const TQmGixKey& Key = GixFull->GetKey(GixKeyId);
+        // visit keys in blob order: the scan touches every key's itemset on disk, and hash order
+        // costs one random read per key. Sorted by blob position the sweep is mostly sequential
+        // (fully sequential right after an index defrag)
+        TVec<TPair<TBlobPt, TInt>> KeyOrderV((int)TotalKeys, 0);
+        {
+            int GixKeyId = GixFull->FFirstKeyId();
+            while (GixFull->FNextKeyId(GixKeyId)) {
+                KeyOrderV.Add(TPair<TBlobPt, TInt>(GixFull->GetKeyBlobPt(GixKeyId), GixKeyId));
+            }
+            KeyOrderV.Sort();
+        }
+        for (int KeyN = 0; KeyN < KeyOrderV.Len(); KeyN++) {
+            const int GixKeyId = KeyOrderV[KeyN].Val2;
+            // copy the key - deleting an emptied itemset below removes it from the key hash
+            const TQmGixKey Key = GixFull->GetKey(GixKeyId);
             if (KeyIdSet.IsKey(Key.Val1)) {
-                TVec<TQmGixItemFull> ItemV;
-                GixFull->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-                // collect this key's deletions and submit them as one batch - one work-buffer
-                // flush per key instead of a Def() per deleted item
-                TVec<TQmGixItemFull> DelV;
-                for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey(ItemV[N].Key)) { DelV.Add(ItemV[N]); }
-                }
-                if (!DelV.Empty()) {
-                    GixFull->DelItemV(Key, DelV);
-                    Removed += DelV.Len();
+                // drop whole posting-list children below the smallest surviving record id from
+                // the header alone - no read, no per-item filtering, no write-back
+                if (MinKeepRecId > 0) { Removed += (int64)GixFull->DelItemsBelow(Key, MinKeepItem); }
+                if (GixFull->IsKey(Key)) {
+                    TVec<TQmGixItemFull> ItemV;
+                    GixFull->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                    // collect this key's deletions and submit them as one batch - one work-buffer
+                    // flush per key instead of a Def() per deleted item
+                    TVec<TQmGixItemFull> DelV;
+                    for (int N = 0; N < ItemV.Len(); N++) {
+                        if (RecIdSet.IsKey(ItemV[N].Key)) { DelV.Add(ItemV[N]); }
+                    }
+                    if (!DelV.Empty()) {
+                        GixFull->DelItemV(Key, DelV);
+                        Removed += DelV.Len();
+                    }
                 }
             }
             KeysDone++;
@@ -6197,26 +6233,41 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     if (!GixSmall.Empty()) {
         const TStr Phase = "2/5 GixSmall";
         const TQmGixItemSmall LoItem((uint)MinDelRecId, 0), HiItem((uint)HiDelRecId, 0);
+        const TQmGixItemSmall MinKeepItem((uint)MinKeepId, 0);
         const int64 TotalKeys = GixSmall->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
         TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
-        int GixKeyId = GixSmall->FFirstKeyId();
-        while (GixSmall->FNextKeyId(GixKeyId)) {
-            const TQmGixKey& Key = GixSmall->GetKey(GixKeyId);
+        // visit keys in blob order (see the GixFull phase above)
+        TVec<TPair<TBlobPt, TInt>> KeyOrderV((int)TotalKeys, 0);
+        {
+            int GixKeyId = GixSmall->FFirstKeyId();
+            while (GixSmall->FNextKeyId(GixKeyId)) {
+                KeyOrderV.Add(TPair<TBlobPt, TInt>(GixSmall->GetKeyBlobPt(GixKeyId), GixKeyId));
+            }
+            KeyOrderV.Sort();
+        }
+        for (int KeyN = 0; KeyN < KeyOrderV.Len(); KeyN++) {
+            const int GixKeyId = KeyOrderV[KeyN].Val2;
+            // copy the key - deleting an emptied itemset below removes it from the key hash
+            const TQmGixKey Key = GixSmall->GetKey(GixKeyId);
             if (KeyIdSet.IsKey(Key.Val1)) {
-                TVec<TQmGixItemSmall> ItemV;
-                GixSmall->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-                // collect this key's deletions and submit them as one batch - one work-buffer
-                // flush per key instead of a Def() per deleted item
-                TVec<TQmGixItemSmall> DelV;
-                for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey((uint64)ItemV[N].Key)) { DelV.Add(ItemV[N]); }
-                }
-                if (!DelV.Empty()) {
-                    GixSmall->DelItemV(Key, DelV);
-                    Removed += DelV.Len();
+                // drop whole children below the smallest surviving record id, header-only
+                if (MinKeepRecId > 0) { Removed += (int64)GixSmall->DelItemsBelow(Key, MinKeepItem); }
+                if (GixSmall->IsKey(Key)) {
+                    TVec<TQmGixItemSmall> ItemV;
+                    GixSmall->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                    // collect this key's deletions and submit them as one batch - one work-buffer
+                    // flush per key instead of a Def() per deleted item
+                    TVec<TQmGixItemSmall> DelV;
+                    for (int N = 0; N < ItemV.Len(); N++) {
+                        if (RecIdSet.IsKey((uint64)ItemV[N].Key)) { DelV.Add(ItemV[N]); }
+                    }
+                    if (!DelV.Empty()) {
+                        GixSmall->DelItemV(Key, DelV);
+                        Removed += DelV.Len();
+                    }
                 }
             }
             KeysDone++;
@@ -6233,26 +6284,41 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     if (!GixTiny.Empty()) {
         const TStr Phase = "3/5 GixTiny";
         const TQmGixItemTiny LoItem((uint)MinDelRecId), HiItem((uint)HiDelRecId);
+        const TQmGixItemTiny MinKeepItem((uint)MinKeepId);
         const int64 TotalKeys = GixTiny->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
         TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
-        int GixKeyId = GixTiny->FFirstKeyId();
-        while (GixTiny->FNextKeyId(GixKeyId)) {
-            const TQmGixKey& Key = GixTiny->GetKey(GixKeyId);
+        // visit keys in blob order (see the GixFull phase above)
+        TVec<TPair<TBlobPt, TInt>> KeyOrderV((int)TotalKeys, 0);
+        {
+            int GixKeyId = GixTiny->FFirstKeyId();
+            while (GixTiny->FNextKeyId(GixKeyId)) {
+                KeyOrderV.Add(TPair<TBlobPt, TInt>(GixTiny->GetKeyBlobPt(GixKeyId), GixKeyId));
+            }
+            KeyOrderV.Sort();
+        }
+        for (int KeyN = 0; KeyN < KeyOrderV.Len(); KeyN++) {
+            const int GixKeyId = KeyOrderV[KeyN].Val2;
+            // copy the key - deleting an emptied itemset below removes it from the key hash
+            const TQmGixKey Key = GixTiny->GetKey(GixKeyId);
             if (KeyIdSet.IsKey(Key.Val1)) {
-                TVec<TQmGixItemTiny> ItemV;
-                GixTiny->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-                // collect this key's deletions and submit them as one batch - one work-buffer
-                // flush per key instead of a Def() per deleted item
-                TVec<TQmGixItemTiny> DelV;
-                for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey((uint64)ItemV[N])) { DelV.Add(ItemV[N]); }
-                }
-                if (!DelV.Empty()) {
-                    GixTiny->DelItemV(Key, DelV);
-                    Removed += DelV.Len();
+                // drop whole children below the smallest surviving record id, header-only
+                if (MinKeepRecId > 0) { Removed += (int64)GixTiny->DelItemsBelow(Key, MinKeepItem); }
+                if (GixTiny->IsKey(Key)) {
+                    TVec<TQmGixItemTiny> ItemV;
+                    GixTiny->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                    // collect this key's deletions and submit them as one batch - one work-buffer
+                    // flush per key instead of a Def() per deleted item
+                    TVec<TQmGixItemTiny> DelV;
+                    for (int N = 0; N < ItemV.Len(); N++) {
+                        if (RecIdSet.IsKey((uint64)ItemV[N])) { DelV.Add(ItemV[N]); }
+                    }
+                    if (!DelV.Empty()) {
+                        GixTiny->DelItemV(Key, DelV);
+                        Removed += DelV.Len();
+                    }
                 }
             }
             KeysDone++;
@@ -6269,26 +6335,41 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     if (!GixPos.Empty()) {
         const TStr Phase = "4/5 GixPos";
         const TQmGixItemPos LoItem(MinDelRecId), HiItem(HiDelRecId);
+        const TQmGixItemPos MinKeepItem(MinKeepId);
         const int64 TotalKeys = GixPos->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;
         TExeTm ReportTm;
         if (OnProgress) { OnProgress(Phase, 0, TotalKeys, 0); }
-        int GixKeyId = GixPos->FFirstKeyId();
-        while (GixPos->FNextKeyId(GixKeyId)) {
-            const TQmGixKey& Key = GixPos->GetKey(GixKeyId);
+        // visit keys in blob order (see the GixFull phase above)
+        TVec<TPair<TBlobPt, TInt>> KeyOrderV((int)TotalKeys, 0);
+        {
+            int GixKeyId = GixPos->FFirstKeyId();
+            while (GixPos->FNextKeyId(GixKeyId)) {
+                KeyOrderV.Add(TPair<TBlobPt, TInt>(GixPos->GetKeyBlobPt(GixKeyId), GixKeyId));
+            }
+            KeyOrderV.Sort();
+        }
+        for (int KeyN = 0; KeyN < KeyOrderV.Len(); KeyN++) {
+            const int GixKeyId = KeyOrderV[KeyN].Val2;
+            // copy the key - deleting an emptied itemset below removes it from the key hash
+            const TQmGixKey Key = GixPos->GetKey(GixKeyId);
             if (KeyIdSet.IsKey(Key.Val1)) {
-                TVec<TQmGixItemPos> ItemV;
-                GixPos->GetItemVInRange(Key, LoItem, HiItem, ItemV);
-                // collect this key's deletions and submit them as one batch - one work-buffer
-                // flush per key instead of a Def() per deleted item
-                TVec<TQmGixItemPos> DelV;
-                for (int N = 0; N < ItemV.Len(); N++) {
-                    if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) { DelV.Add(ItemV[N]); }
-                }
-                if (!DelV.Empty()) {
-                    GixPos->DelItemV(Key, DelV);
-                    Removed += DelV.Len();
+                // drop whole children below the smallest surviving record id, header-only
+                if (MinKeepRecId > 0) { Removed += (int64)GixPos->DelItemsBelow(Key, MinKeepItem); }
+                if (GixPos->IsKey(Key)) {
+                    TVec<TQmGixItemPos> ItemV;
+                    GixPos->GetItemVInRange(Key, LoItem, HiItem, ItemV);
+                    // collect this key's deletions and submit them as one batch - one work-buffer
+                    // flush per key instead of a Def() per deleted item
+                    TVec<TQmGixItemPos> DelV;
+                    for (int N = 0; N < ItemV.Len(); N++) {
+                        if (RecIdSet.IsKey((uint64)ItemV[N].GetRecId())) { DelV.Add(ItemV[N]); }
+                    }
+                    if (!DelV.Empty()) {
+                        GixPos->DelItemV(Key, DelV);
+                        Removed += DelV.Len();
+                    }
                 }
             }
             KeysDone++;
@@ -6302,6 +6383,12 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
             }
         }
     }
+
+    // restore the regular clean-up cadence
+    if (!GixFull.Empty()) { GixFull->SetCacheResetThreshold(OldThrFull); }
+    if (!GixSmall.Empty()) { GixSmall->SetCacheResetThreshold(OldThrSmall); }
+    if (!GixTiny.Empty()) { GixTiny->SetCacheResetThreshold(OldThrTiny); }
+    if (!GixPos.Empty()) { GixPos->SetCacheResetThreshold(OldThrPos); }
 }
 
 void TIndex::ComputeWordItemPos(const int& KeyId, const TUInt64V& WordIdV, const uint64& RecId, TVec<TPair<TUInt64, TQmGixItemPos>>& WordIdPosPrV) {

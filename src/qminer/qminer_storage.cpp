@@ -3568,9 +3568,22 @@ void TStoreImpl::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgr
     TUInt64H RecIdSet(DelRecIdV.Len());
     for (int N = 0; N < DelRecIdV.Len(); N++) { RecIdSet.AddKey(DelRecIdV[N]); }
 
+    // smallest record id that survives this delete: every index item below it references either
+    // a record deleted right now or one already gone, so the gix scan can drop whole posting-list
+    // children below it from their headers without reading them. The threshold is only as good
+    // as the oldest survivor - a single very old record that is kept moves it to that record
+    uint64 MinKeepRecId = TUInt64::Mx;
+    { PStoreIter Iter = GetIter(); while (Iter->Next()) {
+        const uint64 RecId = Iter->GetRecId();
+        if (RecId < MinKeepRecId && !RecIdSet.IsKey(RecId)) { MinKeepRecId = RecId; }
+    } }
+    // no survivor means everything goes - TUInt64::Mx then correctly drops every child
+    TEnv::Logger->OnStatusFmt("BatchDeleteRecs: smallest record id kept: %s",
+        TUInt64::GetStr(MinKeepRecId).CStr());
+
     TIntSet KeyIdSet;
     RecIndexer.GetGixKeyIdSet(KeyIdSet);
-    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, OnProgress);
+    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, MinKeepRecId, OnProgress);
 
     // the store phase advances one requested record at a time; ids that are no longer valid are
     // skipped, so Done counts records looked at and Removed counts the ones actually deleted
@@ -5300,9 +5313,22 @@ void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelPro
     TUInt64H RecIdSet(DelRecIdV.Len());
     for (int N = 0; N < DelRecIdV.Len(); N++) { RecIdSet.AddKey(DelRecIdV[N]); }
 
+    // smallest record id that survives this delete: every index item below it references either
+    // a record deleted right now or one already gone, so the gix scan can drop whole posting-list
+    // children below it from their headers without reading them. The threshold is only as good
+    // as the oldest survivor - a single very old record that is kept moves it to that record.
+    // No survivor means everything goes - TUInt64::Mx then correctly drops every child
+    uint64 MinKeepRecId = TUInt64::Mx;
+    { PStoreIter Iter = GetIter(); while (Iter->Next()) {
+        const uint64 RecId = Iter->GetRecId();
+        if (RecId < MinKeepRecId && !RecIdSet.IsKey(RecId)) { MinKeepRecId = RecId; }
+    } }
+    TEnv::Logger->OnStatusFmt("BatchDeleteRecs: smallest record id kept: %s",
+        TUInt64::GetStr(MinKeepRecId).CStr());
+
     TIntSet KeyIdSet;
     RecIndexer.GetGixKeyIdSet(KeyIdSet);
-    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, OnProgress);
+    GetIndex()->BatchDeleteFromGix(KeyIdSet, RecIdSet, MinKeepRecId, OnProgress);
 
     // the store phase advances one requested record at a time; ids that are no longer valid are
     // skipped, so Done counts records looked at and Removed counts the ones actually deleted

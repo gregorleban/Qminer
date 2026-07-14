@@ -273,6 +273,13 @@ public:
     /// any flush, so the whole batch is drained by a single linear ProcessDeletes pass instead
     /// of paying a Def() per deleted item (the work buffer may temporarily exceed SplitLen).
     void DelItemV(const TVec<TItem>& DelV);
+    /// Delete every item below MinKeepItem, reading almost none of the affected data: whole
+    /// children with MaxItem below the threshold are dropped from the header alone (their blobs
+    /// freed unread), the single straddling child is loaded and its prefix cut, and the sorted
+    /// work buffer is cut at the threshold. Returns the number of items removed. Only acts on a
+    /// merged itemset with no pending deletes (the state every itemset is saved in) - otherwise
+    /// the sorted-prefix reasoning does not hold and the call is a no-op returning 0.
+    uint64 DelItemsBelow(const TItem& MinKeepItem);
     /// Clear all items from this itemset
     void Clr();
 
@@ -535,6 +542,9 @@ public:
     void DelItem(const TKey& Key, const TItem& Item);
     /// delete a batch of items under one key with a single work-buffer flush
     void DelItemV(const TKey& Key, const TVec<TItem>& DelV);
+    /// delete every item below MinKeepItem under one key without reading the affected
+    /// children (see TGixItemSet::DelItemsBelow). Returns the number of items removed.
+    uint64 DelItemsBelow(const TKey& Key, const TItem& MinKeepItem);
     /// clears items
     void Clr(const TKey& Key);
     /// flush all data from cache to disk
@@ -548,6 +558,12 @@ public:
     bool FNextKeyId(int& KeyId) const { return KeyIdH.FNextKeyId(KeyId); }
     /// get key for given key id
     const TKey& GetKey(const int& KeyId) const { return KeyIdH.GetKey(KeyId); }
+    /// is the given key id still valid (its key not deleted)?
+    bool IsKeyId(const int& KeyId) const { return KeyIdH.IsKeyId(KeyId); }
+    /// blob pointer of the itemset stored under the given key id. Sorting key ids by their
+    /// blob pointer lets a whole-index scan read the itemsets in disk order (mostly
+    /// sequential I/O) instead of a random read per key in hash order
+    const TBlobPt& GetKeyBlobPt(const int& KeyId) const { return KeyIdH[KeyId]; }
 
     /// Get amount of memory currently used
     int64 GetMemUsed() const;
@@ -559,6 +575,12 @@ public:
     uint64 GetMxMemUsed() const { return ItemSetCache.GetMxMemUsed(); }
     /// Is cache full?
     bool IsCacheFull() const { return CacheFullP; }
+    /// Cache growth after which RefreshMemUsed recomputes and purges (default: 10% of cache size)
+    uint64 GetCacheResetThreshold() const { return CacheResetThreshold; }
+    /// Override the clean-up threshold. Every clean-up pass walks the whole cache, so bulk
+    /// operations (e.g. batch deletes) can raise it to trade fewer passes for the cache
+    /// temporarily overshooting its limit by up to the threshold.
+    void SetCacheResetThreshold(const uint64& Threshold) { CacheResetThreshold = Threshold; }
     /// Refresh current memory computations and purge the cache if needed.
     /// const so the read path (GetItemSet) can trigger it as well - reads grow the
     /// cache too (loading itemsets and their child vectors)

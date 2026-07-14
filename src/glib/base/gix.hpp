@@ -595,6 +595,65 @@ void TGixItemSet<TKey, TItem>::DelItemV(const TVec<TItem>& DelV) {
 }
 
 template <class TKey, class TItem>
+uint64 TGixItemSet<TKey, TItem>::DelItemsBelow(const TItem& MinKeepItem) {
+    // the sorted-prefix reasoning below only holds when the itemset is merged (children hold
+    // disjoint ascending ranges, work buffer sorted and deduplicated) and no delete markers are
+    // pending. Itemsets freshly loaded from disk are in this state; anything else falls back to
+    // the regular read-and-filter delete path
+    if (!MergedP || !ItemVDel.Empty()) { return 0; }
+    const uint64 OldSize = GetMemUsed();
+    uint64 Removed = 0;
+    // children are disjoint and ascending, so the ones lying entirely below the threshold form
+    // a prefix - drop them from the header alone, without ever loading their data
+    int DropChildren = 0;
+    while (DropChildren < ChildInfoV.Len() && ChildInfoV[DropChildren].MaxItem < MinKeepItem) {
+        Removed += (uint64)(int)ChildInfoV[DropChildren].Len;
+        Gix->DeleteChildVector(ChildInfoV[DropChildren].Pt);
+        DropChildren++;
+    }
+    if (DropChildren > 0) {
+        ChildInfoV.Del(0, DropChildren - 1);
+        ChildV.Del(0, DropChildren - 1);
+    }
+    // the (now first) child may straddle the threshold - load it and cut its below-threshold
+    // prefix. This is the only child whose data is read, and a subsequent range query over the
+    // deleted ids would have loaded it anyway
+    if (ChildInfoV.Len() > 0 && ChildInfoV[0].MinItem < MinKeepItem) {
+        LoadChildVector(0);
+        TVec<TItem>& Child = ChildV[0];
+        int Cut = 0;
+        while (Cut < Child.Len() && Child[Cut] < MinKeepItem) { Cut++; }
+        if (Cut > 0) {
+            Child.Del(0, Cut - 1);
+            ChildInfoV[0].Len = Child.Len();
+            ChildInfoV[0].DirtyP = true;
+            Removed += (uint64)Cut;
+            if (Child.Empty()) {
+                // possible when the stored MinItem stat was conservative - drop the empty child
+                Gix->DeleteChildVector(ChildInfoV[0].Pt);
+                ChildInfoV.Del(0);
+                ChildV.Del(0);
+            } else {
+                ChildInfoV[0].MinItem = Child[0];
+            }
+        }
+    }
+    // the work buffer is sorted when merged, so its sub-threshold items form a prefix as well
+    int DropItems = 0;
+    while (DropItems < ItemV.Len() && ItemV[DropItems] < MinKeepItem) { DropItems++; }
+    if (DropItems > 0) {
+        ItemV.Del(0, DropItems - 1);
+        Removed += (uint64)DropItems;
+    }
+    if (Removed > 0) {
+        TotalCnt -= (int)Removed;
+        DirtyP = true;
+        Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed());
+    }
+    return Removed;
+}
+
+template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::Clr() {
     const int OldSize = GetMemUsed();
     if (ChildInfoV.Len() > 0) {
@@ -1045,6 +1104,18 @@ void TGix<TKey, TItem>::DelItemV(const TKey& Key, const TVec<TItem>& DelV) {
             DeleteItemSet(Key);
         }
     }
+}
+
+template <class TKey, class TItem>
+uint64 TGix<TKey, TItem>::DelItemsBelow(const TKey& Key, const TItem& MinKeepItem) {
+    AssertReadOnly(); // check if we are allowed to write
+    if (!IsKey(Key)) { return 0; }
+    PGixItemSet ItemSet = GetItemSet(Key);
+    const uint64 Removed = ItemSet->DelItemsBelow(MinKeepItem);
+    if (ItemSet->Empty()) {
+        DeleteItemSet(Key);
+    }
+    return Removed;
 }
 
 template <class TKey, class TItem>
