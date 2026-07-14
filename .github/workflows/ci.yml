@@ -24,11 +24,17 @@ jobs:
             python3 python-is-python3
           # node is preinstalled on ubuntu-latest runners; node-gyp comes via npm
 
-      # qminer's canonical build (node-gyp / binding.gyp) produces the intermediate
-      # static libs build/Release/glib.a and build/Release/qminer.a, plus vendored
-      # libuv 1.52.1 — the exact versions the code expects (apt libuv is too old).
-      - name: Build qminer libraries
-        run: npm install --build-from-source
+      # binding.gyp's static-library targets produce build/Release/glib.a and
+      # build/Release/qminer.a - the only artefacts the C++ tests link against.
+      # Build those targets directly instead of `npm install`: that would also build
+      # the `qm` node addon (src/nodejs), which the tests do not use and which does
+      # not compile against current node/v8 headers.
+      - name: Build qminer static libraries
+        run: |
+          npm install -g node-gyp
+          node-gyp configure
+          make -C build glib qminer -j"$(nproc)"
+          ls -l build/Release/glib.a build/Release/qminer.a
 
       - name: Configure tests (CMake + FetchContent GoogleTest)
         run: >
@@ -39,15 +45,14 @@ jobs:
       - name: Build tests
         run: cmake --build test/cpp/build
 
+      # ctest runs the suite as a single process from the repository root (see the
+      # comment in test/cpp/CMakeLists.txt); the gtest XML lands in the build dir
       - name: Run tests
-        working-directory: test/cpp
-        run: |
-          ctest --test-dir build --output-on-failure --output-junit ../../test-results.xml \
-          || build/qminer_tests --gtest_output=xml:${{ github.workspace }}/test-results.xml
+        run: ctest --test-dir test/cpp/build --output-on-failure
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qminer-test-results
-          path: test-results.xml
+          path: test/cpp/build/test-results.xml

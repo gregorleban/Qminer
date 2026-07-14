@@ -101,5 +101,13 @@ foreach(fixdir data files)
 endforeach()
 
 enable_testing()
-include(GoogleTest)
-gtest_discover_tests(qminer_tests DISCOVERY_TIMEOUT 120)
+
+# Register the whole binary as ONE ctest test, deliberately not gtest_discover_tests:
+# the suite is not process-isolated. Storage.TInit performs one-time global set-up
+# (TUnicodeDef::Load) that the later Storage and PgBlob tests rely on, and those tests
+# also share fixture state through ./test/cpp/data. Running each test in its own
+# process - what gtest_discover_tests does - makes them abort. The tests also reference
+# fixtures by paths relative to the repository root, hence WORKING_DIRECTORY.
+add_test(NAME qminer_tests
+  COMMAND qminer_tests --gtest_output=xml:${CMAKE_BINARY_DIR}/test-results.xml
+  WORKING_DIRECTORY "${QMINER_ROOT}")
