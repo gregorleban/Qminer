@@ -3073,6 +3073,57 @@ public:
 };
 
 ///////////////////////////////
+/// Distribution of inverted-index posting-list lengths for one index key in one
+/// gix. Lengths are aggregated into log2 buckets: bucket B counts the posting
+/// lists whose length is in [2^B, 2^(B+1)). Used for picking per-key "splitLen"
+/// values for the store definition (see TStorage::ApplyIndexKeySplitLen).
+class TIndexKeyPostingLenStats {
+private:
+    /// Number of log2 buckets (posting lists hold at most 2^31 items)
+    static const int Buckets = 32;
+public:
+    /// Number of non-empty posting lists (= words with any items) of this index key
+    TUInt64 Lists;
+    /// Number of posting lists whose items were all deleted
+    TUInt64 EmptyLists;
+    /// Total number of items over all posting lists
+    TUInt64 TotalItems;
+    /// Length of the longest posting list
+    TInt MxLen;
+    /// Split length currently in effect for the key (per-key override or gix default)
+    TInt SplitLen;
+    /// Number of posting lists per log2(length) bucket
+    TUInt64V ListHistV;
+    /// Total number of items per log2(length) bucket
+    TUInt64V ItemHistV;
+
+    TIndexKeyPostingLenStats(): MxLen(0), SplitLen(0),
+        ListHistV(Buckets, Buckets), ItemHistV(Buckets, Buckets) {}
+
+    /// Account one posting list of the given length
+    void AddList(const int& Len) {
+        if (Len <= 0) { EmptyLists++; return; }
+        Lists++; TotalItems += (uint64)Len;
+        if (Len > MxLen) { MxLen = Len; }
+        int Bucket = 0;
+        while (Bucket + 1 < Buckets && (int64(1) << (Bucket + 1)) <= (int64)Len) { Bucket++; }
+        ListHistV[Bucket]++; ItemHistV[Bucket] += (uint64)Len;
+    }
+    /// Merge stats of the same key collected from another gix
+    void AddStats(const TIndexKeyPostingLenStats& Stats) {
+        Lists += Stats.Lists; EmptyLists += Stats.EmptyLists; TotalItems += Stats.TotalItems;
+        if (Stats.MxLen > MxLen) { MxLen = Stats.MxLen; }
+        if (SplitLen == 0) { SplitLen = Stats.SplitLen; }
+        for (int BucketN = 0; BucketN < Buckets; BucketN++) {
+            ListHistV[BucketN] += Stats.ListHistV[BucketN];
+            ItemHistV[BucketN] += Stats.ItemHistV[BucketN];
+        }
+    }
+    /// Number of log2 buckets in the histograms
+    static int GetBuckets() { return Buckets; }
+};
+
+///////////////////////////////
 /// Index
 class TIndex {
 private:
@@ -3364,6 +3415,13 @@ private:
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const int64& CacheSize, const int& VerifySampleKeys) const;
 
+    /// Scan one gix and aggregate its posting-list lengths per index key into
+    /// KeyStatsH, keyed by (index key id, gix id) - used by GetPostingLenStats
+    template <class TQmGixItem>
+    void ScanGixPostingLenStats(const TPt<TGix<TQmGixKey, TQmGixItem> >& Gix,
+        const TStr& GixNm, const int& GixN,
+        THash<TIntPr, TIndexKeyPostingLenStats>& KeyStatsH) const;
+
     /// Executes GIX join query against the full index
     void DoJoinQueryFull(const int& KeyId, const TUInt64V& RecIdV, TUInt64IntKdV& RecIdFqV) const;
     /// Executes GIX join query against the small index
@@ -3571,6 +3629,24 @@ public:
     /// from both indices and compared in depth after each rebuild.
     void DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
         const int& VerifySampleKeys) const;
+
+    /// Gix ids used in the (index key id, gix id) result pairs of GetPostingLenStats
+    static const int PostingStatsGixFull = 1;
+    static const int PostingStatsGixSmall = 2;
+    static const int PostingStatsGixTiny = 3;
+    static const int PostingStatsGixPos = 4;
+    /// Name of the gix with the given gix id (see GetPostingLenStats)
+    static TStr GetPostingStatsGixNm(const int& GixN);
+    /// Serialized byte size of one posting-list item of the gix with the given gix id.
+    /// This is the item's on-disk size in stored child vectors (not sizeof).
+    static int GetPostingStatsGixItemSize(const int& GixN);
+
+    /// Collect the distribution of posting-list lengths for every index key of the
+    /// inverted indices. Only itemset headers are read (no child vectors are loaded)
+    /// and each gix is scanned in blob order, so the scan is mostly sequential I/O.
+    /// Results are keyed by (index key id, gix id) - a key whose data lives in more
+    /// than one gix (e.g. a text key with positions) gets one entry per gix.
+    void GetPostingLenStats(THash<TIntPr, TIndexKeyPostingLenStats>& KeyStatsH) const;
 
     /// reset blob stats
     void ResetStats();

@@ -6996,6 +6996,75 @@ void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& 
     }
 }
 
+TStr TIndex::GetPostingStatsGixNm(const int& GixN) {
+    switch (GixN) {
+        case PostingStatsGixFull: return "full";
+        case PostingStatsGixSmall: return "small";
+        case PostingStatsGixTiny: return "tiny";
+        case PostingStatsGixPos: return "pos";
+        default: return "unknown";
+    }
+}
+
+int TIndex::GetPostingStatsGixItemSize(const int& GixN) {
+    // measure by serializing a default item - exact by construction, stays correct
+    // if the serialization of any of the item types ever changes
+    TMOut MOut;
+    switch (GixN) {
+        case PostingStatsGixFull: { TQmGixItemFull Item; Item.Save(MOut); break; }
+        case PostingStatsGixSmall: { TQmGixItemSmall Item; Item.Save(MOut); break; }
+        case PostingStatsGixTiny: { TQmGixItemTiny Item; Item.Save(MOut); break; }
+        case PostingStatsGixPos: { TQmGixItemPos Item; Item.Save(MOut); break; }
+        default: return 0;
+    }
+    return MOut.Len();
+}
+
+template <class TQmGixItem>
+void TIndex::ScanGixPostingLenStats(const TPt<TGix<TQmGixKey, TQmGixItem> >& Gix,
+        const TStr& GixNm, const int& GixN,
+        THash<TIntPr, TIndexKeyPostingLenStats>& KeyStatsH) const {
+
+    if (Gix.Empty()) { return; }
+    const int TotalKeys = Gix->GetKeys();
+    TEnv::Logger->OnStatus(TStr::Fmt("Scanning %s: %s keys", GixNm.CStr(), TStrUtil::GetStr(TotalKeys).CStr()));
+    // visit the keys in blob order: the scan reads one itemset header per key, and in
+    // blob order the reads are mostly sequential (fully sequential right after an
+    // index defrag) instead of one random read per key in hash order
+    TVec<TPair<TBlobPt, TInt>> KeyOrderV(TotalKeys, 0);
+    {
+        int GixKeyId = Gix->FFirstKeyId();
+        while (Gix->FNextKeyId(GixKeyId)) {
+            KeyOrderV.Add(TPair<TBlobPt, TInt>(Gix->GetKeyBlobPt(GixKeyId), GixKeyId));
+        }
+        KeyOrderV.Sort();
+    }
+    for (int KeyN = 0; KeyN < KeyOrderV.Len(); KeyN++) {
+        const TQmGixKey Key = Gix->GetKey(KeyOrderV[KeyN].Val2);
+        // loading an itemset deserializes only its header and work buffer, not the
+        // child vectors, so this is cheap even for huge posting lists. GetItemSet
+        // refreshes (and purges) the cache itself, so a full scan stays within the
+        // configured cache size
+        const int Items = Gix->GetItemSet(Key)->GetItems();
+        TIndexKeyPostingLenStats& KeyStats = KeyStatsH.AddDat(TIntPr(Key.Val1, GixN));
+        if (KeyStats.SplitLen == 0) { KeyStats.SplitLen = Gix->GetSplitLen(Key); }
+        KeyStats.AddList(Items);
+        if (KeyN % 100000 == 0) {
+            printf("%s / %s keys (%.1f%%)\r", TStrUtil::GetStr(KeyN).CStr(), TStrUtil::GetStr(TotalKeys).CStr(),
+                TotalKeys > 0 ? 100.0 * KeyN / TotalKeys : 100.0);
+        }
+    }
+    printf("%s / %s keys (100.0%%)\n", TStrUtil::GetStr(TotalKeys).CStr(), TStrUtil::GetStr(TotalKeys).CStr());
+}
+
+void TIndex::GetPostingLenStats(THash<TIntPr, TIndexKeyPostingLenStats>& KeyStatsH) const {
+    KeyStatsH.Clr();
+    ScanGixPostingLenStats<TQmGixItemFull>(GixFull, "Index.GixFull", PostingStatsGixFull, KeyStatsH);
+    ScanGixPostingLenStats<TQmGixItemSmall>(GixSmall, "Index.GixSmall", PostingStatsGixSmall, KeyStatsH);
+    ScanGixPostingLenStats<TQmGixItemTiny>(GixTiny, "Index.GixTiny", PostingStatsGixTiny, KeyStatsH);
+    ScanGixPostingLenStats<TQmGixItemPos>(GixPos, "Index.GixPos", PostingStatsGixPos, KeyStatsH);
+}
+
 void TIndex::ResetStats() {
     GixFull->ResetStats();
     GixSmall->ResetStats();
