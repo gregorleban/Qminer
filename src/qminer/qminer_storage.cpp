@@ -4222,6 +4222,10 @@ void TStorePbBlob::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
             // update the stored serializations with new values
             Pt = DataBlob->Put(CacheNewRecMem.GetBf(), CacheNewRecMem.Len(), Pt);
             RecIdBlobPtH(RecId) = Pt;
+            // the record may have moved to another page - the persisted rec-id to
+            // blob-pointer map must be rewritten on close or it would keep pointing
+            // at the old, freed location
+            MetaDirtyP = true;
         } else {
             // nice, all changes can be done in-place, no index changes
             SerializatorCache->SerializeUpdateInPlace(RecVal, MIn, this,
@@ -4253,6 +4257,8 @@ void TStorePbBlob::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
             // update the stored serializations with new values
             Pt = DataMem->Put(NewRecMem.GetBf(), NewRecMem.Len(), Pt);
             RecIdBlobPtHMem(RecId) = Pt;
+            // same as above - a moved record invalidates the persisted pointer map
+            MetaDirtyP = true;
         } else {
             // nice, all changes can be done in-place, no index changes
             SerializatorMem->SerializeUpdateInPlace(RecVal, MIn, this,
