@@ -512,10 +512,22 @@ private:
     void CheckToast(TMOut& SOut, const int& Offset);
     /// Check if given field value is currently TOAST-ed and delete it
     void CheckToastDel(const TMemBase& InRecMem, const TFieldSerialDesc& FieldSerialDesc);
+    /// Shared constructor body: lay out the serialization of the fields of
+    /// FieldDescV (entry index == field id) whose schema placement matches
+    /// TargetStorage
+    void InitFromFields(const TWPt<TToaster>& _Toaster, const TFieldDescV& FieldDescV,
+        const TStoreSchema& StoreSchema, const TStoreLoc& _TargetStorage);
 public:
     TRecSerializator(const TWPt<TToaster> _Toaster) { Toaster = _Toaster; }
     /// Initialize object from store schema
     TRecSerializator(const TWPt<TStore>& Store, const TWPt<TToaster>& _Toaster,
+        const TStoreSchema& StoreSchema, const TStoreLoc& _TargetStorage);
+    /// Initialize object from an explicit field table instead of a store. Each
+    /// entry's GetFieldId() must equal its index in the vector and every field
+    /// must be described in the schema. Used by MigrateSchemaTo when the new
+    /// schema drops fields - the rebuilt store's field table does not exist as
+    /// a TStore object yet.
+    TRecSerializator(const TWPt<TToaster>& _Toaster, const TFieldDescV& FieldDescV,
         const TStoreSchema& StoreSchema, const TStoreLoc& _TargetStorage);
 
     /// Load from input stream
@@ -539,10 +551,14 @@ public:
     /// located in a different section than in this serializator's layout. TOAST-ed
     /// source values are read through the Toaster; values that need TOAST-ing in
     /// the new serialization are written through the Toaster as well.
-    /// Used by TStorePbBlob::MigrateSchemaTo.
+    /// Used by TStorePbBlob::MigrateSchemaTo. NewToOldFieldIdV, when non-empty,
+    /// maps this serializator's (new) field ids to the ids the source
+    /// serializators (and Store) use - the migration renumbers field ids when
+    /// the new schema drops fields. Empty means the ids are the same.
     void SerializeCopyRec(const TWPt<TStore>& Store,
         const TRecSerializator& SrcSerMem, const TRecSerializator& SrcSerCache,
-        const TMemBase& SrcMemRec, const TMemBase& SrcCacheRec, TMem& RecMem);
+        const TMemBase& SrcMemRec, const TMemBase& SrcCacheRec, TMem& RecMem,
+        const TIntV& NewToOldFieldIdV = TIntV());
 
     /// Delete TOAST-ed values
     void DeleteToast(const TMemBase& RecMem);
@@ -988,8 +1004,6 @@ private:
     TRecSerializator* GetFieldSerializator(const int &FieldId);
     /// Get serializator for given field
     const TRecSerializator* GetFieldSerializator(const int &FieldId) const;
-    /// Remove record from name-id map
-    inline void DelRecNm(const uint64& RecId);
     /// Do we have a primary field
     bool IsPrimaryField() const { return PrimaryFieldId != -1; }
     /// Set primary field map
@@ -1211,9 +1225,13 @@ public:
 
     /// Rebuild (defragment) the record blobs into new page blob files (see TStorePbBlobT)
     virtual uint64 DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize) = 0;
-    /// Rebuild the record blobs with the field placement of NewSchema (see TStorePbBlobT)
+    /// Rebuild the record blobs with the field placement of NewSchema (see TStorePbBlobT).
+    /// OldToNewFieldIdVOut is filled with the old-to-new field id mapping when the new
+    /// schema drops fields (dropped fields map to -1); it is left empty when the field
+    /// set is unchanged. When it is non-empty the caller must also swap in the rebuilt
+    /// ".BaseStore" file and remap the index vocabulary (TIndexVoc::RemapStoreFieldIds).
     virtual uint64 MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize) = 0;
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut) = 0;
     /// True when the field is stored in the in-memory section (false = disk section)
     virtual bool IsFieldInMemory(const int& FieldId) const = 0;
     /// Write a "<prefix>PgBlobStore" state file with the record maps converted to the
@@ -1465,10 +1483,12 @@ private:
     /// Verify one section of a record rebuilt by MigrateSchemaTo: every field of
     /// NewSer must read back from NewRec with the same null flag and value it has
     /// in the source record sections (read through the current serializators).
-    /// TOAST-ed values of NewRec are read from NewToastBlob.
+    /// TOAST-ed values of NewRec are read from NewToastBlob. OldToNewFieldIdV,
+    /// when non-empty, maps this store's field ids to the rebuilt store's ids
+    /// (-1 = field dropped by the migration); empty means the ids are the same.
     void VerifyMigratedRec(const uint64& RecId, const TRecSerializator& NewSer,
         const TMemBase& NewRec, const TMemBase& OldMemRec, const TMemBase& OldCacheRec,
-        const PPgBlob& NewToastBlob);
+        const PPgBlob& NewToastBlob, const TIntV& OldToNewFieldIdV);
 
     /// Get serializator for given location
     TRecSerializator* GetSerializator(const TStoreLoc& StoreLoc);
@@ -1478,8 +1498,6 @@ private:
     TRecSerializator* GetFieldSerializator(const int &FieldId);
     /// Get serializator for given field
     const TRecSerializator* GetFieldSerializator(const int &FieldId) const;
-    /// Remove record from name-id map
-    void DelRecNm(const uint64& RecId);
 
     /// Transform Join name to it's corresponding field name
     TStr GetJoinFieldNm(const TStr& JoinNm) const { return JoinNm + "Id"; }
@@ -1532,7 +1550,7 @@ private:
     /// record maps (picked from the schema's "recIdMap" option by the dispatcher)
     template <class TDstMap>
     uint64 MigrateSchemaToT(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize);
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut);
 
 public:
     TStorePbBlobT(const TWPt<TBase>& _Base, const uint& StoreId,
@@ -1744,9 +1762,19 @@ public:
     /// options block ("recIdMap": "dense"/"hash"), so the migration also converts
     /// the store type when the definition asks for it - the caller must then
     /// record the new type in StoreList.json when swapping the files.
+    /// The new schema may DROP fields the store has (it can never add or retype
+    /// them): dropped fields must not be the primary field, must not carry a
+    /// field join and must not be indexed. Dropping renumbers the remaining
+    /// field ids, so the migration also writes a rebuilt "<prefix>.BaseStore"
+    /// file (renumbered field table and field-join ids) and reports the id
+    /// mapping in OldToNewFieldIdVOut (old id -> new id, -1 = dropped; empty
+    /// when the field set is unchanged). When non-empty, the caller must swap
+    /// in the ".BaseStore" file as well and remap the index vocabulary via
+    /// TIndexVoc::RemapStoreFieldIds - the index itself needs no rebuild since
+    /// key ids do not change.
     /// Returns the number of records written to the rebuilt store.
     uint64 MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize);
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut);
 
     /// Write a "<prefix>PgBlobStore" state file with the record maps converted to
     /// the representation of TargetStoreTypeNm ("TStorePbBlob" = hash-backed,

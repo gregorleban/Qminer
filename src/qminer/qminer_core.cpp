@@ -4427,6 +4427,15 @@ const TIntSet& TIndexVoc::GetStoreKeys(const uint& StoreId) const {
     return EmptySet;
 }
 
+void TIndexVoc::RemapStoreFieldIds(const uint& StoreId, const TIntV& OldToNewFieldIdV) {
+    const TIntSet& KeyIdSet = GetStoreKeys(StoreId);
+    int KeyIdSetN = KeyIdSet.FFirstKeyId();
+    while (KeyIdSet.FNextKeyId(KeyIdSetN)) {
+        KeyH[KeyIdSet.GetKey(KeyIdSetN)].RemapFieldIdV(OldToNewFieldIdV);
+    }
+    DirtyP = true;
+}
+
 bool TIndexVoc::IsWordVoc(const int& KeyId) const {
     return KeyH[KeyId].GetWordVocId() != -1;
 }

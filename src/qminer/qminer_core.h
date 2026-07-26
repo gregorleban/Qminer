@@ -340,6 +340,10 @@ public:
     bool IsFieldJoin() const { return JoinType == osjtField; }
     int GetJoinRecFieldId() const { return JoinRecFieldId; }
     int GetJoinFqFieldId() const { return JoinFqFieldId; }
+    /// Renumber the field ids a field join points at. Used only by the schema
+    /// migration when dropping fields renumbers the store's field table.
+    void PutFieldJoinIds(const int& _JoinRecFieldId, const int& _JoinFqFieldId) {
+        JoinRecFieldId = _JoinRecFieldId; JoinFqFieldId = _JoinFqFieldId; }
     void PutInverseJoinId(const int& _InverseJoinId) { InverseJoinId = _InverseJoinId; }
     bool IsInverseJoinId() const { return InverseJoinId != -1; }
     int GetInverseJoinId() const { return InverseJoinId; }
@@ -2396,6 +2400,17 @@ public:
     int GetFields() const { return FieldIdV.Len(); }
     /// Get id of FieldIdN-th field
     int GetFieldId(const int& FieldIdN) const { return FieldIdV[FieldIdN]; }
+    /// Renumber the linked field ids through an old-to-new id map. Used only by
+    /// the schema migration when dropping fields renumbers a store's field table;
+    /// asserts that no linked field was dropped (mapped to -1).
+    void RemapFieldIdV(const TIntV& OldToNewFieldIdV) {
+        for (int FieldIdN = 0; FieldIdN < FieldIdV.Len(); FieldIdN++) {
+            const int NewFieldId = OldToNewFieldIdV[FieldIdV[FieldIdN]];
+            QmAssertR(NewFieldId != -1, "[RemapFieldIdV] index key " + KeyNm +
+                " is linked to a field dropped by the schema migration");
+            FieldIdV[FieldIdN] = NewFieldId;
+        }
+    }
 
     /// Get name of associated join
     const TStr& GetJoinNm() const { return JoinNm; }
@@ -2557,6 +2572,12 @@ public:
     bool IsStoreKeys(const uint& StoreId) const;
     /// Get set of all the keys for a given store
     const TIntSet& GetStoreKeys(const uint& StoreId) const;
+    /// Renumber the field ids linked to the given store's keys through an
+    /// old-to-new id map (asserts when a linked field maps to -1 = dropped).
+    /// Used when the schema migration drops fields of a store, which renumbers
+    /// its field table - key ids themselves do not change, so the index and the
+    /// vocabularies stay valid as-is. Marks the vocabulary dirty.
+    void RemapStoreFieldIds(const uint& StoreId, const TIntV& OldToNewFieldIdV);
 
     /// Checks if given key contains a word vocabulary
     bool IsWordVoc(const int& KeyId) const;

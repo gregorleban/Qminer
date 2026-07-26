@@ -1419,8 +1419,25 @@ void TRecSerializator::Merge(const TMem& FixedMem, const TMOut& VarSOut, TMem& O
 }
 
 TRecSerializator::TRecSerializator(const TWPt<TStore>& Store, const TWPt<TToaster>& _Toaster,
-        const TStoreSchema& StoreSchema, const TStoreLoc& _TargetStorage): TargetStorage(_TargetStorage) {
+        const TStoreSchema& StoreSchema, const TStoreLoc& _TargetStorage) {
 
+    // collect the store's field table and initialize from it
+    TFieldDescV FieldDescV;
+    for (int FieldId = 0; FieldId < Store->GetFields(); FieldId++) {
+        FieldDescV.Add(Store->GetFieldDesc(FieldId));
+    }
+    InitFromFields(_Toaster, FieldDescV, StoreSchema, _TargetStorage);
+}
+
+TRecSerializator::TRecSerializator(const TWPt<TToaster>& _Toaster, const TFieldDescV& FieldDescV,
+        const TStoreSchema& StoreSchema, const TStoreLoc& _TargetStorage) {
+    InitFromFields(_Toaster, FieldDescV, StoreSchema, _TargetStorage);
+}
+
+void TRecSerializator::InitFromFields(const TWPt<TToaster>& _Toaster, const TFieldDescV& FieldDescV,
+        const TStoreSchema& StoreSchema, const TStoreLoc& _TargetStorage) {
+
+    TargetStorage = _TargetStorage;
     // initialize toaster
     Toaster = _Toaster;
     UseToast = Toaster->CanToast();
@@ -1429,7 +1446,7 @@ TRecSerializator::TRecSerializator(const TWPt<TStore>& Store, const TWPt<TToaste
     }
 
     // initialize offsets
-    const int Fields = Store->GetFields();
+    const int Fields = FieldDescV.Len();
     // fixed part starts after null-flags
     FixedPartOffset = (int)ceil((float)Fields / 8);
     // variable part starts same place before any fixed-width fields identified
@@ -1441,12 +1458,14 @@ TRecSerializator::TRecSerializator(const TWPt<TStore>& Store, const TWPt<TToaste
     int VarFieldCount = 0;
 
     for (int FieldId = 0; FieldId < Fields; FieldId++) {
-        QmAssert(Store->IsFieldId(FieldId));
-        // get field name
-        const TStr& FieldName = Store->GetFieldNm(FieldId);
         // get field description
-        const TFieldDesc& FieldDesc = Store->GetFieldDesc(FieldId);
+        const TFieldDesc& FieldDesc = FieldDescV[FieldId];
+        QmAssert(FieldDesc.GetFieldId() == FieldId);
+        // get field name
+        const TStr& FieldName = FieldDesc.GetFieldNm();
         // get extended field description from schema
+        QmAssertR(StoreSchema.FieldExH.IsKey(FieldName), "[TRecSerializator] field " +
+            FieldName + " is missing from the schema");
         const TFieldDescEx& FieldDescEx = StoreSchema.FieldExH.GetDat(FieldName);
         // skip field if it does not match targeted storage
         if (FieldDescEx.FieldStoreLoc != TargetStorage) { continue; }
@@ -1670,7 +1689,8 @@ void TRecSerializator::SerializeUpdate(const PJsonVal& RecVal, const TMemBase& I
 
 void TRecSerializator::SerializeCopyRec(const TWPt<TStore>& Store,
         const TRecSerializator& SrcSerMem, const TRecSerializator& SrcSerCache,
-        const TMemBase& SrcMemRec, const TMemBase& SrcCacheRec, TMem& RecMem) {
+        const TMemBase& SrcMemRec, const TMemBase& SrcCacheRec, TMem& RecMem,
+        const TIntV& NewToOldFieldIdV) {
 
     // Reserve fixed space - null map, fixed fields and var-field indexes
     TMem FixedMem(VarContentPartOffset);
@@ -1682,7 +1702,10 @@ void TRecSerializator::SerializeCopyRec(const TWPt<TStore>& Store,
     // iterate over fields and copy them from the section that currently holds them
     for (int FieldSerialDescId = 0; FieldSerialDescId < FieldSerialDescV.Len(); FieldSerialDescId++) {
         const TFieldSerialDesc& FieldSerialDesc = FieldSerialDescV[FieldSerialDescId];
-        const int FieldId = FieldSerialDesc.FieldId;
+        // the source serializators (and Store) may use different field ids when
+        // the migration renumbered them; all reads below use the source id
+        const int FieldId = NewToOldFieldIdV.Empty() ?
+            FieldSerialDesc.FieldId.Val : NewToOldFieldIdV[FieldSerialDesc.FieldId].Val;
         const TFieldDesc& FieldDesc = Store->GetFieldDesc(FieldId);
         // locate the serializator (and matching record section) the field was written with
         const bool FromMemP = SrcSerMem.IsFieldId(FieldId);
@@ -6018,10 +6041,13 @@ void TStorePbBlobT<TRecPtMap>::CollectRebuildRecIdV(TUInt64V& RecIdV, int& BlobO
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRecSerializator& NewSer,
         const TMemBase& NewRec, const TMemBase& OldMemRec, const TMemBase& OldCacheRec,
-        const PPgBlob& NewToastBlob) {
+        const PPgBlob& NewToastBlob, const TIntV& OldToNewFieldIdV) {
 
     for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
-        if (!NewSer.IsFieldId(FieldId)) { continue; }
+        // the rebuilt store's id of this field (they differ when the migration
+        // dropped fields); dropped fields have no new value to verify
+        const int NewFieldId = OldToNewFieldIdV.Empty() ? FieldId : OldToNewFieldIdV[FieldId].Val;
+        if (NewFieldId == -1 || !NewSer.IsFieldId(NewFieldId)) { continue; }
         const TFieldDesc& FieldDesc = GetFieldDesc(FieldId);
         // the source serializator/section the field was written with (old layout)
         const TRecSerializator* OldSer = GetFieldSerializator(FieldId);
@@ -6029,7 +6055,7 @@ void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRec
 
         // null flags must agree
         const bool OldNullP = OldSer->IsFieldNull(OldRec, FieldId);
-        const bool NewNullP = NewSer.IsFieldNull(NewRec, FieldId);
+        const bool NewNullP = NewSer.IsFieldNull(NewRec, NewFieldId);
         EAssertR(OldNullP == NewNullP, TStr::Fmt(
             "[MigrateSchemaTo] null-flag mismatch for field %s of record %s in store %s",
             FieldDesc.GetFieldNm().CStr(), TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr()));
@@ -6049,7 +6075,7 @@ void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRec
                 "[MigrateSchemaTo] value mismatch for field %s of record %s in store %s", \
                 FieldDesc.GetFieldNm().CStr(), TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr())); }
         #define QM_MIGRATE_FIELD_EQ_SIMPLE(Getter) \
-            QM_MIGRATE_FIELD_EQ(OldSer->Getter(OldRec, FieldId), NewSer.Getter(NewRec, FieldId), OldVal == NewVal)
+            QM_MIGRATE_FIELD_EQ(OldSer->Getter(OldRec, FieldId), NewSer.Getter(NewRec, NewFieldId), OldVal == NewVal)
 
         switch (FieldDesc.GetFieldType()) {
             case oftByte: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldByte); break;
@@ -6067,28 +6093,28 @@ void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRec
             case oftTm: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldTmMSecs); break;
             case oftIntV: {
                 TIntV OldV; TIntV NewV;
-                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldIntV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldIntV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldIntV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldIntV(NewRec, NewFieldId, NewV), 0), OldV == NewV);
                 break;
             }
             case oftStrV: {
                 TStrV OldV; TStrV NewV;
-                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldStrV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldStrV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldStrV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldStrV(NewRec, NewFieldId, NewV), 0), OldV == NewV);
                 break;
             }
             case oftFltV: {
                 TFltV OldV; TFltV NewV;
-                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldFltV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldFltV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldFltV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldFltV(NewRec, NewFieldId, NewV), 0), OldV == NewV);
                 break;
             }
             case oftNumSpV: {
                 TIntFltKdV OldV; TIntFltKdV NewV;
-                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldNumSpV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldNumSpV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldNumSpV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldNumSpV(NewRec, NewFieldId, NewV), 0), OldV == NewV);
                 break;
             }
             case oftBowSpV: {
                 // compare the serialized form - PBowSpV has no value comparison
                 PBowSpV OldV; PBowSpV NewV;
-                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldBowSpV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldBowSpV(NewRec, FieldId, NewV), 0), 0 == 0);
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldBowSpV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldBowSpV(NewRec, NewFieldId, NewV), 0), 0 == 0);
                 TMOut OldMOut; OldV->Save(OldMOut);
                 TMOut NewMOut; NewV->Save(NewMOut);
                 EAssertR(OldMOut.Len() == NewMOut.Len() && (OldMOut.Len() == 0 ||
@@ -6099,13 +6125,13 @@ void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRec
             }
             case oftTMem: {
                 TMem OldV; TMem NewV;
-                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldTMem(OldRec, FieldId, OldV), 0), (NewSer.GetFieldTMem(NewRec, FieldId, NewV), 0),
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldTMem(OldRec, FieldId, OldV), 0), (NewSer.GetFieldTMem(NewRec, NewFieldId, NewV), 0),
                     OldV.Len() == NewV.Len() && (OldV.Len() == 0 || memcmp(OldV.GetBf(), NewV.GetBf(), OldV.Len()) == 0));
                 break;
             }
             case oftJson: {
                 QM_MIGRATE_FIELD_EQ(TJsonVal::GetStrFromVal(OldSer->GetFieldJsonVal(OldRec, FieldId)),
-                    TJsonVal::GetStrFromVal(NewSer.GetFieldJsonVal(NewRec, FieldId)), OldVal == NewVal);
+                    TJsonVal::GetStrFromVal(NewSer.GetFieldJsonVal(NewRec, NewFieldId)), OldVal == NewVal);
                 break;
             }
             default: throw TQmExcept::New("[MigrateSchemaTo] unsupported field type " +
@@ -6120,17 +6146,17 @@ void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRec
 /// record maps use the representation the schema's "recIdMap" option selects
 template <class TRecPtMap>
 uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize) {
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut) {
     return NewSchema.DenseRecIdMapP ?
-        MigrateSchemaToT<TPbBlobRecMapDense>(DestStoreFNm, NewSchema, CacheSize) :
-        MigrateSchemaToT<TPbBlobRecMapHash>(DestStoreFNm, NewSchema, CacheSize);
+        MigrateSchemaToT<TPbBlobRecMapDense>(DestStoreFNm, NewSchema, CacheSize, OldToNewFieldIdVOut) :
+        MigrateSchemaToT<TPbBlobRecMapHash>(DestStoreFNm, NewSchema, CacheSize, OldToNewFieldIdVOut);
 }
 
 /// MigrateSchemaTo body, parameterized on the rebuilt record-map representation
 template <class TRecPtMap>
 template <class TDstMap>
 uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize) {
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut) {
 
     TEnv::Logger->OnStatus(TStr::Fmt("Migrating store '%s' to the new schema field placement...", GetStoreNm().CStr()));
     if (GetStoreType() != TDstMap::GetStoreTypeNm()) {
@@ -6139,30 +6165,92 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
             GetStoreNm().CStr(), GetStoreType().CStr(), TDstMap::GetStoreTypeNm()));
     }
 
-    // validate that the new schema describes exactly the fields of this store -
-    // the migration relocates values between the two sections, it cannot add,
-    // drop or retype fields (that would change field ids and the .BaseStore file)
+    // validate the new schema against this store's fields. The migration
+    // relocates values between the two sections and may DROP fields the schema
+    // no longer defines; it can never add or retype fields (there would be no
+    // values for them). Every schema field must therefore exist in the store
+    // with the same type.
     QmAssertR(NewSchema.StoreName == GetStoreNm(), "[MigrateSchemaTo] the schema is for store " +
         NewSchema.StoreName + ", not for store " + GetStoreNm());
-    QmAssertR(NewSchema.FieldH.Len() == GetFields(), TStr::Fmt(
-        "[MigrateSchemaTo] store %s has %d fields but the new schema defines %d - fields cannot be added or dropped by the migration",
-        GetStoreNm().CStr(), GetFields(), NewSchema.FieldH.Len()));
-    for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
-        const TFieldDesc& FieldDesc = GetFieldDesc(FieldId);
-        const TStr& FieldNm = FieldDesc.GetFieldNm();
-        QmAssertR(NewSchema.FieldH.IsKey(FieldNm) && NewSchema.FieldExH.IsKey(FieldNm),
-            "[MigrateSchemaTo] field " + FieldNm + " of store " + GetStoreNm() + " is missing from the new schema");
-        QmAssertR(NewSchema.FieldH.GetDat(FieldNm).GetFieldType() == FieldDesc.GetFieldType(),
+    for (int SchemaFieldN = 0; SchemaFieldN < NewSchema.FieldH.Len(); SchemaFieldN++) {
+        const TFieldDesc& SchemaFieldDesc = NewSchema.FieldH[SchemaFieldN];
+        const TStr& FieldNm = SchemaFieldDesc.GetFieldNm();
+        QmAssertR(IsFieldNm(FieldNm), "[MigrateSchemaTo] the new schema adds field " + FieldNm +
+            " that store " + GetStoreNm() + " does not have - fields cannot be added by the migration");
+        QmAssertR(GetFieldDesc(GetFieldId(FieldNm)).GetFieldType() == SchemaFieldDesc.GetFieldType(),
             "[MigrateSchemaTo] field " + FieldNm + " of store " + GetStoreNm() + " changes type in the new schema");
     }
 
+    // collect the fields the new schema drops and build the field id mapping
+    // (dropping renumbers the ids of the remaining fields)
+    TIntV OldToNewFieldIdV; TIntV NewToOldFieldIdV; TStrV DroppedFieldNmV;
+    for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
+        const TFieldDesc& FieldDesc = GetFieldDesc(FieldId);
+        if (NewSchema.FieldH.IsKey(FieldDesc.GetFieldNm())) {
+            QmAssertR(NewSchema.FieldExH.IsKey(FieldDesc.GetFieldNm()),
+                "[MigrateSchemaTo] field " + FieldDesc.GetFieldNm() + " has no extended description in the new schema");
+            OldToNewFieldIdV.Add(NewToOldFieldIdV.Add(FieldId));
+        } else {
+            OldToNewFieldIdV.Add(-1);
+            DroppedFieldNmV.Add(FieldDesc.GetFieldNm());
+        }
+    }
+    const bool DropFieldsP = !DroppedFieldNmV.Empty();
+    if (DropFieldsP) {
+        // a dropped field must not be load-bearing: not the primary field, not
+        // the record/frequency field of a field join and not linked to an index
+        // key (the first two would lose data the store needs, the last would
+        // require reindexing; index keys on OTHER fields survive the renumbering
+        // via TIndexVoc::RemapStoreFieldIds, which the caller must invoke)
+        for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
+            if (OldToNewFieldIdV[FieldId] != -1) { continue; }
+            const TFieldDesc& FieldDesc = GetFieldDesc(FieldId);
+            QmAssertR(FieldId != PrimaryFieldId,
+                "[MigrateSchemaTo] cannot drop the primary field " + FieldDesc.GetFieldNm() + " of store " + GetStoreNm());
+            QmAssertR(!FieldDesc.IsKeys(), "[MigrateSchemaTo] cannot drop field " + FieldDesc.GetFieldNm() +
+                " of store " + GetStoreNm() + " - it is linked to an index key");
+            for (int JoinId = 0; JoinId < GetJoins(); JoinId++) {
+                const TJoinDesc& JoinDesc = GetJoinDesc(JoinId);
+                QmAssertR(!JoinDesc.IsFieldJoin() || (JoinDesc.GetJoinRecFieldId() != FieldId &&
+                    JoinDesc.GetJoinFqFieldId() != FieldId), "[MigrateSchemaTo] cannot drop field " +
+                    FieldDesc.GetFieldNm() + " of store " + GetStoreNm() + " - it carries the field join " + JoinDesc.GetJoinNm());
+            }
+        }
+        TStr DroppedStr;
+        for (int DroppedN = 0; DroppedN < DroppedFieldNmV.Len(); DroppedN++) {
+            if (DroppedN > 0) { DroppedStr += ", "; }
+            DroppedStr += DroppedFieldNmV[DroppedN];
+        }
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Migrate] store '%s' DROPS %d field(s) the new schema no longer defines: %s "
+            "(their values are not copied into the rebuilt store; the remaining field ids are renumbered)",
+            GetStoreNm().CStr(), DroppedFieldNmV.Len(), DroppedStr.CStr()));
+    }
+
+    // the rebuilt store's field table: the remaining fields in their current
+    // order, renumbered to consecutive ids (identical to the current table when
+    // nothing is dropped)
+    TFieldDescV NewFieldDescV;
+    for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
+        if (OldToNewFieldIdV[FieldId] == -1) { continue; }
+        const int NewFieldId = NewFieldDescV.Add(GetFieldDesc(FieldId));
+        EAssert(NewFieldId == OldToNewFieldIdV[FieldId]);
+        NewFieldDescV[NewFieldId].PutFieldId(NewFieldId);
+    }
+
     // build the target serializators; the constructor takes each field's section
-    // (memory vs cache) from the new schema while the field ids stay those of
-    // this store, so the index, joins and the .BaseStore file remain valid
-    TRecSerializator NewSerCache(this, this, NewSchema, slDisk);
-    TRecSerializator NewSerMem(this, this, NewSchema, slMemory);
+    // (memory vs cache) from the new schema; without dropped fields the ids stay
+    // those of this store, so the index, joins and the .BaseStore file remain valid
+    TRecSerializator NewSerCache(this, NewFieldDescV, NewSchema, slDisk);
+    TRecSerializator NewSerMem(this, NewFieldDescV, NewSchema, slMemory);
     const bool NewCacheUsedP = !NewSerCache.IsEmpty();
     const bool NewMemUsedP = !NewSerMem.IsEmpty();
+    // id maps for the record copy/verify loop; empty means identity (no renumbering)
+    TIntV CopyNewToOldFieldIdV; TIntV CopyOldToNewFieldIdV;
+    if (DropFieldsP) {
+        CopyNewToOldFieldIdV = NewToOldFieldIdV;
+        CopyOldToNewFieldIdV = OldToNewFieldIdV;
+    }
 
     // create the destination page blobs
     PPgBlob NewDataBlob = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlob", TFAccess::faCreate, CacheSize));
@@ -6214,24 +6302,24 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
             // rebuild and verify the disk section
             if (NewCacheUsedP) {
                 TMem NewRecMem;
-                NewSerCache.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache, OldMemMem, OldCacheMem, NewRecMem);
+                NewSerCache.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache, OldMemMem, OldCacheMem, NewRecMem, CopyNewToOldFieldIdV);
                 const TPgBlobPt NewPt = NewDataBlob->Put(NewRecMem.GetBf(), NewRecMem.Len());
                 NewRecIdBlobPtH.AddDat(RecId, NewPt);
                 // copy the stored record out of the page cache before verifying -
                 // the verification reads TOAST-ed values, which may evict its page
                 TMem StoredRecMem;
                 { TMemBase MemBase = NewDataBlob->GetMemBase(NewPt); StoredRecMem.AddBf(MemBase.GetBf(), MemBase.Len()); }
-                VerifyMigratedRec(RecId, NewSerCache, StoredRecMem, OldMemMem, OldCacheMem, NewDataBlob);
+                VerifyMigratedRec(RecId, NewSerCache, StoredRecMem, OldMemMem, OldCacheMem, NewDataBlob, CopyOldToNewFieldIdV);
             }
             // rebuild and verify the in-memory section
             if (NewMemUsedP) {
                 TMem NewRecMem;
-                NewSerMem.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache, OldMemMem, OldCacheMem, NewRecMem);
+                NewSerMem.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache, OldMemMem, OldCacheMem, NewRecMem, CopyNewToOldFieldIdV);
                 const TPgBlobPt NewPt = NewDataMem->Put(NewRecMem.GetBf(), NewRecMem.Len());
                 NewRecIdBlobPtHMem.AddDat(RecId, NewPt);
                 TMem StoredRecMem;
                 { TMemBase MemBase = NewDataMem->GetMemBase(NewPt); StoredRecMem.AddBf(MemBase.GetBf(), MemBase.Len()); }
-                VerifyMigratedRec(RecId, NewSerMem, StoredRecMem, OldMemMem, OldCacheMem, NewDataBlob);
+                VerifyMigratedRec(RecId, NewSerMem, StoredRecMem, OldMemMem, OldCacheMem, NewDataBlob, CopyOldToNewFieldIdV);
             }
             WrittenRecs++;
             if (RecN % 100000 == 0) {
@@ -6274,10 +6362,13 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
 
     // write the destination store state file - the format and content must match
     // what the destructor writes, with the NEW serializators and the new
-    // record-id-to-blob-pointer maps
+    // record-id-to-blob-pointer maps (and, when fields were dropped, the
+    // renumbered primary field id)
     TFOut FOut(DestStoreFNm + "PgBlobStore");
     RecNmFieldP.Save(FOut);
-    PrimaryFieldId.Save(FOut);
+    TInt NewPrimaryFieldId = (PrimaryFieldId != -1 && DropFieldsP) ?
+        OldToNewFieldIdV[PrimaryFieldId] : PrimaryFieldId;
+    NewPrimaryFieldId.Save(FOut);
     if (PrimaryFieldType == oftInt) {
         PrimaryIntIdH.Save(FOut);
     } else if (PrimaryFieldType == oftUInt64) {
@@ -6296,8 +6387,42 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
     NewRecIdBlobPtHMem.Save(FOut);
     RecIdCounter.Save(FOut);
 
-    TEnv::Logger->OnStatus(TStr::Fmt("Migrating store '%s' done: %s records",
-        GetStoreNm().CStr(), TStrUtil::GetStr(WrittenRecs).CStr()));
+    // when fields were dropped the remaining field ids were renumbered, so the
+    // rebuilt store also needs a new ".BaseStore" file: the renumbered field
+    // table and the field joins repointed at the new ids (join ids, join names
+    // and index-join key ids are untouched). Written in the exact format of
+    // TStore::SaveStore. The caller must swap this file in together with the
+    // blob files and remap the index vocabulary (TIndexVoc::RemapStoreFieldIds).
+    if (DropFieldsP) {
+        TJoinDescV NewJoinDescV; TStrH NewJoinNmToIdH; TStrH NewFieldNmToIdH;
+        for (int JoinId = 0; JoinId < GetJoins(); JoinId++) {
+            TJoinDesc JoinDesc = GetJoinDesc(JoinId);
+            if (JoinDesc.IsFieldJoin()) {
+                // the guards above ensured neither field is dropped
+                JoinDesc.PutFieldJoinIds(OldToNewFieldIdV[JoinDesc.GetJoinRecFieldId()],
+                    JoinDesc.GetJoinFqFieldId() == -1 ? -1 : OldToNewFieldIdV[JoinDesc.GetJoinFqFieldId()].Val);
+            }
+            NewJoinDescV.Add(JoinDesc);
+            NewJoinNmToIdH.AddDat(JoinDesc.GetJoinNm()) = JoinId;
+        }
+        for (int NewFieldId = 0; NewFieldId < NewFieldDescV.Len(); NewFieldId++) {
+            NewFieldNmToIdH.AddDat(NewFieldDescV[NewFieldId].GetFieldNm()) = NewFieldId;
+        }
+        TFOut BaseFOut(DestStoreFNm + ".BaseStore");
+        TUInt(GetStoreId()).Save(BaseFOut);
+        GetStoreNm().Save(BaseFOut);
+        NewJoinDescV.Save(BaseFOut);
+        NewJoinNmToIdH.Save(BaseFOut);
+        NewFieldDescV.Save(BaseFOut);
+        NewFieldNmToIdH.Save(BaseFOut);
+        OldToNewFieldIdVOut = OldToNewFieldIdV;
+    } else {
+        OldToNewFieldIdVOut.Clr();
+    }
+
+    TEnv::Logger->OnStatus(TStr::Fmt("Migrating store '%s' done: %s records%s",
+        GetStoreNm().CStr(), TStrUtil::GetStr(WrittenRecs).CStr(),
+        DropFieldsP ? TStr::Fmt(" (%d field(s) dropped)", DroppedFieldNmV.Len()).CStr() : ""));
     // releasing the new page blobs flushes them to disk
     return WrittenRecs;
 }
