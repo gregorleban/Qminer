@@ -154,6 +154,9 @@ public:
     TInt BlockSizeMem;
     /// What is the default storage location for fields and field-joins
     TStoreLoc DefaultFieldStoreLoc;
+    /// Paged stores only: use the direct-indexed (dense) record-id map
+    /// (options block "recIdMap": "dense"; default is the hash-backed map)
+    TBool DenseRecIdMapP;
 private:
     /// Parse field description from JSon
     TFieldDesc ParseFieldDesc(const TWPt<TBase>& Base, const PJsonVal& FieldVal);
@@ -165,7 +168,7 @@ private:
     TIndexKeyEx ParseIndexKeyEx(const PJsonVal& IndexKeyVal);
 
 public:
-    TStoreSchema(): DefaultFieldStoreLoc(slMemory) { }
+    TStoreSchema(): DefaultFieldStoreLoc(slMemory), DenseRecIdMapP(false) { }
     TStoreSchema(const TWPt<TBase>& Base, const PJsonVal& StoreVal);
 
     /// Parse JSon definition file and return vector of store schemas
@@ -1195,7 +1198,176 @@ public:
 ///////////////////////////////
 /// Implementation of store which can be initialized from a schema.
 /// It also uses Paged-BLOB storage engine.
-class TStorePbBlob : public TStore, public TToaster {
+///////////////////////////////////////////////////////////////////////////////////
+/// Non-template base of the paged stores. Carries the operations callers use
+/// through a store pointer without knowing the record-map representation
+/// (defragmentation, schema migration, store-type conversion), so external code
+/// can dynamic_cast to this type and handle both variants uniformly.
+class TStorePbBlobBase : public TStore, public TToaster {
+public:
+    TStorePbBlobBase(const TWPt<TBase>& _Base, const uint& StoreId, const TStr& StoreName) :
+        TStore(_Base, StoreId, StoreName) {}
+    TStorePbBlobBase(const TWPt<TBase>& _Base, const TStr& FNm) : TStore(_Base, FNm) {}
+
+    /// Rebuild (defragment) the record blobs into new page blob files (see TStorePbBlobT)
+    virtual uint64 DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize) = 0;
+    /// Rebuild the record blobs with the field placement of NewSchema (see TStorePbBlobT)
+    virtual uint64 MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
+        const uint64& CacheSize) = 0;
+    /// True when the field is stored in the in-memory section (false = disk section)
+    virtual bool IsFieldInMemory(const int& FieldId) const = 0;
+    /// Write a "<prefix>PgBlobStore" state file with the record maps converted to the
+    /// representation of TargetStoreTypeNm (see TStorePbBlobT)
+    virtual uint64 ConvertStoreTypeTo(const TStr& DestStoreFNm, const TStr& TargetStoreTypeNm) = 0;
+};
+
+///////////////////////////////////////////////////////////////////////////////////
+/// Record-id to blob-pointer map of a paged store, hash-backed. This is the
+/// original TStorePbBlob representation: ~26 B per record (24 B hash entry plus
+/// buckets), deleted entries are reused, iteration is in slot order.
+class TPbBlobRecMapHash {
+private:
+    THash<TUInt64, TPgBlobPt> H;
+public:
+    /// Store type name that selects this representation
+    static const char* GetStoreTypeNm() { return "TStorePbBlob"; }
+
+    bool IsKey(const uint64& RecId) const { return H.IsKey(RecId); }
+    const TPgBlobPt& GetDat(const uint64& RecId) const { return H.GetDat(RecId); }
+    TPgBlobPt& GetDat(const uint64& RecId) { return H.GetDat(RecId); }
+    /// Insert or overwrite the pointer for the given record id
+    void AddDat(const uint64& RecId, const TPgBlobPt& Pt) { H.AddDat(RecId, Pt); }
+    void DelKey(const uint64& RecId) { H.DelKey(RecId); }
+    void Clr() { H.Clr(); }
+    /// Number of live records in the map
+    int64 Len() const { return H.Len(); }
+    /// Collect all record ids (slot order - callers sort when they need id order)
+    void GetKeyV(TUInt64V& RecIdV) const { H.GetKeyV(RecIdV); }
+    /// Smallest record id in the map (TUInt64::Mx when empty). Slot order does not
+    /// match id order once deleted slots were reused, so scan all entries
+    uint64 GetFirstRecId() const {
+        uint64 MnRecId = TUInt64::Mx;
+        int KeyId = H.FFirstKeyId();
+        while (H.FNextKeyId(KeyId)) {
+            const uint64 RecId = H.GetKey(KeyId);
+            if (RecId < MnRecId) { MnRecId = RecId; }
+        }
+        return MnRecId;
+    }
+    /// Largest record id in the map (TUInt64::Mx when empty)
+    uint64 GetLastRecId() const {
+        if (H.Empty()) { return TUInt64::Mx; }
+        uint64 MxRecId = 0;
+        int KeyId = H.FFirstKeyId();
+        while (H.FNextKeyId(KeyId)) {
+            const uint64 RecId = H.GetKey(KeyId);
+            if (RecId > MxRecId) { MxRecId = RecId; }
+        }
+        return MxRecId;
+    }
+    PStoreIter GetIter() const { return TStoreIterHashKey<THash<TUInt64, TPgBlobPt>>::New(H); }
+    void Load(TSIn& SIn) { H.Load(SIn); }
+    void Save(TSOut& SOut) const { H.Save(SOut); }
+};
+
+///////////////////////////////////////////////////////////////////////////////////
+/// Iterator over the non-empty slots of a dense record map, in record-id order
+class TStoreIterDenseMap : public TStoreIter {
+private:
+    const TVec<TPgBlobPt, int64>& PtV;
+    int64 RecN;
+
+    TStoreIterDenseMap(const TVec<TPgBlobPt, int64>& _PtV) : PtV(_PtV), RecN(-1) {}
+public:
+    static PStoreIter New(const TVec<TPgBlobPt, int64>& PtV) { return new TStoreIterDenseMap(PtV); }
+
+    bool Next() {
+        for (RecN++; RecN < PtV.Len(); RecN++) {
+            if (!PtV[RecN].Empty()) { return true; }
+        }
+        return false;
+    }
+    uint64 GetRecId() const { return (uint64)RecN; }
+};
+
+///////////////////////////////////////////////////////////////////////////////////
+/// Record-id to blob-pointer map of a paged store, direct-indexed. Record ids are
+/// assigned by a monotone counter and never reused, so the id space is dense and
+/// the record id can be the index into a vector of blob pointers: 8 B per slot
+/// (vs ~26 B per record for the hash) and a lookup is a single indexed read.
+/// A deleted record id keeps an Empty() sentinel slot forever - fine for stores
+/// where deletes are a small fraction of the id space; a store that continuously
+/// deletes old records grows the vector without bound and should stay hash-backed.
+class TPbBlobRecMapDense {
+private:
+    /// blob pointer per record id; Empty() = no record with this id
+    TVec<TPgBlobPt, int64> PtV;
+    /// number of non-empty slots
+    TInt64 Recs;
+public:
+    TPbBlobRecMapDense() : Recs(0) {}
+
+    /// Store type name that selects this representation
+    static const char* GetStoreTypeNm() { return "TStorePbBlobDense"; }
+
+    /// The unsigned compare also rejects TUInt64::Mx, which callers use as the
+    /// no-record sentinel (a signed cast would turn it into index -1)
+    bool IsKey(const uint64& RecId) const { return RecId < (uint64)PtV.Len() && !PtV[(int64)RecId].Empty(); }
+    const TPgBlobPt& GetDat(const uint64& RecId) const {
+        EAssert(IsKey(RecId));
+        return PtV[(int64)RecId];
+    }
+    TPgBlobPt& GetDat(const uint64& RecId) {
+        EAssert(IsKey(RecId));
+        return PtV[(int64)RecId];
+    }
+    /// Insert or overwrite the pointer for the given record id
+    void AddDat(const uint64& RecId, const TPgBlobPt& Pt) {
+        EAssert(!Pt.Empty());
+        EAssert((int64)RecId >= 0);	// rejects TUInt64::Mx and other out-of-range ids
+        // fill the gap with sentinel slots; ids come from a monotone counter, so
+        // beyond-the-end inserts are appends (a gap only appears when the records
+        // at the end of the id space were deleted before a save)
+        while (PtV.Len() <= (int64)RecId) { PtV.Add(TPgBlobPt()); }
+        if (PtV[(int64)RecId].Empty()) { Recs++; }
+        PtV[(int64)RecId] = Pt;
+    }
+    void DelKey(const uint64& RecId) {
+        EAssert(IsKey(RecId));
+        PtV[(int64)RecId].Clr();
+        Recs--;
+    }
+    void Clr() { PtV.Clr(); Recs = 0; }
+    /// Number of live records in the map
+    int64 Len() const { return Recs; }
+    /// Collect all record ids (ascending id order by construction)
+    void GetKeyV(TUInt64V& RecIdV) const {
+        RecIdV.Clr();
+        for (int64 RecN = 0; RecN < PtV.Len(); RecN++) {
+            if (!PtV[RecN].Empty()) { RecIdV.Add((uint64)RecN); }
+        }
+    }
+    /// Smallest record id in the map (TUInt64::Mx when empty)
+    uint64 GetFirstRecId() const {
+        for (int64 RecN = 0; RecN < PtV.Len(); RecN++) {
+            if (!PtV[RecN].Empty()) { return (uint64)RecN; }
+        }
+        return TUInt64::Mx;
+    }
+    /// Largest record id in the map (TUInt64::Mx when empty)
+    uint64 GetLastRecId() const {
+        for (int64 RecN = PtV.Len() - 1; RecN >= 0; RecN--) {
+            if (!PtV[RecN].Empty()) { return (uint64)RecN; }
+        }
+        return TUInt64::Mx;
+    }
+    PStoreIter GetIter() const { return TStoreIterDenseMap::New(PtV); }
+    void Load(TSIn& SIn) { PtV.Load(SIn); Recs.Load(SIn); }
+    void Save(TSOut& SOut) const { PtV.Save(SOut); Recs.Save(SOut); }
+};
+
+template <class TRecPtMap>
+class TStorePbBlobT : public TStorePbBlobBase {
 private:
 
     /// For temporarily storing inverse joins which need to be
@@ -1234,10 +1406,10 @@ private:
     TBool DataBlobP;
     /// Store for records
     PPgBlob DataBlob;
-    /// Hash map from record ID to BLOB pointer
-    THash<TUInt64, TPgBlobPt> RecIdBlobPtH;
-    /// Hash map from record ID to BLOB pointer
-    THash<TUInt64, TPgBlobPt> RecIdBlobPtHMem;
+    /// Map from record ID to BLOB pointer (representation picked by TRecPtMap)
+    TRecPtMap RecIdBlobPtH;
+    /// Map from record ID to BLOB pointer (representation picked by TRecPtMap)
+    TRecPtMap RecIdBlobPtHMem;
     /// Flag if we are using in-memory store
     TBool DataMemP;
     /// Store for parts of records that should be in-memory
@@ -1348,17 +1520,29 @@ private:
     TThinMIn GetEditableField(const uint64& RecId, const int& FieldId);
 
     // given the recid and the fieldid get the memory that contains it, get blob that contains it and the page blob pointer
-    void GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem, THash<TUInt64, TPgBlobPt>* &RecIdBlobPtr, PPgBlob& Blob, TPgBlobPt* &PgPt);
+    void GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem, TRecPtMap* &RecIdBlobPtr, PPgBlob& Blob, TPgBlobPt* &PgPt);
+
+    /// Build the record maps in the TDstMap representation and write a complete
+    /// "<prefix>PgBlobStore" state file with them (the record blobs are untouched
+    /// and stay shared with this store). Implements ConvertStoreTypeTo.
+    template <class TDstMap>
+    uint64 ConvertMapsTo(const TStr& DestStoreFNm) const;
+
+    /// MigrateSchemaTo body, parameterized on the representation of the rebuilt
+    /// record maps (picked from the schema's "recIdMap" option by the dispatcher)
+    template <class TDstMap>
+    uint64 MigrateSchemaToT(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
+        const uint64& CacheSize);
 
 public:
-    TStorePbBlob(const TWPt<TBase>& _Base, const uint& StoreId,
+    TStorePbBlobT(const TWPt<TBase>& _Base, const uint& StoreId,
         const TStr& StoreName, const TStoreSchema& StoreSchema,
         const TStr& _StoreFNm, const int64& _MxCacheSize, const int& BlockSize);
-    TStorePbBlob(const TWPt<TBase>& _Base, const TStr& _StoreFNm,
+    TStorePbBlobT(const TWPt<TBase>& _Base, const TStr& _StoreFNm,
         const TFAccess& _FAccess, const int64& _MxCacheSize,
         const bool& _Lazy = false);
     // need to override destructor, to clear cache
-    ~TStorePbBlob();
+    ~TStorePbBlobT();
 
     /// True when records have names (default is false)
     bool HasRecNm() const { return RecNmFieldP; }
@@ -1556,10 +1740,32 @@ public:
     /// compared with the source. Records with data in only one of the two sections
     /// cannot be re-serialized and are dropped with a warning (DefragTo copies such
     /// section fragments as-is; see its per-hash breakdown for the same records).
+    /// The rebuilt record maps use the representation selected by the schema's
+    /// options block ("recIdMap": "dense"/"hash"), so the migration also converts
+    /// the store type when the definition asks for it - the caller must then
+    /// record the new type in StoreList.json when swapping the files.
     /// Returns the number of records written to the rebuilt store.
     uint64 MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
         const uint64& CacheSize);
+
+    /// Write a "<prefix>PgBlobStore" state file with the record maps converted to
+    /// the representation of TargetStoreTypeNm ("TStorePbBlob" = hash-backed,
+    /// "TStorePbBlobDense" = direct-indexed). The record blobs are NOT rewritten -
+    /// both representations address the same PgBlob/PgBlobMem files, so converting
+    /// a store means swapping in the new state file and changing the store's type
+    /// in StoreList.json. Only reads the live store, so it works on a read-only
+    /// base. Returns the number of records in the converted maps.
+    uint64 ConvertStoreTypeTo(const TStr& DestStoreFNm, const TStr& TargetStoreTypeNm);
 };
+
+/// The paged store with the original hash-backed record maps
+typedef TStorePbBlobT<TPbBlobRecMapHash> TStorePbBlob;
+/// The paged store with direct-indexed (dense) record maps: ~18 B less memory per
+/// record and pointer lookups without hashing. Select with "recIdMap": "dense" in
+/// the store definition's options block, or convert an existing store with
+/// ConvertStoreTypeTo. Not suited for stores that continuously delete old records
+/// (deleted ids keep an 8-byte slot forever).
+typedef TStorePbBlobT<TPbBlobRecMapDense> TStorePbBlobDense;
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 /// Base class for derived stores.

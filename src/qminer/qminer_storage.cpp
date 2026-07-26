@@ -310,7 +310,7 @@ TIndexKeyEx TStoreSchema::ParseIndexKeyEx(const PJsonVal& IndexKeyVal) {
     return IndexKeyEx;
 }
 
-TStoreSchema::TStoreSchema(const TWPt<TBase>& Base, const PJsonVal& StoreVal) : StoreId(0), HasStoreIdP(false), DefaultFieldStoreLoc(slMemory) {
+TStoreSchema::TStoreSchema(const TWPt<TBase>& Base, const PJsonVal& StoreVal) : StoreId(0), HasStoreIdP(false), DefaultFieldStoreLoc(slMemory), DenseRecIdMapP(false) {
     QmAssertR(StoreVal->IsObj(), "Invalid JSON for store definition.");
     // get store name
     QmAssertR(StoreVal->IsObjKey("name"), "Missing store name.");
@@ -321,6 +321,16 @@ TStoreSchema::TStoreSchema(const TWPt<TBase>& Base, const PJsonVal& StoreVal) : 
         PJsonVal options = StoreVal->GetObjKey("options");
         if (options->IsObjKey("type")) {
             StoreType = options->GetObjStr("type");
+        }
+        if (options->IsObjKey("recIdMap")) {
+            const TStr RecIdMapStr = options->GetObjStr("recIdMap");
+            if (RecIdMapStr == "dense") {
+                DenseRecIdMapP = true;
+            } else if (RecIdMapStr == "hash") {
+                DenseRecIdMapP = false;
+            } else {
+                throw TQmExcept::New(TStr::Fmt("Unsupported 'recIdMap' flag for store %s: %s (expected 'dense' or 'hash')", StoreName.CStr(), RecIdMapStr.CStr()));
+            }
         }
         if (options->IsObjKey("storage_location")) {
             TStr StoreLocStr = options->GetObjStr("storage_location");
@@ -4141,7 +4151,8 @@ void TStoreImpl::RunVerificationForRecord(const uint64& RecId) {
 ///////////////////////////////
 /// TStorePbBlob
 
-uint64 TStorePbBlob::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {// check if we are given reference to existing record
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {// check if we are given reference to existing record
     try {
         // parse out record id, if referred directly
         {
@@ -4219,7 +4230,7 @@ uint64 TStorePbBlob::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
         SerializatorCache->Serialize(RecVal, CacheRecMem, this);
         TPgBlobPt Pt = DataBlob->Put(CacheRecMem.GetBf(), CacheRecMem.Len());
         CacheRecId = Pt;
-        RecIdBlobPtH.AddDat(RecId) = Pt;
+        RecIdBlobPtH.AddDat(RecId, Pt);
         // index new record
         RecIndexer.IndexRec(CacheRecMem, RecId, *SerializatorCache, RecVal);
     }
@@ -4229,7 +4240,7 @@ uint64 TStorePbBlob::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
         SerializatorMem->Serialize(RecVal, MemRecMem, this);
         TPgBlobPt Pt = DataMem->Put(MemRecMem.GetBf(), MemRecMem.Len());
         MemRecId = Pt;
-        RecIdBlobPtHMem.AddDat(RecId) = Pt;
+        RecIdBlobPtHMem.AddDat(RecId, Pt);
         RecIndexer.IndexRec(MemRecMem, RecId, *SerializatorMem, RecVal);
     }
     // make sure we are consistent with respect to Ids!
@@ -4252,7 +4263,8 @@ uint64 TStorePbBlob::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
 }
 
 /// Update existing record
-void TStorePbBlob::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
     // figure out which storage fields are affected
     bool CacheP = false, MemP = false, PrimaryP = false;
     bool CacheVarP = false, MemVarP = false, KeyP = false;
@@ -4314,7 +4326,7 @@ void TStorePbBlob::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
 
             // update the stored serializations with new values
             Pt = DataBlob->Put(CacheNewRecMem.GetBf(), CacheNewRecMem.Len(), Pt);
-            RecIdBlobPtH(RecId) = Pt;
+            RecIdBlobPtH.AddDat(RecId, Pt);
             // the record may have moved to another page - the persisted rec-id to
             // blob-pointer map must be rewritten on close or it would keep pointing
             // at the old, freed location
@@ -4349,7 +4361,7 @@ void TStorePbBlob::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
 
             // update the stored serializations with new values
             Pt = DataMem->Put(NewRecMem.GetBf(), NewRecMem.Len(), Pt);
-            RecIdBlobPtHMem(RecId) = Pt;
+            RecIdBlobPtHMem.AddDat(RecId, Pt);
             // same as above - a moved record invalidates the persisted pointer map
             MetaDirtyP = true;
         } else {
@@ -4368,7 +4380,8 @@ void TStorePbBlob::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
 //////////////////////////////////////////////////////////
 
 /// Load page with with given record and return pointer to it
-TThinMIn TStorePbBlob::GetPgBf(const uint64& RecId, const bool& UseMem) const {
+template <class TRecPtMap>
+TThinMIn TStorePbBlobT<TRecPtMap>::GetPgBf(const uint64& RecId, const bool& UseMem) const {
     if (UseMem) {
         const TPgBlobPt& PgPt = RecIdBlobPtHMem.GetDat(RecId);
         TThinMIn min = DataMem->Get(PgPt);
@@ -4381,191 +4394,228 @@ TThinMIn TStorePbBlob::GetPgBf(const uint64& RecId, const bool& UseMem) const {
 }
 
 /// Get serializator for given location
-TRecSerializator* TStorePbBlob::GetSerializator(const TStoreLoc& StoreLoc) {
+template <class TRecPtMap>
+TRecSerializator* TStorePbBlobT<TRecPtMap>::GetSerializator(const TStoreLoc& StoreLoc) {
     return (StoreLoc == TStoreLoc::slDisk ? SerializatorCache : SerializatorMem);
 }
 
-const TRecSerializator* TStorePbBlob::GetSerializator(const TStoreLoc& StoreLoc) const {
+template <class TRecPtMap>
+const TRecSerializator* TStorePbBlobT<TRecPtMap>::GetSerializator(const TStoreLoc& StoreLoc) const {
     return (StoreLoc == TStoreLoc::slDisk ? SerializatorCache : SerializatorMem);
 }
 
-TRecSerializator* TStorePbBlob::GetFieldSerializator(const int &FieldId) {
+template <class TRecPtMap>
+TRecSerializator* TStorePbBlobT<TRecPtMap>::GetFieldSerializator(const int &FieldId) {
     return GetSerializator(FieldLocV[FieldId]);
 }
 
-const TRecSerializator* TStorePbBlob::GetFieldSerializator(const int &FieldId) const {
+template <class TRecPtMap>
+const TRecSerializator* TStorePbBlobT<TRecPtMap>::GetFieldSerializator(const int &FieldId) const {
     return GetSerializator(FieldLocV[FieldId]);
 }
 
-void TStorePbBlob::SetPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     PrimaryStrIdH.AddDat(Str) = RecId;
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::SetPrimaryFieldInt(const uint64& RecId, const int& Int) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetPrimaryFieldInt(const uint64& RecId, const int& Int) {
     PrimaryIntIdH.AddDat(Int) = RecId;
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::SetPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     PrimaryUInt64IdH.AddDat(UInt64) = RecId;
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::SetPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     PrimaryFltIdH.AddDat(Flt) = RecId;
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::SetPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     PrimaryTmMSecsIdH.AddDat(MSecs) = RecId;
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::DelPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DelPrimaryFieldStr(const uint64& RecId, const TStr& Str) {
     Assert(PrimaryStrIdH.GetDat(Str) == RecId);
     PrimaryStrIdH.DelIfKey(Str);
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::DelPrimaryFieldInt(const uint64& RecId, const int& Int) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DelPrimaryFieldInt(const uint64& RecId, const int& Int) {
     Assert(PrimaryIntIdH.GetDat(Int) == RecId);
     PrimaryIntIdH.DelIfKey(Int);
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::DelPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DelPrimaryFieldUInt64(const uint64& RecId, const uint64& UInt64) {
     Assert(PrimaryUInt64IdH.GetDat(UInt64) == RecId);
     PrimaryUInt64IdH.DelIfKey(UInt64);
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::DelPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DelPrimaryFieldFlt(const uint64& RecId, const double& Flt) {
     Assert(PrimaryFltIdH.GetDat(Flt) == RecId);
     PrimaryFltIdH.DelIfKey(Flt);
     MetaDirtyP = true;
 }
 
-void TStorePbBlob::DelPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DelPrimaryFieldMSecs(const uint64& RecId, const uint64& MSecs) {
     Assert(PrimaryTmMSecsIdH.GetDat(MSecs) == RecId);
     PrimaryTmMSecsIdH.DelIfKey(MSecs);
     MetaDirtyP = true;
 }
 
 /// Check if the value of given field for a given record is NULL
-bool TStorePbBlob::IsFieldNull(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+bool TStorePbBlobT<TRecPtMap>::IsFieldNull(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->IsFieldNull(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-uchar TStorePbBlob::GetFieldByte(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+uchar TStorePbBlobT<TRecPtMap>::GetFieldByte(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldByte(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-int TStorePbBlob::GetFieldInt(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+int TStorePbBlobT<TRecPtMap>::GetFieldInt(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldInt(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-int16 TStorePbBlob::GetFieldInt16(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+int16 TStorePbBlobT<TRecPtMap>::GetFieldInt16(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldInt16(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-int64 TStorePbBlob::GetFieldInt64(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+int64 TStorePbBlobT<TRecPtMap>::GetFieldInt64(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldInt64(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-void TStorePbBlob::GetFieldIntV(const uint64& RecId, const int& FieldId, TIntV& IntV) const {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetFieldIntV(const uint64& RecId, const int& FieldId, TIntV& IntV) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     GetSerializator(FieldLocV[FieldId])->GetFieldIntV(MIn, FieldId, IntV);
 }
 /// Get field value using field id (default implementation throws exception)
-uint TStorePbBlob::GetFieldUInt(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+uint TStorePbBlobT<TRecPtMap>::GetFieldUInt(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldUInt(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-uint16 TStorePbBlob::GetFieldUInt16(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+uint16 TStorePbBlobT<TRecPtMap>::GetFieldUInt16(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldUInt16(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-uint64 TStorePbBlob::GetFieldUInt64(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::GetFieldUInt64(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldUInt64(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-TStr TStorePbBlob::GetFieldStr(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+TStr TStorePbBlobT<TRecPtMap>::GetFieldStr(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldStr(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-void TStorePbBlob::GetFieldStrV(const uint64& RecId, const int& FieldId, TStrV& StrV) const {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetFieldStrV(const uint64& RecId, const int& FieldId, TStrV& StrV) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     GetSerializator(FieldLocV[FieldId])->GetFieldStrV(MIn, FieldId, StrV);
 }
 /// Get field value using field id (default implementation throws exception)
-bool TStorePbBlob::GetFieldBool(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+bool TStorePbBlobT<TRecPtMap>::GetFieldBool(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldBool(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-double TStorePbBlob::GetFieldFlt(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+double TStorePbBlobT<TRecPtMap>::GetFieldFlt(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldFlt(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-float TStorePbBlob::GetFieldSFlt(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+float TStorePbBlobT<TRecPtMap>::GetFieldSFlt(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldSFlt(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-TFltPr TStorePbBlob::GetFieldFltPr(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+TFltPr TStorePbBlobT<TRecPtMap>::GetFieldFltPr(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldFltPr(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-void TStorePbBlob::GetFieldFltV(const uint64& RecId, const int& FieldId, TFltV& FltV) const {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetFieldFltV(const uint64& RecId, const int& FieldId, TFltV& FltV) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     GetSerializator(FieldLocV[FieldId])->GetFieldFltV(MIn, FieldId, FltV);
 }
 /// Get field value using field id (default implementation throws exception)
-void TStorePbBlob::GetFieldTm(const uint64& RecId, const int& FieldId, TTm& Tm) const {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetFieldTm(const uint64& RecId, const int& FieldId, TTm& Tm) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     GetSerializator(FieldLocV[FieldId])->GetFieldTm(MIn, FieldId, Tm);
 }
 /// Get field value using field id (default implementation throws exception)
-uint64 TStorePbBlob::GetFieldTmMSecs(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::GetFieldTmMSecs(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldTmMSecs(MIn, FieldId);
 }
 /// Get field value using field id (default implementation throws exception)
-void TStorePbBlob::GetFieldNumSpV(const uint64& RecId, const int& FieldId, TIntFltKdV& SpV) const {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetFieldNumSpV(const uint64& RecId, const int& FieldId, TIntFltKdV& SpV) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     GetSerializator(FieldLocV[FieldId])->GetFieldNumSpV(MIn, FieldId, SpV);
 }
 /// Get field value using field id (default implementation throws exception)
-void TStorePbBlob::GetFieldBowSpV(const uint64& RecId, const int& FieldId, PBowSpV& SpV) const {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetFieldBowSpV(const uint64& RecId, const int& FieldId, PBowSpV& SpV) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     GetSerializator(FieldLocV[FieldId])->GetFieldBowSpV(MIn, FieldId, SpV);
 }
 /// Get field value using field id (default implementation throws exception)
-void TStorePbBlob::GetFieldTMem(const uint64& RecId, const int& FieldId, TMem& Mem) const {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetFieldTMem(const uint64& RecId, const int& FieldId, TMem& Mem) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     GetSerializator(FieldLocV[FieldId])->GetFieldTMem(MIn, FieldId, Mem);
 }
 /// Get field value using field id (default implementation throws exception)
-PJsonVal TStorePbBlob::GetFieldJsonVal(const uint64& RecId, const int& FieldId) const {
+template <class TRecPtMap>
+PJsonVal TStorePbBlobT<TRecPtMap>::GetFieldJsonVal(const uint64& RecId, const int& FieldId) const {
     TThinMIn MIn = GetPgBf(RecId, FieldLocV[FieldId] != TStoreLoc::slDisk);
     return GetSerializator(FieldLocV[FieldId])->GetFieldJsonVal(MIn, FieldId);
 }
 
 //////////////////////
 
-TThinMIn TStorePbBlob::GetEditableField(const uint64& RecId, const int& FieldId) {
+template <class TRecPtMap>
+TThinMIn TStorePbBlobT<TRecPtMap>::GetEditableField(const uint64& RecId, const int& FieldId) {
     if (FieldLocV[FieldId] == TStoreLoc::slDisk) {
         TPgBlobPt& PgPt = RecIdBlobPtH.GetDat(RecId);
         DataBlob->SetDirty(PgPt);
@@ -4578,7 +4628,8 @@ TThinMIn TStorePbBlob::GetEditableField(const uint64& RecId, const int& FieldId)
     }
 }
 
-void TStorePbBlob::GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem, THash<TUInt64, TPgBlobPt>* &RecIdBlobPtr, PPgBlob& Blob, TPgBlobPt* &PgPt)
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem, TRecPtMap* &RecIdBlobPtr, PPgBlob& Blob, TPgBlobPt* &PgPt)
 {
     // callers (variable-length field setters) may re-point the returned hash
     // entry to a new blob location, which changes the persisted metadata
@@ -4606,7 +4657,8 @@ void TStorePbBlob::GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem
 }
 
 /// Set the value of given field to NULL
-void TStorePbBlob::SetFieldNull(const uint64& RecId, const int& FieldId) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldNull(const uint64& RecId, const int& FieldId) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4619,7 +4671,8 @@ void TStorePbBlob::SetFieldNull(const uint64& RecId, const int& FieldId) {
     FieldSerializator->SetFieldNull(min.GetBfAddrChar(), min.Len(), FieldId, true);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldByte(const uint64& RecId, const int& FieldId, const uchar& Byte) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldByte(const uint64& RecId, const int& FieldId, const uchar& Byte) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4637,7 +4690,8 @@ void TStorePbBlob::SetFieldByte(const uint64& RecId, const int& FieldId, const u
 
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldInt(const uint64& RecId, const int& FieldId, const int& Int) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldInt(const uint64& RecId, const int& FieldId, const int& Int) {
     // special case if field is primary field
     if (FieldId == PrimaryFieldId) {
         // it is, make sure new value does not exist yet
@@ -4663,7 +4717,8 @@ void TStorePbBlob::SetFieldInt(const uint64& RecId, const int& FieldId, const in
     if (FieldId == PrimaryFieldId) { SetPrimaryFieldInt(RecId, Int); }
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldInt16(const uint64& RecId, const int& FieldId, const int16& Int16) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldInt16(const uint64& RecId, const int& FieldId, const int16& Int16) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4680,7 +4735,8 @@ void TStorePbBlob::SetFieldInt16(const uint64& RecId, const int& FieldId, const 
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldInt64(const uint64& RecId, const int& FieldId, const int64& Int64) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldInt64(const uint64& RecId, const int& FieldId, const int64& Int64) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4697,9 +4753,10 @@ void TStorePbBlob::SetFieldInt64(const uint64& RecId, const int& FieldId, const 
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldIntV(const uint64& RecId, const int& FieldId, const TIntV& IntV) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldIntV(const uint64& RecId, const int& FieldId, const TIntV& IntV) {
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -4716,7 +4773,8 @@ void TStorePbBlob::SetFieldIntV(const uint64& RecId, const int& FieldId, const T
     RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldUInt(const uint64& RecId, const int& FieldId, const uint& UInt) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldUInt(const uint64& RecId, const int& FieldId, const uint& UInt) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4733,7 +4791,8 @@ void TStorePbBlob::SetFieldUInt(const uint64& RecId, const int& FieldId, const u
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldUInt16(const uint64& RecId, const int& FieldId, const uint16& UInt16) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldUInt16(const uint64& RecId, const int& FieldId, const uint16& UInt16) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4750,7 +4809,8 @@ void TStorePbBlob::SetFieldUInt16(const uint64& RecId, const int& FieldId, const
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldUInt64(const uint64& RecId, const int& FieldId, const uint64& UInt64) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldUInt64(const uint64& RecId, const int& FieldId, const uint64& UInt64) {
     // special case if field is primary field
     if (FieldId == PrimaryFieldId) {
         // it is, make sure new value does not exist yet
@@ -4778,7 +4838,8 @@ void TStorePbBlob::SetFieldUInt64(const uint64& RecId, const int& FieldId, const
 }
 
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldStr(const uint64& RecId, const int& FieldId, const TStr& Str) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldStr(const uint64& RecId, const int& FieldId, const TStr& Str) {
     // special case if field is primary field
     if (FieldId == PrimaryFieldId) {
         // it is, make sure new value does not exist yet
@@ -4788,7 +4849,7 @@ void TStorePbBlob::SetFieldStr(const uint64& RecId, const int& FieldId, const TS
         }
     }
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -4809,9 +4870,10 @@ void TStorePbBlob::SetFieldStr(const uint64& RecId, const int& FieldId, const TS
     RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldStrV(const uint64& RecId, const int& FieldId, const TStrV& StrV) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldStrV(const uint64& RecId, const int& FieldId, const TStrV& StrV) {
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -4828,7 +4890,8 @@ void TStorePbBlob::SetFieldStrV(const uint64& RecId, const int& FieldId, const T
     RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldBool(const uint64& RecId, const int& FieldId, const bool& Bool) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldBool(const uint64& RecId, const int& FieldId, const bool& Bool) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4845,7 +4908,8 @@ void TStorePbBlob::SetFieldBool(const uint64& RecId, const int& FieldId, const b
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldFlt(const uint64& RecId, const int& FieldId, const double& Flt) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldFlt(const uint64& RecId, const int& FieldId, const double& Flt) {
     // special case if field is primary field
     if (FieldId == PrimaryFieldId) {
         // it is, make sure new value does not exist yet
@@ -4872,7 +4936,8 @@ void TStorePbBlob::SetFieldFlt(const uint64& RecId, const int& FieldId, const do
     if (FieldId == PrimaryFieldId) { SetPrimaryFieldFlt(RecId, Flt); }
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldSFlt(const uint64& RecId, const int& FieldId, const float& SFlt) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldSFlt(const uint64& RecId, const int& FieldId, const float& SFlt) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4889,7 +4954,8 @@ void TStorePbBlob::SetFieldSFlt(const uint64& RecId, const int& FieldId, const f
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldFltPr(const uint64& RecId, const int& FieldId, const TFltPr& FltPr) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldFltPr(const uint64& RecId, const int& FieldId, const TFltPr& FltPr) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4906,9 +4972,10 @@ void TStorePbBlob::SetFieldFltPr(const uint64& RecId, const int& FieldId, const 
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldFltV(const uint64& RecId, const int& FieldId, const TFltV& FltV) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldFltV(const uint64& RecId, const int& FieldId, const TFltV& FltV) {
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -4925,7 +4992,8 @@ void TStorePbBlob::SetFieldFltV(const uint64& RecId, const int& FieldId, const T
     RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldTm(const uint64& RecId, const int& FieldId, const TTm& Tm) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldTm(const uint64& RecId, const int& FieldId, const TTm& Tm) {
     // get the memory containig the field for the record
     TThinMIn min = GetEditableField(RecId, FieldId);
 
@@ -4942,7 +5010,8 @@ void TStorePbBlob::SetFieldTm(const uint64& RecId, const int& FieldId, const TTm
     RecIndexer.IndexRecField(min.GetMemBase(), RecId, FieldId, *FieldSerializator);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldTmMSecs(const uint64& RecId, const int& FieldId, const uint64& TmMSecs) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldTmMSecs(const uint64& RecId, const int& FieldId, const uint64& TmMSecs) {
     // special case if field is primary field
     if (FieldId == PrimaryFieldId) {
         // it is, make sure new value does not exist yet
@@ -4969,9 +5038,10 @@ void TStorePbBlob::SetFieldTmMSecs(const uint64& RecId, const int& FieldId, cons
     if (FieldId == PrimaryFieldId) { SetPrimaryFieldMSecs(RecId, TmMSecs); }
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldNumSpV(const uint64& RecId, const int& FieldId, const TIntFltKdV& SpV) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldNumSpV(const uint64& RecId, const int& FieldId, const TIntFltKdV& SpV) {
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -4988,9 +5058,10 @@ void TStorePbBlob::SetFieldNumSpV(const uint64& RecId, const int& FieldId, const
     RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldBowSpV(const uint64& RecId, const int& FieldId, const PBowSpV& SpV) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldBowSpV(const uint64& RecId, const int& FieldId, const PBowSpV& SpV) {
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -5007,9 +5078,10 @@ void TStorePbBlob::SetFieldBowSpV(const uint64& RecId, const int& FieldId, const
     RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldTMem(const uint64& RecId, const int& FieldId, const TMem& Mem) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldTMem(const uint64& RecId, const int& FieldId, const TMem& Mem) {
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -5026,9 +5098,10 @@ void TStorePbBlob::SetFieldTMem(const uint64& RecId, const int& FieldId, const T
     RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
-void TStorePbBlob::SetFieldJsonVal(const uint64& RecId, const int& FieldId, const PJsonVal& Json) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetFieldJsonVal(const uint64& RecId, const int& FieldId, const PJsonVal& Json) {
     TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
-    THash<TUInt64, TPgBlobPt>* RecIdBlobPtr = NULL;
+    TRecPtMap* RecIdBlobPtr = NULL;
     PPgBlob Blob; TPgBlobPt* PgPt = NULL;
     TMem mem_in, mem_out;
     GetRecData(RecId, FieldId, mem_in, RecIdBlobPtr, Blob, PgPt);
@@ -5046,12 +5119,14 @@ void TStorePbBlob::SetFieldJsonVal(const uint64& RecId, const int& FieldId, cons
 }
 
 /// Check if given ID is valid
-bool TStorePbBlob::IsRecId(const uint64& RecId) const {
+template <class TRecPtMap>
+bool TStorePbBlobT<TRecPtMap>::IsRecId(const uint64& RecId) const {
     return DataMemP ? RecIdBlobPtHMem.IsKey(RecId) : RecIdBlobPtH.IsKey(RecId);
 }
 
 /// Set primary field map
-void TStorePbBlob::SetPrimaryField(const uint64& RecId) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetPrimaryField(const uint64& RecId) {
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.AddDat(GetFieldStr(RecId, PrimaryFieldId)) = RecId;
     } else if (PrimaryFieldType == oftInt) {
@@ -5068,7 +5143,8 @@ void TStorePbBlob::SetPrimaryField(const uint64& RecId) {
 }
 
 /// Delete primary field map
-void TStorePbBlob::DelPrimaryField(const uint64& RecId) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DelPrimaryField(const uint64& RecId) {
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.DelIfKey(GetFieldStr(RecId, PrimaryFieldId));
     } else if (PrimaryFieldType == oftInt) {
@@ -5085,12 +5161,14 @@ void TStorePbBlob::DelPrimaryField(const uint64& RecId) {
 }
 
 /// Check if record with given name exists
-bool TStorePbBlob::IsRecNm(const TStr& RecNm) const {
+template <class TRecPtMap>
+bool TStorePbBlobT<TRecPtMap>::IsRecNm(const TStr& RecNm) const {
     return RecNmFieldP && PrimaryStrIdH.IsKey(RecNm);
 }
 
 /// Find name of the record with given ID
-TStr TStorePbBlob::GetRecNm(const uint64& RecId) const {
+template <class TRecPtMap>
+TStr TStorePbBlobT<TRecPtMap>::GetRecNm(const uint64& RecId) const {
     // return empty string when no primary key
     if (!HasRecNm()) { return TStr(); }
     // get the name of primary key
@@ -5098,54 +5176,41 @@ TStr TStorePbBlob::GetRecNm(const uint64& RecId) const {
 }
 
 /// Return ID of record with given name
-uint64 TStorePbBlob::GetRecId(const TStr& RecNm) const {
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::GetRecId(const TStr& RecNm) const {
     return (PrimaryStrIdH.IsKey(RecNm) ? PrimaryStrIdH.GetDat(RecNm).Val : TUInt64::Mx);
 }
 
 /// Get number of record
-uint64 TStorePbBlob::GetRecs() const {
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::GetRecs() const {
     return DataMemP ? RecIdBlobPtHMem.Len() : RecIdBlobPtH.Len();
 }
 
 /// Return iterator over store
-PStoreIter TStorePbBlob::GetIter() const {
+template <class TRecPtMap>
+PStoreIter TStorePbBlobT<TRecPtMap>::GetIter() const {
     if (Empty()) { return TStoreIterVec::New(); }
-    return DataMemP ?
-        //TStoreIterVec::New(DataMem.GetFirstValId(), DataMem.GetLastValId(), true) :
-        TStoreIterHashKey<THash<TUInt64, TPgBlobPt>>::New(RecIdBlobPtHMem) :
-        TStoreIterHashKey<THash<TUInt64, TPgBlobPt>>::New(RecIdBlobPtH);
+    return DataMemP ? RecIdBlobPtHMem.GetIter() : RecIdBlobPtH.GetIter();
 }
 
-uint64 TStorePbBlob::GetFirstRecId() const {
-    // recids are monotonically increasing but since we can remove any item in random order it's possible that the first item
-    // in the hash table is deleted and a new key with large id is inserted in it's place. for that reason we have to iterate
-	// over the full list of record ids
-    THash<TUInt64, TPgBlobPt> RecIdH = DataMemP ? RecIdBlobPtHMem : RecIdBlobPtH;
-	TUInt64V RecIdV; RecIdH.GetKeyV(RecIdV);
-    if (RecIdV.Len() > 0) {
-        return RecIdV.GetMnVal();
-    }
-    else {
-        return TUInt64::Mx;
-    }
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::GetFirstRecId() const {
+    // record ids are monotonically increasing, but any record can be deleted, so
+    // the smallest live id has to come from the map itself (TUInt64::Mx when empty)
+    return DataMemP ? RecIdBlobPtHMem.GetFirstRecId() : RecIdBlobPtH.GetFirstRecId();
 }
 
-uint64 TStorePbBlob::GetLastRecId() const {
-    // recids are monotonically increasing but since we can remove any item in random order it's possible that the first item
-    // in the hash table is deleted and a new key with large id is inserted in it's place. for that reason we have to iterate
-    // over the full list of record ids
-    THash<TUInt64, TPgBlobPt> RecIdH = DataMemP ? RecIdBlobPtHMem : RecIdBlobPtH;
-    TUInt64V RecIdV; RecIdH.GetKeyV(RecIdV);
-    if (RecIdV.Len() > 0) {
-        return RecIdV.GetMxVal();
-    }
-    else {
-        return TUInt64::Mx;
-    }
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::GetLastRecId() const {
+    // record ids are monotonically increasing, but any record can be deleted, so
+    // the largest live id has to come from the map itself (TUInt64::Mx when empty)
+    return DataMemP ? RecIdBlobPtHMem.GetLastRecId() : RecIdBlobPtH.GetLastRecId();
 }
 
 /// Helper function for returning JSON definition of store
-PJsonVal TStorePbBlob::GetStoreJson(const TWPt<TBase>& Base) const {
+template <class TRecPtMap>
+PJsonVal TStorePbBlobT<TRecPtMap>::GetStoreJson(const TWPt<TBase>& Base) const {
     PJsonVal Result = TStore::GetStoreJson(Base);
     Result->AddToObj("name", this->GetStoreNm());
     if (WndDesc.WindowType != TStoreWndType::swtNone) {
@@ -5160,19 +5225,22 @@ PJsonVal TStorePbBlob::GetStoreJson(const TWPt<TBase>& Base) const {
     return Result;
 }
 
-int TStorePbBlob::GetCodebookId(const int& FieldId, const TStr& Str) const {
+template <class TRecPtMap>
+int TStorePbBlobT<TRecPtMap>::GetCodebookId(const int& FieldId, const TStr& Str) const {
     const TRecSerializator* FieldSerializator = GetFieldSerializator(FieldId);
     return FieldSerializator->GetCodebookId(FieldId, Str);
 }
 
 /// Save part of the data, given time-window
-int TStorePbBlob::PartialFlush(int WndInMsec) {
+template <class TRecPtMap>
+int TStorePbBlobT<TRecPtMap>::PartialFlush(int WndInMsec) {
     DataBlob->PartialFlush(WndInMsec);
     return 0;
 }
 
 /// Retrieve performance statistics for this store
-PJsonVal TStorePbBlob::GetStats() {
+template <class TRecPtMap>
+PJsonVal TStorePbBlobT<TRecPtMap>::GetStats() {
     PJsonVal res = TJsonVal::NewObj();
     res->AddToObj("name", GetStoreNm());
     res->AddToObj("blob_storage", DataBlob->GetStats());
@@ -5181,14 +5249,16 @@ PJsonVal TStorePbBlob::GetStats() {
 }
 
 /// Run verification for whole store
-void TStorePbBlob::RunVerification() {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::RunVerification() {
     // loop over all pages
     this->DataMem->RunVerification();
     this->DataBlob->RunVerification();
 }
 
 /// Run verification for single record
-void TStorePbBlob::RunVerificationForRecord(const uint64& RecId) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::RunVerificationForRecord(const uint64& RecId) {
     // do nothing for now
     {
         const TPgBlobPt PgPt = RecIdBlobPtH.GetDat(RecId);
@@ -5203,7 +5273,8 @@ void TStorePbBlob::RunVerificationForRecord(const uint64& RecId) {
 }
 
 /// Purge records that fall out of store window (when it has one)
-void TStorePbBlob::GarbageCollect(const int& MxTimeMSecs) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::GarbageCollect(const int& MxTimeMSecs) {
     // if no window, nothing to do here
     if (WndDesc.WindowType == swtNone) { return; }
     // if no records, nothing to do here
@@ -5252,27 +5323,30 @@ void TStorePbBlob::GarbageCollect(const int& MxTimeMSecs) {
         }
     }
     TEnv::Logger->OnStatusFmt("  purging %d records", DelRecIdV.Len());
-    TStorePbBlob::DeleteRecs(DelRecIdV, MxTimeMSecs, false);
+    TStorePbBlobT<TRecPtMap>::DeleteRecs(DelRecIdV, MxTimeMSecs, false);
 }
 
 /// Perform defragmentation
-void TStorePbBlob::Defrag() {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::Defrag() {
     // TODO merge pages
     // TODO remove empty pages
 }
 
 
 /// Deletes all records
-void TStorePbBlob::DeleteAllRecs() {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DeleteAllRecs() {
     // if no records, nothing to do here
     if (Empty()) { return; }
     TEnv::Logger->OnStatusFmt("Deleting all (%d) records in %s", GetRecs(), GetStoreNm().CStr());
 
-    // delete records from index
-    //for (uint64 DelRecId = GetFirstRecId(); DelRecId <= GetLastRecId(); DelRecId++) {
-    THash<TUInt64, TPgBlobPt>* Target = (DataMemP ? &RecIdBlobPtHMem : &RecIdBlobPtH);
-    for (auto it = Target->begin(); it != Target->end(); ++it) {
-        uint64 DelRecId = it.GetKey();
+    // delete records from index; snapshot the record ids first - the loop deletes
+    // from the map it would otherwise be iterating
+    TRecPtMap* Target = (DataMemP ? &RecIdBlobPtHMem : &RecIdBlobPtH);
+    TUInt64V DelRecIdV; Target->GetKeyV(DelRecIdV);
+    for (int DelRecN = 0; DelRecN < DelRecIdV.Len(); DelRecN++) {
+        const uint64 DelRecId = DelRecIdV[DelRecN];
         // executed triggers before deletion
         OnDelete(DelRecId);
         // delete record from name-id map
@@ -5324,7 +5398,8 @@ void TStorePbBlob::DeleteAllRecs() {
 }
 
 
-void TStorePbBlob::DeleteFirstRecs(const int& Recs) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DeleteFirstRecs(const int& Recs) {
     PRecSet RecSet = GetAllRecs();
     int RecCnt = RecSet->GetRecs();
     if (RecCnt <= 0) {
@@ -5341,10 +5416,11 @@ void TStorePbBlob::DeleteFirstRecs(const int& Recs) {
     DeleteRecs(RecIds, -1, false);
 }
 
-void TStorePbBlob::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs, const bool& AssertOK) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs, const bool& AssertOK) {
     if (AssertOK) {
         // assert that DelRecIdV is valid
-        THash<TUInt64, TPgBlobPt>* Ht = (DataMemP ? &RecIdBlobPtHMem : &RecIdBlobPtH);
+        TRecPtMap* Ht = (DataMemP ? &RecIdBlobPtHMem : &RecIdBlobPtH);
         for (int i = 0; i < DelRecIdV.Len(); i++) {
             QmAssertR(Ht->IsKey(DelRecIdV[i]),
                 "TStorePbBlob::DeleteRecs - incorrect record id. Record with specified ID not found.");
@@ -5406,7 +5482,8 @@ void TStorePbBlob::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs,
     }
 }
 
-void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress) {
     if (DelRecIdV.Empty()) { return; }
 
     TUInt64H RecIdSet(DelRecIdV.Len());
@@ -5478,7 +5555,8 @@ void TStorePbBlob::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelPro
 }
 
 /// Initialize field location flags
-void TStorePbBlob::InitDataFlags() {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::InitDataFlags() {
     // go over all the fields and remember if we use in-memory or blob storage
     DataBlobP = false;
     DataMemP = false;
@@ -5491,7 +5569,8 @@ void TStorePbBlob::InitDataFlags() {
 }
 
 /// Initialize from given store schema
-void TStorePbBlob::InitFromSchema(const TStoreSchema& StoreSchema) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::InitFromSchema(const TStoreSchema& StoreSchema) {
     // at start there is no primary key
     RecNmFieldP = false;
     PrimaryFieldId = -1;
@@ -5535,7 +5614,8 @@ void TStorePbBlob::InitFromSchema(const TStoreSchema& StoreSchema) {
 }
 
 /// initialize field storage location map
-void TStorePbBlob::InitFieldLocV() {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::InitFieldLocV() {
     for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
         if (SerializatorCache->IsFieldId(FieldId)) {
             FieldLocV.Add(slDisk);
@@ -5550,12 +5630,13 @@ void TStorePbBlob::InitFieldLocV() {
 
 ///////////////////////////////////////////////////////////
 
-TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const uint& StoreId,
+template <class TRecPtMap>
+TStorePbBlobT<TRecPtMap>::TStorePbBlobT(const TWPt<TBase>& Base, const uint& StoreId,
     const TStr& StoreName, const TStoreSchema& StoreSchema, const TStr& _StoreFNm,
     const int64& _MxCacheSize, const int& BlockSize) :
-    TStore(Base, StoreId, StoreName), StoreFNm(_StoreFNm), FAccess(faCreate) {
+    TStorePbBlobBase(Base, StoreId, StoreName), StoreFNm(_StoreFNm), FAccess(faCreate) {
 
-    SetStoreType("TStorePbBlob");
+    SetStoreType(TRecPtMap::GetStoreTypeNm());
     // freshly created store must write its metadata files at least once
     MetaDirtyP = true;
     DataBlob = new TPgBlob(_StoreFNm + "PgBlob", TFAccess::faCreate, _MxCacheSize);
@@ -5564,13 +5645,14 @@ TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const uint& StoreId,
     InitDataFlags();
 }
 
-TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const TStr& _StoreFNm,
+template <class TRecPtMap>
+TStorePbBlobT<TRecPtMap>::TStorePbBlobT(const TWPt<TBase>& Base, const TStr& _StoreFNm,
     const TFAccess& _FAccess, const int64& _MxCacheSize,
     const bool& _Lazy) :
-    TStore(Base, _StoreFNm + ".BaseStore"),
+    TStorePbBlobBase(Base, _StoreFNm + ".BaseStore"),
     StoreFNm(_StoreFNm), FAccess(_FAccess), PrimaryFieldType(oftUndef) {
 
-    SetStoreType("TStorePbBlob");
+    SetStoreType(TRecPtMap::GetStoreTypeNm());
     DataBlob = new TPgBlob(_StoreFNm + "PgBlob", _FAccess, _MxCacheSize);
     DataMem = new TPgBlob(_StoreFNm + "PgBlobMem", _FAccess, TUInt64::Mx);
     if (!_Lazy) {
@@ -5624,7 +5706,8 @@ TStorePbBlob::TStorePbBlob(const TWPt<TBase>& Base, const TStr& _StoreFNm,
     MetaDirtyP = false;
 }
 
-TStorePbBlob::~TStorePbBlob() {
+template <class TRecPtMap>
+TStorePbBlobT<TRecPtMap>::~TStorePbBlobT() {
     // save if necessary; when the metadata (primary-field maps, record-id
     // blob-pointer maps, record counter) is unchanged, skip the rewrite - it
     // dominated shutdown time on large read-mostly stores
@@ -5666,17 +5749,20 @@ TStorePbBlob::~TStorePbBlob() {
 }
 
 /// Store value into internal storage using TOAST method
-TPgBlobPt TStorePbBlob::ToastVal(const TMemBase& Mem) {
+template <class TRecPtMap>
+TPgBlobPt TStorePbBlobT<TRecPtMap>::ToastVal(const TMemBase& Mem) {
     return ToastValToBlob(ToastWriteRedirectBlob.Empty() ? DataBlob : ToastWriteRedirectBlob, Mem);
 }
 
 /// Retrieve value that is saved using TOAST method from storage
-void TStorePbBlob::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
     UnToastValFromBlob(ToastReadRedirectBlob.Empty() ? DataBlob : ToastReadRedirectBlob, Pt, Mem);
 }
 
 /// Store value into the given page blob using the TOAST method
-TPgBlobPt TStorePbBlob::ToastValToBlob(const PPgBlob& Blob, const TMemBase& Mem) {
+template <class TRecPtMap>
+TPgBlobPt TStorePbBlobT<TRecPtMap>::ToastValToBlob(const PPgBlob& Blob, const TMemBase& Mem) {
     TVec<TPgBlobPt> Pts;
     int BlockLen = Blob->GetMxBlobLen();
     int curr_index = 0;
@@ -5692,7 +5778,8 @@ TPgBlobPt TStorePbBlob::ToastValToBlob(const PPgBlob& Blob, const TMemBase& Mem)
 }
 
 /// Retrieve a TOAST-ed value from the given page blob
-void TStorePbBlob::UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, TMem& Mem) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, TMem& Mem) {
     TVec<TPgBlobPt> Pts;
     TThinMIn MIn = Blob->Get(Pt);
     Pts.Load(MIn);
@@ -5705,7 +5792,8 @@ void TStorePbBlob::UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, 
 
 /// Copy one record's serialized data into NewBlob, relocating its TOAST-ed
 /// values into NewToastBlob. The copied data is read back and verified.
-TPgBlobPt TStorePbBlob::CopyRecToBlob(const uint64& RecId, const bool& UseMem,
+template <class TRecPtMap>
+TPgBlobPt TStorePbBlobT<TRecPtMap>::CopyRecToBlob(const uint64& RecId, const bool& UseMem,
         const PPgBlob& NewToastBlob, const PPgBlob& NewBlob) {
 
     // fetch the serialized record and copy it into a local buffer
@@ -5744,13 +5832,14 @@ TPgBlobPt TStorePbBlob::CopyRecToBlob(const uint64& RecId, const bool& UseMem,
 }
 
 /// Rebuild (defragment) the record blobs into new page blob files
-uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize) {
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize) {
     TEnv::Logger->OnStatus(TStr::Fmt("Defragmenting store '%s'...", GetStoreNm().CStr()));
     // create the destination page blobs
     PPgBlob NewDataBlob = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlob", TFAccess::faCreate, CacheSize));
     PPgBlob NewDataMem = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlobMem", TFAccess::faCreate, CacheSize));
-    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtH;
-    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtHMem;
+    TRecPtMap NewRecIdBlobPtH;
+    TRecPtMap NewRecIdBlobPtHMem;
 
     // --- source-side accounting, so any record-count change after the rebuild
     // can be explained instead of discovered later as a shrunken store ---
@@ -5835,8 +5924,8 @@ uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize)
     };
     TEnv::Logger->OnStatus(TStr::Fmt(
         "[Defrag] store '%s' rebuilt counts: blob-hash %s -> %s, mem-hash %s -> %s",
-        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtH.Len()).CStr(),
-        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtHMem.Len()).CStr()));
+        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtH.Len()).CStr(),
+        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtHMem.Len()).CStr()));
     if (DataBlobP && DataMemP && SrcBlobRecs != SrcMemRecs) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Defrag] WARNING: store '%s' disk and in-memory sections disagree: %s records have only a disk part "
@@ -5892,7 +5981,8 @@ uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize)
 }
 
 /// Collect the union of record ids of the disk and in-memory sections in ascending order
-void TStorePbBlob::CollectRebuildRecIdV(TUInt64V& RecIdV, int& BlobOnlyRecs, int& MemOnlyRecs,
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::CollectRebuildRecIdV(TUInt64V& RecIdV, int& BlobOnlyRecs, int& MemOnlyRecs,
         TUInt64V& BlobOnlySampleV, TUInt64V& MemOnlySampleV, const int& MxSamples) const {
     RecIdV.Clr();
     BlobOnlyRecs = 0; MemOnlyRecs = 0;
@@ -5925,7 +6015,8 @@ void TStorePbBlob::CollectRebuildRecIdV(TUInt64V& RecIdV, int& BlobOnlyRecs, int
 }
 
 /// Verify one section of a record rebuilt by MigrateSchemaTo
-void TStorePbBlob::VerifyMigratedRec(const uint64& RecId, const TRecSerializator& NewSer,
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRecSerializator& NewSer,
         const TMemBase& NewRec, const TMemBase& OldMemRec, const TMemBase& OldCacheRec,
         const PPgBlob& NewToastBlob) {
 
@@ -6025,11 +6116,28 @@ void TStorePbBlob::VerifyMigratedRec(const uint64& RecId, const TRecSerializator
     }
 }
 
-/// Rebuild the record blobs with the field placement of NewSchema
-uint64 TStorePbBlob::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
+/// Rebuild the record blobs with the field placement of NewSchema; the rebuilt
+/// record maps use the representation the schema's "recIdMap" option selects
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
+        const uint64& CacheSize) {
+    return NewSchema.DenseRecIdMapP ?
+        MigrateSchemaToT<TPbBlobRecMapDense>(DestStoreFNm, NewSchema, CacheSize) :
+        MigrateSchemaToT<TPbBlobRecMapHash>(DestStoreFNm, NewSchema, CacheSize);
+}
+
+/// MigrateSchemaTo body, parameterized on the rebuilt record-map representation
+template <class TRecPtMap>
+template <class TDstMap>
+uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
         const uint64& CacheSize) {
 
     TEnv::Logger->OnStatus(TStr::Fmt("Migrating store '%s' to the new schema field placement...", GetStoreNm().CStr()));
+    if (GetStoreType() != TDstMap::GetStoreTypeNm()) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Migrate] store '%s' also converts its record-map type: %s -> %s (per the schema's recIdMap option)",
+            GetStoreNm().CStr(), GetStoreType().CStr(), TDstMap::GetStoreTypeNm()));
+    }
 
     // validate that the new schema describes exactly the fields of this store -
     // the migration relocates values between the two sections, it cannot add,
@@ -6059,8 +6167,8 @@ uint64 TStorePbBlob::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchem
     // create the destination page blobs
     PPgBlob NewDataBlob = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlob", TFAccess::faCreate, CacheSize));
     PPgBlob NewDataMem = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlobMem", TFAccess::faCreate, CacheSize));
-    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtH;
-    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtHMem;
+    TDstMap NewRecIdBlobPtH;
+    TDstMap NewRecIdBlobPtHMem;
 
     // source-side accounting (see DefragTo for the reasoning)
     const int SrcBlobRecs = RecIdBlobPtH.Len();
@@ -6150,8 +6258,8 @@ uint64 TStorePbBlob::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchem
     };
     TEnv::Logger->OnStatus(TStr::Fmt(
         "[Migrate] store '%s' rebuilt counts: blob-hash %s -> %s, mem-hash %s -> %s",
-        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtH.Len()).CStr(),
-        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtHMem.Len()).CStr()));
+        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtH.Len()).CStr(),
+        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtHMem.Len()).CStr()));
     if (DroppedRecs > 0) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Migrate] WARNING: store '%s' dropped %s records that have data in only one of the two sections "
@@ -6194,8 +6302,72 @@ uint64 TStorePbBlob::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchem
     return WrittenRecs;
 }
 
+/// Build the record maps in the TDstMap representation and write the state file
+template <class TRecPtMap>
+template <class TDstMap>
+uint64 TStorePbBlobT<TRecPtMap>::ConvertMapsTo(const TStr& DestStoreFNm) const {
+    // convert both maps; fill in ascending record id order (irrelevant for the
+    // hash, keeps the dense vector's gap filling to a single pass)
+    TDstMap NewBlobMap, NewMemMap;
+    TUInt64V RecIdV;
+    RecIdBlobPtH.GetKeyV(RecIdV); RecIdV.Sort();
+    for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
+        NewBlobMap.AddDat(RecIdV[RecN], RecIdBlobPtH.GetDat(RecIdV[RecN]));
+    }
+    RecIdBlobPtHMem.GetKeyV(RecIdV); RecIdV.Sort();
+    for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
+        NewMemMap.AddDat(RecIdV[RecN], RecIdBlobPtHMem.GetDat(RecIdV[RecN]));
+    }
+    EAssert(NewBlobMap.Len() == RecIdBlobPtH.Len() && NewMemMap.Len() == RecIdBlobPtHMem.Len());
+
+    // write the destination store state file - the format and content must match
+    // what the destructor writes, with the maps in the destination representation.
+    // The record blobs are untouched: both representations address the same
+    // PgBlob/PgBlobMem files
+    TFOut FOut(DestStoreFNm + "PgBlobStore");
+    RecNmFieldP.Save(FOut);
+    PrimaryFieldId.Save(FOut);
+    if (PrimaryFieldType == oftInt) {
+        PrimaryIntIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftUInt64) {
+        PrimaryUInt64IdH.Save(FOut);
+    } else if (PrimaryFieldType == oftFlt) {
+        PrimaryFltIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftTm) {
+        PrimaryTmMSecsIdH.Save(FOut);
+    } else {
+        PrimaryStrIdH.Save(FOut);
+    }
+    WndDesc.Save(FOut);
+    SerializatorCache->Save(FOut);
+    SerializatorMem->Save(FOut);
+    NewBlobMap.Save(FOut);
+    NewMemMap.Save(FOut);
+    RecIdCounter.Save(FOut);
+
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[ConvertStoreType] store '%s': %s -> %s state file written (blob-map %s records, mem-map %s records)",
+        GetStoreNm().CStr(), TRecPtMap::GetStoreTypeNm(), TDstMap::GetStoreTypeNm(),
+        TStrUtil::GetStr((int)NewBlobMap.Len()).CStr(), TStrUtil::GetStr((int)NewMemMap.Len()).CStr()));
+    return GetRecs();
+}
+
+/// Write a state file with the record maps converted to the target representation
+template <class TRecPtMap>
+uint64 TStorePbBlobT<TRecPtMap>::ConvertStoreTypeTo(const TStr& DestStoreFNm, const TStr& TargetStoreTypeNm) {
+    QmAssertR(TargetStoreTypeNm != GetStoreType(), "[ConvertStoreType] store " + GetStoreNm() +
+        " is already of type " + TargetStoreTypeNm);
+    if (TargetStoreTypeNm == TPbBlobRecMapHash::GetStoreTypeNm()) {
+        return ConvertMapsTo<TPbBlobRecMapHash>(DestStoreFNm);
+    } else if (TargetStoreTypeNm == TPbBlobRecMapDense::GetStoreTypeNm()) {
+        return ConvertMapsTo<TPbBlobRecMapDense>(DestStoreFNm);
+    }
+    throw TQmExcept::New("[ConvertStoreType] unknown target store type " + TargetStoreTypeNm);
+}
+
 /// Delete TOAST-ed value from storage
-void TStorePbBlob::DelToastVal(const TPgBlobPt& Pt) {
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::DelToastVal(const TPgBlobPt& Pt) {
     TVec<TPgBlobPt> Pts;
     TThinMIn MIn = DataBlob->Get(Pt);
     Pts.Load(MIn);
@@ -6422,8 +6594,13 @@ TVec<TWPt<TStore> > CreateStoresFromSchema(const TWPt<TBase>& Base, const PJsonV
         // create new store from the schema
         PStore Store;
         if (UsePaged && StoreSchema.StoreType == "paged") {
-            Store = new TStorePbBlob(Base, StoreId, StoreNm,
-                StoreSchema, Base->GetFPath() + StoreNm, StoreCacheSize, StoreSchema.BlockSizeMem);
+            if (StoreSchema.DenseRecIdMapP) {
+                Store = new TStorePbBlobDense(Base, StoreId, StoreNm,
+                    StoreSchema, Base->GetFPath() + StoreNm, StoreCacheSize, StoreSchema.BlockSizeMem);
+            } else {
+                Store = new TStorePbBlob(Base, StoreId, StoreNm,
+                    StoreSchema, Base->GetFPath() + StoreNm, StoreCacheSize, StoreSchema.BlockSizeMem);
+            }
         } else {
             Store = new TStoreImpl(Base, StoreId, StoreNm,
                 StoreSchema, Base->GetFPath() + StoreNm, StoreCacheSize,
@@ -6585,6 +6762,8 @@ TWPt<TBase> LoadBase(const TStr& FPath, const TFAccess& FAccess, const uint64& I
         PStore Store;
         if (StoreType == "TStorePbBlob") {
             Store = new TStorePbBlob(Base, FPath + StoreNm, FAccess, StoreCacheSize);
+        } else if (StoreType == "TStorePbBlobDense") {
+            Store = new TStorePbBlobDense(Base, FPath + StoreNm, FAccess, StoreCacheSize);
         } else {
             Store = new TStoreImpl(Base, FPath + StoreNm, StoreCacheSize);
         }
@@ -6618,6 +6797,13 @@ void SaveBase(const TWPt<TBase>& Base) {
         RootVal->SaveStr().SaveTxt(Base->GetFPath() + "StoreList.json");
     }
 }
+
+// instantiate the two paged-store variants: the hash-backed record maps
+// ("TStorePbBlob", the original representation) and the direct-indexed dense
+// maps ("TStorePbBlobDense"). The store bodies are identical by construction -
+// only the TRecPtMap policy differs
+template class TStorePbBlobT<TPbBlobRecMapHash>;
+template class TStorePbBlobT<TPbBlobRecMapDense>;
 
 } // TStorage
 
