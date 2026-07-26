@@ -1658,6 +1658,99 @@ void TRecSerializator::SerializeUpdate(const PJsonVal& RecVal, const TMemBase& I
     Merge(FixedMem, VarSOut, OutRecMem);
 }
 
+void TRecSerializator::SerializeCopyRec(const TWPt<TStore>& Store,
+        const TRecSerializator& SrcSerMem, const TRecSerializator& SrcSerCache,
+        const TMemBase& SrcMemRec, const TMemBase& SrcCacheRec, TMem& RecMem) {
+
+    // Reserve fixed space - null map, fixed fields and var-field indexes
+    TMem FixedMem(VarContentPartOffset);
+    // Overwrite fixed part with zeros to start with
+    FixedMem.GenZeros(VarContentPartOffset);
+    // Prepare output stream for storing variable width values
+    TMOut VarSOut;
+
+    // iterate over fields and copy them from the section that currently holds them
+    for (int FieldSerialDescId = 0; FieldSerialDescId < FieldSerialDescV.Len(); FieldSerialDescId++) {
+        const TFieldSerialDesc& FieldSerialDesc = FieldSerialDescV[FieldSerialDescId];
+        const int FieldId = FieldSerialDesc.FieldId;
+        const TFieldDesc& FieldDesc = Store->GetFieldDesc(FieldId);
+        // locate the serializator (and matching record section) the field was written with
+        const bool FromMemP = SrcSerMem.IsFieldId(FieldId);
+        QmAssertR(FromMemP || SrcSerCache.IsFieldId(FieldId), "[SerializeCopyRec] field " +
+            FieldDesc.GetFieldNm() + " of store " + Store->GetStoreNm() + " is missing from both source serializators");
+        const TRecSerializator& SrcSer = FromMemP ? SrcSerMem : SrcSerCache;
+        const TMemBase& SrcRec = FromMemP ? SrcMemRec : SrcCacheRec;
+
+        // copy the null flag
+        if (SrcSer.IsFieldNull(SrcRec, FieldId)) {
+            QmAssertR(FieldDesc.IsNullable(), "[SerializeCopyRec] non-nullable field " +
+                FieldDesc.GetFieldNm() + " of store " + Store->GetStoreNm() + " is null in the source record");
+            SetFieldNull(FixedMem, FieldSerialDesc, true);
+            // update variable-length index to point to the end of stream
+            if (!FieldSerialDesc.FixedPartP) {
+                SetLocationVar(FixedMem, FieldSerialDesc, VarSOut.Len());
+            }
+            continue;
+        }
+        // copy the value through the type-appropriate getter/setter pair; the
+        // getters transparently un-TOAST source values, the setters re-TOAST
+        // values that do not fit inline
+        if (FieldSerialDesc.FixedPartP) {
+            switch (FieldDesc.GetFieldType()) {
+                case oftByte: SetFieldByte(FixedMem, FieldSerialDesc, SrcSer.GetFieldByte(SrcRec, FieldId)); break;
+                case oftInt: SetFieldInt(FixedMem, FieldSerialDesc, SrcSer.GetFieldInt(SrcRec, FieldId)); break;
+                case oftInt16: SetFieldInt16(FixedMem, FieldSerialDesc, SrcSer.GetFieldInt16(SrcRec, FieldId)); break;
+                case oftInt64: SetFieldInt64(FixedMem, FieldSerialDesc, SrcSer.GetFieldInt64(SrcRec, FieldId)); break;
+                case oftUInt: SetFieldUInt(FixedMem, FieldSerialDesc, SrcSer.GetFieldUInt(SrcRec, FieldId)); break;
+                case oftUInt16: SetFieldUInt16(FixedMem, FieldSerialDesc, SrcSer.GetFieldUInt16(SrcRec, FieldId)); break;
+                case oftUInt64: SetFieldUInt64(FixedMem, FieldSerialDesc, SrcSer.GetFieldUInt64(SrcRec, FieldId)); break;
+                case oftStr: SetFieldStr(FixedMem, FieldSerialDesc, SrcSer.GetFieldStr(SrcRec, FieldId)); break;
+                case oftBool: SetFieldBool(FixedMem, FieldSerialDesc, SrcSer.GetFieldBool(SrcRec, FieldId)); break;
+                case oftFlt: SetFieldFlt(FixedMem, FieldSerialDesc, SrcSer.GetFieldFlt(SrcRec, FieldId)); break;
+                case oftSFlt: SetFieldSFlt(FixedMem, FieldSerialDesc, SrcSer.GetFieldSFlt(SrcRec, FieldId)); break;
+                case oftFltPr: SetFieldFltPr(FixedMem, FieldSerialDesc, SrcSer.GetFieldFltPr(SrcRec, FieldId)); break;
+                case oftTm: SetFieldTmMSecs(FixedMem, FieldSerialDesc, SrcSer.GetFieldTmMSecs(SrcRec, FieldId)); break;
+                default: throw TQmExcept::New("[SerializeCopyRec] unsupported fixed-part field type " +
+                    FieldDesc.GetFieldTypeStr() + " for field " + FieldDesc.GetFieldNm());
+            }
+        } else {
+            switch (FieldDesc.GetFieldType()) {
+                case oftIntV: {
+                    TIntV IntV; SrcSer.GetFieldIntV(SrcRec, FieldId, IntV);
+                    SetFieldIntV(FixedMem, VarSOut, FieldSerialDesc, IntV); break;
+                }
+                case oftStr: SetFieldStr(FixedMem, VarSOut, FieldSerialDesc, SrcSer.GetFieldStr(SrcRec, FieldId)); break;
+                case oftStrV: {
+                    TStrV StrV; SrcSer.GetFieldStrV(SrcRec, FieldId, StrV);
+                    SetFieldStrV(FixedMem, VarSOut, FieldSerialDesc, StrV); break;
+                }
+                case oftFltV: {
+                    TFltV FltV; SrcSer.GetFieldFltV(SrcRec, FieldId, FltV);
+                    SetFieldFltV(FixedMem, VarSOut, FieldSerialDesc, FltV); break;
+                }
+                case oftNumSpV: {
+                    TIntFltKdV SpV; SrcSer.GetFieldNumSpV(SrcRec, FieldId, SpV);
+                    SetFieldNumSpV(FixedMem, VarSOut, FieldSerialDesc, SpV); break;
+                }
+                case oftBowSpV: {
+                    PBowSpV SpV; SrcSer.GetFieldBowSpV(SrcRec, FieldId, SpV);
+                    SetFieldBowSpV(FixedMem, VarSOut, FieldSerialDesc, SpV); break;
+                }
+                case oftTMem: {
+                    TMem Mem; SrcSer.GetFieldTMem(SrcRec, FieldId, Mem);
+                    SetFieldTMem(FixedMem, VarSOut, FieldSerialDesc, Mem); break;
+                }
+                case oftJson: SetFieldJsonVal(FixedMem, VarSOut, FieldSerialDesc, SrcSer.GetFieldJsonVal(SrcRec, FieldId)); break;
+                default: throw TQmExcept::New("[SerializeCopyRec] unsupported variable-part field type " +
+                    FieldDesc.GetFieldTypeStr() + " for field " + FieldDesc.GetFieldNm());
+            }
+        }
+    }
+
+    // merge fixed and variable parts for final result
+    Merge(FixedMem, VarSOut, RecMem);
+}
+
 void TRecSerializator::DeleteToast(const TMemBase& RecMem) {
     if (UseToast) {
         TToastWatcher Watcher(this); // to delay deletion of old TOASTS
@@ -5574,12 +5667,12 @@ TStorePbBlob::~TStorePbBlob() {
 
 /// Store value into internal storage using TOAST method
 TPgBlobPt TStorePbBlob::ToastVal(const TMemBase& Mem) {
-    return ToastValToBlob(DataBlob, Mem);
+    return ToastValToBlob(ToastWriteRedirectBlob.Empty() ? DataBlob : ToastWriteRedirectBlob, Mem);
 }
 
 /// Retrieve value that is saved using TOAST method from storage
 void TStorePbBlob::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
-    UnToastValFromBlob(DataBlob, Pt, Mem);
+    UnToastValFromBlob(ToastReadRedirectBlob.Empty() ? DataBlob : ToastReadRedirectBlob, Pt, Mem);
 }
 
 /// Store value into the given page blob using the TOAST method
@@ -5689,31 +5782,7 @@ uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize)
     int BlobOnlyRecs = 0, MemOnlyRecs = 0;
     TUInt64V BlobOnlySampleV, MemOnlySampleV;
     const int MxSamples = 10;
-    if (DataBlobP && DataMemP) {
-        TUInt64V BlobIdV; RecIdBlobPtH.GetKeyV(BlobIdV); BlobIdV.Sort();
-        TUInt64V MemIdV; RecIdBlobPtHMem.GetKeyV(MemIdV); MemIdV.Sort();
-        RecIdV.Gen(TInt::GetMx(BlobIdV.Len(), MemIdV.Len()), 0);
-        int BlobN = 0, MemN = 0;
-        while (BlobN < BlobIdV.Len() || MemN < MemIdV.Len()) {
-            const bool TakeBlob = MemN >= MemIdV.Len() || (BlobN < BlobIdV.Len() && BlobIdV[BlobN] <= MemIdV[MemN]);
-            const bool TakeMem = BlobN >= BlobIdV.Len() || (MemN < MemIdV.Len() && MemIdV[MemN] <= BlobIdV[BlobN]);
-            const uint64 RecId = TakeBlob ? BlobIdV[BlobN] : MemIdV[MemN];
-            if (TakeBlob && !TakeMem) {
-                BlobOnlyRecs++;
-                if (BlobOnlySampleV.Len() < MxSamples) { BlobOnlySampleV.Add(RecId); }
-            } else if (TakeMem && !TakeBlob) {
-                MemOnlyRecs++;
-                if (MemOnlySampleV.Len() < MxSamples) { MemOnlySampleV.Add(RecId); }
-            }
-            RecIdV.Add(RecId);
-            if (TakeBlob) { BlobN++; }
-            if (TakeMem) { MemN++; }
-        }
-    } else if (DataMemP) {
-        RecIdBlobPtHMem.GetKeyV(RecIdV); RecIdV.Sort();
-    } else {
-        RecIdBlobPtH.GetKeyV(RecIdV); RecIdV.Sort();
-    }
+    CollectRebuildRecIdV(RecIdV, BlobOnlyRecs, MemOnlyRecs, BlobOnlySampleV, MemOnlySampleV, MxSamples);
 
     for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
         const uint64 RecId = RecIdV[RecN];
@@ -5820,6 +5889,309 @@ uint64 TStorePbBlob::DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize)
     TEnv::Logger->OnStatus(TStr::Fmt("Defragmenting store '%s' done: %d records", GetStoreNm().CStr(), RecIdV.Len()));
     // releasing the new page blobs flushes them to disk
     return (uint64) RecIdV.Len();
+}
+
+/// Collect the union of record ids of the disk and in-memory sections in ascending order
+void TStorePbBlob::CollectRebuildRecIdV(TUInt64V& RecIdV, int& BlobOnlyRecs, int& MemOnlyRecs,
+        TUInt64V& BlobOnlySampleV, TUInt64V& MemOnlySampleV, const int& MxSamples) const {
+    RecIdV.Clr();
+    BlobOnlyRecs = 0; MemOnlyRecs = 0;
+    BlobOnlySampleV.Clr(); MemOnlySampleV.Clr();
+    if (DataBlobP && DataMemP) {
+        TUInt64V BlobIdV; RecIdBlobPtH.GetKeyV(BlobIdV); BlobIdV.Sort();
+        TUInt64V MemIdV; RecIdBlobPtHMem.GetKeyV(MemIdV); MemIdV.Sort();
+        RecIdV.Gen(TInt::GetMx(BlobIdV.Len(), MemIdV.Len()), 0);
+        int BlobN = 0, MemN = 0;
+        while (BlobN < BlobIdV.Len() || MemN < MemIdV.Len()) {
+            const bool TakeBlob = MemN >= MemIdV.Len() || (BlobN < BlobIdV.Len() && BlobIdV[BlobN] <= MemIdV[MemN]);
+            const bool TakeMem = BlobN >= BlobIdV.Len() || (MemN < MemIdV.Len() && MemIdV[MemN] <= BlobIdV[BlobN]);
+            const uint64 RecId = TakeBlob ? BlobIdV[BlobN] : MemIdV[MemN];
+            if (TakeBlob && !TakeMem) {
+                BlobOnlyRecs++;
+                if (BlobOnlySampleV.Len() < MxSamples) { BlobOnlySampleV.Add(RecId); }
+            } else if (TakeMem && !TakeBlob) {
+                MemOnlyRecs++;
+                if (MemOnlySampleV.Len() < MxSamples) { MemOnlySampleV.Add(RecId); }
+            }
+            RecIdV.Add(RecId);
+            if (TakeBlob) { BlobN++; }
+            if (TakeMem) { MemN++; }
+        }
+    } else if (DataMemP) {
+        RecIdBlobPtHMem.GetKeyV(RecIdV); RecIdV.Sort();
+    } else {
+        RecIdBlobPtH.GetKeyV(RecIdV); RecIdV.Sort();
+    }
+}
+
+/// Verify one section of a record rebuilt by MigrateSchemaTo
+void TStorePbBlob::VerifyMigratedRec(const uint64& RecId, const TRecSerializator& NewSer,
+        const TMemBase& NewRec, const TMemBase& OldMemRec, const TMemBase& OldCacheRec,
+        const PPgBlob& NewToastBlob) {
+
+    for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
+        if (!NewSer.IsFieldId(FieldId)) { continue; }
+        const TFieldDesc& FieldDesc = GetFieldDesc(FieldId);
+        // the source serializator/section the field was written with (old layout)
+        const TRecSerializator* OldSer = GetFieldSerializator(FieldId);
+        const TMemBase& OldRec = (OldSer == SerializatorMem) ? OldMemRec : OldCacheRec;
+
+        // null flags must agree
+        const bool OldNullP = OldSer->IsFieldNull(OldRec, FieldId);
+        const bool NewNullP = NewSer.IsFieldNull(NewRec, FieldId);
+        EAssertR(OldNullP == NewNullP, TStr::Fmt(
+            "[MigrateSchemaTo] null-flag mismatch for field %s of record %s in store %s",
+            FieldDesc.GetFieldNm().CStr(), TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr()));
+        if (OldNullP) { continue; }
+
+        // read the old value from the live blobs and the new value from the rebuilt
+        // blob (TOAST-ed values of the rebuilt record live in NewToastBlob) and
+        // compare them. EQ evaluates OldExpr with TOAST reads from the live blob
+        // and NewExpr with TOAST reads redirected to the rebuilt blob.
+        #define QM_MIGRATE_FIELD_EQ(OldExpr, NewExpr, EqExpr) { \
+            ToastReadRedirectBlob = NULL; \
+            const auto OldVal = (OldExpr); (void) OldVal; \
+            ToastReadRedirectBlob = NewToastBlob; \
+            const auto NewVal = (NewExpr); (void) NewVal; \
+            ToastReadRedirectBlob = NULL; \
+            EAssertR((EqExpr), TStr::Fmt( \
+                "[MigrateSchemaTo] value mismatch for field %s of record %s in store %s", \
+                FieldDesc.GetFieldNm().CStr(), TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr())); }
+        #define QM_MIGRATE_FIELD_EQ_SIMPLE(Getter) \
+            QM_MIGRATE_FIELD_EQ(OldSer->Getter(OldRec, FieldId), NewSer.Getter(NewRec, FieldId), OldVal == NewVal)
+
+        switch (FieldDesc.GetFieldType()) {
+            case oftByte: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldByte); break;
+            case oftInt: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldInt); break;
+            case oftInt16: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldInt16); break;
+            case oftInt64: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldInt64); break;
+            case oftUInt: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldUInt); break;
+            case oftUInt16: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldUInt16); break;
+            case oftUInt64: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldUInt64); break;
+            case oftStr: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldStr); break;
+            case oftBool: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldBool); break;
+            case oftFlt: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldFlt); break;
+            case oftSFlt: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldSFlt); break;
+            case oftFltPr: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldFltPr); break;
+            case oftTm: QM_MIGRATE_FIELD_EQ_SIMPLE(GetFieldTmMSecs); break;
+            case oftIntV: {
+                TIntV OldV; TIntV NewV;
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldIntV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldIntV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                break;
+            }
+            case oftStrV: {
+                TStrV OldV; TStrV NewV;
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldStrV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldStrV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                break;
+            }
+            case oftFltV: {
+                TFltV OldV; TFltV NewV;
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldFltV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldFltV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                break;
+            }
+            case oftNumSpV: {
+                TIntFltKdV OldV; TIntFltKdV NewV;
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldNumSpV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldNumSpV(NewRec, FieldId, NewV), 0), OldV == NewV);
+                break;
+            }
+            case oftBowSpV: {
+                // compare the serialized form - PBowSpV has no value comparison
+                PBowSpV OldV; PBowSpV NewV;
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldBowSpV(OldRec, FieldId, OldV), 0), (NewSer.GetFieldBowSpV(NewRec, FieldId, NewV), 0), 0 == 0);
+                TMOut OldMOut; OldV->Save(OldMOut);
+                TMOut NewMOut; NewV->Save(NewMOut);
+                EAssertR(OldMOut.Len() == NewMOut.Len() && (OldMOut.Len() == 0 ||
+                    memcmp(OldMOut.GetBfAddr(), NewMOut.GetBfAddr(), OldMOut.Len()) == 0), TStr::Fmt(
+                    "[MigrateSchemaTo] value mismatch for field %s of record %s in store %s",
+                    FieldDesc.GetFieldNm().CStr(), TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr()));
+                break;
+            }
+            case oftTMem: {
+                TMem OldV; TMem NewV;
+                QM_MIGRATE_FIELD_EQ((OldSer->GetFieldTMem(OldRec, FieldId, OldV), 0), (NewSer.GetFieldTMem(NewRec, FieldId, NewV), 0),
+                    OldV.Len() == NewV.Len() && (OldV.Len() == 0 || memcmp(OldV.GetBf(), NewV.GetBf(), OldV.Len()) == 0));
+                break;
+            }
+            case oftJson: {
+                QM_MIGRATE_FIELD_EQ(TJsonVal::GetStrFromVal(OldSer->GetFieldJsonVal(OldRec, FieldId)),
+                    TJsonVal::GetStrFromVal(NewSer.GetFieldJsonVal(NewRec, FieldId)), OldVal == NewVal);
+                break;
+            }
+            default: throw TQmExcept::New("[MigrateSchemaTo] unsupported field type " +
+                FieldDesc.GetFieldTypeStr() + " for field " + FieldDesc.GetFieldNm());
+        }
+        #undef QM_MIGRATE_FIELD_EQ_SIMPLE
+        #undef QM_MIGRATE_FIELD_EQ
+    }
+}
+
+/// Rebuild the record blobs with the field placement of NewSchema
+uint64 TStorePbBlob::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
+        const uint64& CacheSize) {
+
+    TEnv::Logger->OnStatus(TStr::Fmt("Migrating store '%s' to the new schema field placement...", GetStoreNm().CStr()));
+
+    // validate that the new schema describes exactly the fields of this store -
+    // the migration relocates values between the two sections, it cannot add,
+    // drop or retype fields (that would change field ids and the .BaseStore file)
+    QmAssertR(NewSchema.StoreName == GetStoreNm(), "[MigrateSchemaTo] the schema is for store " +
+        NewSchema.StoreName + ", not for store " + GetStoreNm());
+    QmAssertR(NewSchema.FieldH.Len() == GetFields(), TStr::Fmt(
+        "[MigrateSchemaTo] store %s has %d fields but the new schema defines %d - fields cannot be added or dropped by the migration",
+        GetStoreNm().CStr(), GetFields(), NewSchema.FieldH.Len()));
+    for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
+        const TFieldDesc& FieldDesc = GetFieldDesc(FieldId);
+        const TStr& FieldNm = FieldDesc.GetFieldNm();
+        QmAssertR(NewSchema.FieldH.IsKey(FieldNm) && NewSchema.FieldExH.IsKey(FieldNm),
+            "[MigrateSchemaTo] field " + FieldNm + " of store " + GetStoreNm() + " is missing from the new schema");
+        QmAssertR(NewSchema.FieldH.GetDat(FieldNm).GetFieldType() == FieldDesc.GetFieldType(),
+            "[MigrateSchemaTo] field " + FieldNm + " of store " + GetStoreNm() + " changes type in the new schema");
+    }
+
+    // build the target serializators; the constructor takes each field's section
+    // (memory vs cache) from the new schema while the field ids stay those of
+    // this store, so the index, joins and the .BaseStore file remain valid
+    TRecSerializator NewSerCache(this, this, NewSchema, slDisk);
+    TRecSerializator NewSerMem(this, this, NewSchema, slMemory);
+    const bool NewCacheUsedP = !NewSerCache.IsEmpty();
+    const bool NewMemUsedP = !NewSerMem.IsEmpty();
+
+    // create the destination page blobs
+    PPgBlob NewDataBlob = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlob", TFAccess::faCreate, CacheSize));
+    PPgBlob NewDataMem = PPgBlob(new TPgBlob(DestStoreFNm + "PgBlobMem", TFAccess::faCreate, CacheSize));
+    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtH;
+    THash<TUInt64, TPgBlobPt> NewRecIdBlobPtHMem;
+
+    // source-side accounting (see DefragTo for the reasoning)
+    const int SrcBlobRecs = RecIdBlobPtH.Len();
+    const int SrcMemRecs = RecIdBlobPtHMem.Len();
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Migrate] store '%s' source counts: GetRecs=%s, blob-hash=%s, mem-hash=%s, RecIdCounter=%s",
+        GetStoreNm().CStr(), TStrUtil::GetStr(GetRecs()).CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(),
+        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr(RecIdCounter).CStr()));
+
+    // collect the union of record ids of both sections in ascending id order
+    TUInt64V RecIdV;
+    int BlobOnlyRecs = 0, MemOnlyRecs = 0;
+    TUInt64V BlobOnlySampleV, MemOnlySampleV;
+    const int MxSamples = 10;
+    CollectRebuildRecIdV(RecIdV, BlobOnlyRecs, MemOnlyRecs, BlobOnlySampleV, MemOnlySampleV, MxSamples);
+
+    // re-serialize the records; TOAST-ed values written along the way must go
+    // into the rebuilt disk blob while reads keep coming from the live blobs
+    ToastWriteRedirectBlob = NewDataBlob;
+    uint64 WrittenRecs = 0; int DroppedRecs = 0;
+    try {
+        for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
+            const uint64 RecId = RecIdV[RecN];
+            const bool InBlobP = DataBlobP && RecIdBlobPtH.IsKey(RecId);
+            const bool InMemP = DataMemP && RecIdBlobPtHMem.IsKey(RecId);
+            // a record missing one of its sections cannot be re-serialized - the
+            // values of the missing section's fields are gone; drop it (reported below)
+            if ((DataBlobP && !InBlobP) || (DataMemP && !InMemP)) { DroppedRecs++; continue; }
+
+            // copy both sections into local buffers - the getters below load other
+            // pages (TOAST-ed values), which may evict the record's own page
+            TMem OldCacheMem;
+            if (InBlobP) {
+                TMemBase MemBase = DataBlob->GetMemBase(RecIdBlobPtH.GetDat(RecId));
+                OldCacheMem.AddBf(MemBase.GetBf(), MemBase.Len());
+            }
+            TMem OldMemMem;
+            if (InMemP) {
+                TMemBase MemBase = DataMem->GetMemBase(RecIdBlobPtHMem.GetDat(RecId));
+                OldMemMem.AddBf(MemBase.GetBf(), MemBase.Len());
+            }
+
+            // rebuild and verify the disk section
+            if (NewCacheUsedP) {
+                TMem NewRecMem;
+                NewSerCache.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache, OldMemMem, OldCacheMem, NewRecMem);
+                const TPgBlobPt NewPt = NewDataBlob->Put(NewRecMem.GetBf(), NewRecMem.Len());
+                NewRecIdBlobPtH.AddDat(RecId, NewPt);
+                // copy the stored record out of the page cache before verifying -
+                // the verification reads TOAST-ed values, which may evict its page
+                TMem StoredRecMem;
+                { TMemBase MemBase = NewDataBlob->GetMemBase(NewPt); StoredRecMem.AddBf(MemBase.GetBf(), MemBase.Len()); }
+                VerifyMigratedRec(RecId, NewSerCache, StoredRecMem, OldMemMem, OldCacheMem, NewDataBlob);
+            }
+            // rebuild and verify the in-memory section
+            if (NewMemUsedP) {
+                TMem NewRecMem;
+                NewSerMem.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache, OldMemMem, OldCacheMem, NewRecMem);
+                const TPgBlobPt NewPt = NewDataMem->Put(NewRecMem.GetBf(), NewRecMem.Len());
+                NewRecIdBlobPtHMem.AddDat(RecId, NewPt);
+                TMem StoredRecMem;
+                { TMemBase MemBase = NewDataMem->GetMemBase(NewPt); StoredRecMem.AddBf(MemBase.GetBf(), MemBase.Len()); }
+                VerifyMigratedRec(RecId, NewSerMem, StoredRecMem, OldMemMem, OldCacheMem, NewDataBlob);
+            }
+            WrittenRecs++;
+            if (RecN % 100000 == 0) {
+                printf("%d / %d records migrated (%.1f%%)\r", RecN, RecIdV.Len(),
+                    RecIdV.Len() > 0 ? 100.0 * RecN / RecIdV.Len() : 100.0);
+            }
+        }
+    } catch (...) {
+        ToastWriteRedirectBlob = NULL;
+        ToastReadRedirectBlob = NULL;
+        throw;
+    }
+    ToastWriteRedirectBlob = NULL;
+    printf("%d / %d records migrated (100.0%%)\n", RecIdV.Len(), RecIdV.Len());
+
+    // report and explain every difference
+    const auto SampleStr = [](const TUInt64V& SampleV) {
+        TChA ChA;
+        for (int SampleN = 0; SampleN < SampleV.Len(); SampleN++) {
+            if (SampleN > 0) { ChA += ", "; }
+            ChA += TUInt64::GetStr(SampleV[SampleN]);
+        }
+        return TStr(ChA);
+    };
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Migrate] store '%s' rebuilt counts: blob-hash %s -> %s, mem-hash %s -> %s",
+        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtH.Len()).CStr(),
+        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr(NewRecIdBlobPtHMem.Len()).CStr()));
+    if (DroppedRecs > 0) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Migrate] WARNING: store '%s' dropped %s records that have data in only one of the two sections "
+            "(%s only in the disk section, sample ids: %s; %s only in the in-memory section, sample ids: %s). "
+            "Such fragments cannot be re-serialized into the new layout because the values of the missing "
+            "section's fields are gone. Run DefragStores instead to keep them as-is, or inspect the sample "
+            "ids to confirm they are garbage.",
+            GetStoreNm().CStr(), TStrUtil::GetStr(DroppedRecs).CStr(),
+            TStrUtil::GetStr(BlobOnlyRecs).CStr(), SampleStr(BlobOnlySampleV).CStr(),
+            TStrUtil::GetStr(MemOnlyRecs).CStr(), SampleStr(MemOnlySampleV).CStr()));
+    }
+
+    // write the destination store state file - the format and content must match
+    // what the destructor writes, with the NEW serializators and the new
+    // record-id-to-blob-pointer maps
+    TFOut FOut(DestStoreFNm + "PgBlobStore");
+    RecNmFieldP.Save(FOut);
+    PrimaryFieldId.Save(FOut);
+    if (PrimaryFieldType == oftInt) {
+        PrimaryIntIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftUInt64) {
+        PrimaryUInt64IdH.Save(FOut);
+    } else if (PrimaryFieldType == oftFlt) {
+        PrimaryFltIdH.Save(FOut);
+    } else if (PrimaryFieldType == oftTm) {
+        PrimaryTmMSecsIdH.Save(FOut);
+    } else {
+        PrimaryStrIdH.Save(FOut);
+    }
+    WndDesc.Save(FOut);
+    NewSerCache.Save(FOut);
+    NewSerMem.Save(FOut);
+    NewRecIdBlobPtH.Save(FOut);
+    NewRecIdBlobPtHMem.Save(FOut);
+    RecIdCounter.Save(FOut);
+
+    TEnv::Logger->OnStatus(TStr::Fmt("Migrating store '%s' done: %s records",
+        GetStoreNm().CStr(), TStrUtil::GetStr(WrittenRecs).CStr()));
+    // releasing the new page blobs flushes them to disk
+    return WrittenRecs;
 }
 
 /// Delete TOAST-ed value from storage

@@ -529,6 +529,17 @@ public:
     /// Allow only fixed-part fields
     void SerializeUpdateInPlace(const PJsonVal& RecVal,
         TThinMIn MIn, const TWPt<TStore>& Store, TIntSet& ChangedFieldIdSet);
+    /// Serialize a record into this serializator's layout by copying typed field
+    /// values from existing serializations of the same record. Source values are
+    /// read through the serializators the record was written with (SrcSerMem for
+    /// the in-memory section, SrcSerCache for the disk section), so fields may be
+    /// located in a different section than in this serializator's layout. TOAST-ed
+    /// source values are read through the Toaster; values that need TOAST-ing in
+    /// the new serialization are written through the Toaster as well.
+    /// Used by TStorePbBlob::MigrateSchemaTo.
+    void SerializeCopyRec(const TWPt<TStore>& Store,
+        const TRecSerializator& SrcSerMem, const TRecSerializator& SrcSerCache,
+        const TMemBase& SrcMemRec, const TMemBase& SrcCacheRec, TMem& RecMem);
 
     /// Delete TOAST-ed values
     void DeleteToast(const TMemBase& RecMem);
@@ -538,6 +549,8 @@ public:
 
     /// Check if field inside this serializator
     bool IsFieldId(const int& FieldId) const { return FieldIdToSerialDescIdH.IsKey(FieldId); }
+    /// True when no fields serialize into this serializator's storage location
+    bool IsEmpty() const { return FieldSerialDescV.Empty(); }
     /// Check if field is in fixed part
     bool IsInFixedPart(const int& FieldId) const { return GetFieldSerialDesc(FieldId).FixedPartP; }
 
@@ -1230,6 +1243,15 @@ private:
     /// Store for parts of records that should be in-memory
     PPgBlob DataMem;
 
+    /// When set, ToastVal writes TOAST-ed values into this blob instead of
+    /// DataBlob. Set by MigrateSchemaTo so values TOAST-ed while re-serializing
+    /// records land in the rebuilt blob while the source blobs stay untouched.
+    PPgBlob ToastWriteRedirectBlob;
+    /// When set, UnToastVal reads TOAST-ed values from this blob instead of
+    /// DataBlob. Set by MigrateSchemaTo while reading back rebuilt records
+    /// for verification.
+    PPgBlob ToastReadRedirectBlob;
+
     /// Counter for record IDs
     TUInt64 RecIdCounter;
     /// Set when the store metadata saved to the PgBlobStore file (primary-field
@@ -1259,6 +1281,22 @@ private:
     /// Returns the pointer to the record in the destination blob. Used by DefragTo.
     TPgBlobPt CopyRecToBlob(const uint64& RecId, const bool& UseMem,
         const PPgBlob& NewToastBlob, const PPgBlob& NewBlob);
+
+    /// Collect the union of record ids of the disk and in-memory sections in
+    /// ascending order. Records that appear in only one of the two sections (a
+    /// desync typically left behind by a partial delete or an interrupted add)
+    /// are counted and sampled (up to MxSamples ids each) so callers can report
+    /// them. Used by DefragTo and MigrateSchemaTo.
+    void CollectRebuildRecIdV(TUInt64V& RecIdV, int& BlobOnlyRecs, int& MemOnlyRecs,
+        TUInt64V& BlobOnlySampleV, TUInt64V& MemOnlySampleV, const int& MxSamples) const;
+
+    /// Verify one section of a record rebuilt by MigrateSchemaTo: every field of
+    /// NewSer must read back from NewRec with the same null flag and value it has
+    /// in the source record sections (read through the current serializators).
+    /// TOAST-ed values of NewRec are read from NewToastBlob.
+    void VerifyMigratedRec(const uint64& RecId, const TRecSerializator& NewSer,
+        const TMemBase& NewRec, const TMemBase& OldMemRec, const TMemBase& OldCacheRec,
+        const PPgBlob& NewToastBlob);
 
     /// Get serializator for given location
     TRecSerializator* GetSerializator(const TStoreLoc& StoreLoc);
@@ -1500,6 +1538,27 @@ public:
     /// maps. The source store is not modified, so this can run on a read-only base.
     /// Every copied record is read back and verified. Returns the number of records.
     uint64 DefragTo(const TStr& DestStoreFNm, const uint64& CacheSize);
+
+    /// True when the field is stored in the in-memory section (false = disk section)
+    bool IsFieldInMemory(const int& FieldId) const { return FieldLocV[FieldId] == slMemory; }
+
+    /// Rebuild the record blobs into new page blob files with the given file name
+    /// prefix, re-serializing every record with the field placement (memory vs
+    /// cache section) of NewSchema. This is how a "store"-attribute change in the
+    /// .def file is applied to an existing store: the saved serializators, not the
+    /// .def file, define the layout of an existing store, and DefragTo copies the
+    /// serialized records verbatim, so neither picks up the change. The new schema
+    /// must contain exactly the fields of this store (same names and types) - only
+    /// the field placement may differ. Records keep their record ids, so the index,
+    /// joins and the .BaseStore file stay valid; like DefragTo this only reads the
+    /// live store and also writes a new "<prefix>PgBlobStore" state file (with the
+    /// new serializators). Every rebuilt record is read back and every field value
+    /// compared with the source. Records with data in only one of the two sections
+    /// cannot be re-serialized and are dropped with a warning (DefragTo copies such
+    /// section fragments as-is; see its per-hash breakdown for the same records).
+    /// Returns the number of records written to the rebuilt store.
+    uint64 MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
+        const uint64& CacheSize);
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////////

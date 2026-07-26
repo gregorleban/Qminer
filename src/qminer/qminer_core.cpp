@@ -6996,6 +6996,14 @@ void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& 
     }
 }
 
+// out-of-class definitions - the constants are passed by const reference (an
+// ODR-use), so in-class initialization alone links only when the compiler
+// happens to fold the references away
+const int TIndex::PostingStatsGixFull;
+const int TIndex::PostingStatsGixSmall;
+const int TIndex::PostingStatsGixTiny;
+const int TIndex::PostingStatsGixPos;
+
 TStr TIndex::GetPostingStatsGixNm(const int& GixN) {
     switch (GixN) {
         case PostingStatsGixFull: return "full";
