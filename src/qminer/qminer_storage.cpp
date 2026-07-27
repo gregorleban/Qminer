@@ -5150,6 +5150,10 @@ bool TStorePbBlobT<TRecPtMap>::IsRecId(const uint64& RecId) const {
 /// Set primary field map
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::SetPrimaryField(const uint64& RecId) {
+    // the primary map lives only in the PgBlobStore state file, which the
+    // destructor skips rewriting unless the metadata is dirty (the typed
+    // SetPrimaryField* setters do the same)
+    MetaDirtyP = true;
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.AddDat(GetFieldStr(RecId, PrimaryFieldId)) = RecId;
     } else if (PrimaryFieldType == oftInt) {
@@ -5168,6 +5172,10 @@ void TStorePbBlobT<TRecPtMap>::SetPrimaryField(const uint64& RecId) {
 /// Delete primary field map
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::DelPrimaryField(const uint64& RecId) {
+    // see SetPrimaryField - without this a JSON UpdateRec that changes the
+    // primary field of a record through the in-place update path would leave
+    // the metadata clean and the rewritten primary map would be lost on close
+    MetaDirtyP = true;
     if (PrimaryFieldType == oftStr) {
         PrimaryStrIdH.DelIfKey(GetFieldStr(RecId, PrimaryFieldId));
     } else if (PrimaryFieldType == oftInt) {
