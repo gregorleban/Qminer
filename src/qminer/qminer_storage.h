@@ -1284,6 +1284,9 @@ public:
         return MxRecId;
     }
     PStoreIter GetIter() const { return TStoreIterHashKey<THash<TUInt64, TPgBlobPt>>::New(H); }
+    /// Reclaim map memory freed by deleting the smallest record ids; the hash
+    /// reuses deleted slots by itself, so there is nothing to trim
+    int64 TrimLeadingEmpty() { return 0; }
     void Load(TSIn& SIn) { H.Load(SIn); }
     void Save(TSOut& SOut) const { H.Save(SOut); }
 };
@@ -1383,6 +1386,27 @@ public:
     uint64 GetRecIdOffset() const { return RecIdOffset; }
     /// Number of allocated slots (live + deleted-sentinel); for tests/diagnostics
     int64 Slots() const { return PtV.Len(); }
+    /// Drop the empty slots before the first live record and advance the id
+    /// offset accordingly, reallocating so the freed memory is returned. Called
+    /// after deletes, so a store whose oldest records are rolling-deleted stays
+    /// compact between defrags. Returns the number of slots dropped.
+    int64 TrimLeadingEmpty() {
+        int64 FirstLiveN = 0;
+        while (FirstLiveN < PtV.Len() && PtV[FirstLiveN].Empty()) { FirstLiveN++; }
+        if (FirstLiveN == 0) { return 0; }
+        if (FirstLiveN == PtV.Len()) {
+            // no live record left; a later AddDat re-anchors the offset
+            PtV.Clr(); RecIdOffset = uint64(0);
+            return FirstLiveN;
+        }
+        TVec<TPgBlobPt, int64> NewPtV(PtV.Len() - FirstLiveN);
+        for (int64 SlotN = FirstLiveN; SlotN < PtV.Len(); SlotN++) {
+            NewPtV[SlotN - FirstLiveN] = PtV[SlotN];
+        }
+        PtV.MoveFrom(NewPtV);
+        RecIdOffset += (uint64)FirstLiveN;
+        return FirstLiveN;
+    }
     /// Collect all record ids (ascending id order by construction)
     void GetKeyV(TUInt64V& RecIdV) const {
         RecIdV.Clr();
@@ -1525,6 +1549,11 @@ private:
     /// Returns the pointer to the record in the destination blob. Used by DefragTo.
     TPgBlobPt CopyRecToBlob(const uint64& RecId, const bool& UseMem,
         const PPgBlob& NewToastBlob, const PPgBlob& NewBlob);
+
+    /// Reclaim the record-map memory freed by deleting the smallest record ids:
+    /// dense maps drop their leading empty slots and advance their id offset,
+    /// the hash representation is a no-op. Called at the end of the delete paths.
+    void TrimRecIdMaps();
 
     /// Collect the union of record ids of the disk and in-memory sections in
     /// ascending order. Records that appear in only one of the two sections (a

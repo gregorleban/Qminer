@@ -5499,9 +5499,29 @@ void TStorePbBlobT<TRecPtMap>::DeleteRecs(const TUInt64V& DelRecIdV, const int& 
         }
     }
 
+    // deleting the oldest records may have freed leading record-map slots (a
+    // no-op for the hash representation)
+    TrimRecIdMaps();
+
     // report success :-)
     if (DelRecIdV.Len() > 1000) {
         TEnv::Logger->OnStatusFmt("  %s records at end", TUInt64::GetStr(GetRecs()).CStr());
+    }
+}
+
+/// Reclaim the record-map memory freed by deleting the smallest record ids: a
+/// dense map drops its leading empty slots and advances its id offset (the two
+/// sections trim independently - each map has its own offset); the hash
+/// representation needs no trimming. Called after the delete paths, so a store
+/// whose oldest records are rolling-deleted stays compact between defrags.
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::TrimRecIdMaps() {
+    const int64 TrimmedBlob = RecIdBlobPtH.TrimLeadingEmpty();
+    const int64 TrimmedMem = RecIdBlobPtHMem.TrimLeadingEmpty();
+    if (TrimmedBlob > 0 || TrimmedMem > 0) {
+        MetaDirtyP = true;
+        TEnv::Logger->OnStatusFmt("Store '%s': trimmed the leading deleted record-map slots (disk %s, memory %s)",
+            GetStoreNm().CStr(), TInt64::GetStr(TrimmedBlob).CStr(), TInt64::GetStr(TrimmedMem).CStr());
     }
 }
 
@@ -5572,6 +5592,13 @@ void TStorePbBlobT<TRecPtMap>::BatchDeleteRecs(const TUInt64V& DelRecIdV, const 
             OnProgress(Phase, Done, TotalRecs, DeletedRecs);
         }
     }
+    // the maps (and the primary map) changed, so the state file must be rewritten
+    // on close - this was missing before: a session that only batch-deleted could
+    // skip the save and resurrect the deleted records on the next load
+    if (DeletedRecs > 0) { MetaDirtyP = true; }
+    // deleting the oldest records may have freed leading record-map slots (a
+    // no-op for the hash representation)
+    TrimRecIdMaps();
     if (DelRecIdV.Len() > 1000) {
         TEnv::Logger->OnStatusFmt("  %s records at end", TUInt64::GetStr(GetRecs()).CStr());
     }
