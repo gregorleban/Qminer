@@ -6155,8 +6155,11 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     // spends minutes just re-walking it. The cache can temporarily overshoot its configured
     // limit by up to the raised threshold. Restored at the end of the function.
     // record ids in the 32-bit gix item types (Small/Tiny/Pos) must stay below TUInt::Mx, so
-    // clamp the keep threshold accordingly (only reachable when no record survives the delete)
+    // clamp the keep threshold for those (only reachable when no record survives the delete);
+    // the 64-bit GixFull gets the unclamped id, otherwise a base whose record ids exceed
+    // TUInt::Mx would under-delete its full posting lists
     const uint64 MinKeepId = (MinKeepRecId < (uint64)TUInt::Mx) ? MinKeepRecId : (uint64)TUInt::Mx - 1;
+    const uint64 MinKeepIdFull = MinKeepRecId;
 
     const uint64 OldThrFull = !GixFull.Empty() ? GixFull->GetCacheResetThreshold() : 0;
     const uint64 OldThrSmall = !GixSmall.Empty() ? GixSmall->GetCacheResetThreshold() : 0;
@@ -6188,7 +6191,7 @@ void TIndex::BatchDeleteFromGix(const TIntSet& KeyIdSet, const TUInt64H& RecIdSe
     if (!GixFull.Empty()) {
         const TStr Phase = "1/5 GixFull";
         const TQmGixItemFull LoItem(MinDelRecId, 0), HiItem(HiDelRecId, 0);
-        const TQmGixItemFull MinKeepItem(MinKeepId, 0);
+        const TQmGixItemFull MinKeepItem(MinKeepIdFull, 0);
         const int64 TotalKeys = GixFull->GetKeys();
         const int64 ReportEvery = TotalKeys / 200 + 1;
         int64 KeysDone = 0, Removed = 0;

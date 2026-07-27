@@ -604,39 +604,45 @@ uint64 TGixItemSet<TKey, TItem>::DelItemsBelow(const TItem& MinKeepItem) {
     const uint64 OldSize = GetMemUsed();
     uint64 Removed = 0;
     // children are disjoint and ascending, so the ones lying entirely below the threshold form
-    // a prefix - drop them from the header alone, without ever loading their data
-    int DropChildren = 0;
-    while (DropChildren < ChildInfoV.Len() && ChildInfoV[DropChildren].MaxItem < MinKeepItem) {
-        Removed += (uint64)(int)ChildInfoV[DropChildren].Len;
-        Gix->DeleteChildVector(ChildInfoV[DropChildren].Pt);
-        DropChildren++;
-    }
-    if (DropChildren > 0) {
-        ChildInfoV.Del(0, DropChildren - 1);
-        ChildV.Del(0, DropChildren - 1);
-    }
-    // the (now first) child may straddle the threshold - load it and cut its below-threshold
-    // prefix. This is the only child whose data is read, and a subsequent range query over the
-    // deleted ids would have loaded it anyway
-    if (ChildInfoV.Len() > 0 && ChildInfoV[0].MinItem < MinKeepItem) {
+    // a prefix - drop them from the header alone, without ever loading their data. Deletes
+    // never update the stored child stats, so a child's MaxItem can read stale-high (its true
+    // items all below the threshold): cutting such a child empties it, and the child behind it
+    // may be below the threshold as well - repeat the pass until the first child truly starts
+    // at or above the threshold
+    while (true) {
+        int DropChildren = 0;
+        while (DropChildren < ChildInfoV.Len() && ChildInfoV[DropChildren].MaxItem < MinKeepItem) {
+            Removed += (uint64)(int)ChildInfoV[DropChildren].Len;
+            Gix->DeleteChildVector(ChildInfoV[DropChildren].Pt);
+            DropChildren++;
+        }
+        if (DropChildren > 0) {
+            ChildInfoV.Del(0, DropChildren - 1);
+            ChildV.Del(0, DropChildren - 1);
+        }
+        // the (now first) child may straddle the threshold - load it and cut its
+        // below-threshold prefix. Only straddling (or stale-stat) children are ever read, and
+        // a subsequent range query over the deleted ids would have loaded them anyway
+        if (ChildInfoV.Len() == 0 || !(ChildInfoV[0].MinItem < MinKeepItem)) { break; }
         LoadChildVector(0);
         TVec<TItem>& Child = ChildV[0];
         int Cut = 0;
         while (Cut < Child.Len() && Child[Cut] < MinKeepItem) { Cut++; }
-        if (Cut > 0) {
-            Child.Del(0, Cut - 1);
-            ChildInfoV[0].Len = Child.Len();
-            ChildInfoV[0].DirtyP = true;
-            Removed += (uint64)Cut;
-            if (Child.Empty()) {
-                // possible when the stored MinItem stat was conservative - drop the empty child
-                Gix->DeleteChildVector(ChildInfoV[0].Pt);
-                ChildInfoV.Del(0);
-                ChildV.Del(0);
-            } else {
-                ChildInfoV[0].MinItem = Child[0];
-            }
+        // stats are outer bounds, so a stale-low MinItem can promise items that are not there
+        if (Cut == 0) { break; }
+        Child.Del(0, Cut - 1);
+        ChildInfoV[0].Len = Child.Len();
+        ChildInfoV[0].DirtyP = true;
+        Removed += (uint64)Cut;
+        if (!Child.Empty()) {
+            ChildInfoV[0].MinItem = Child[0];
+            break;	// the first child now starts at/above the threshold - prefix fully cut
         }
+        // the stored MaxItem stat was stale-high and the whole child was below the
+        // threshold - drop the now-empty child and re-examine the children behind it
+        Gix->DeleteChildVector(ChildInfoV[0].Pt);
+        ChildInfoV.Del(0);
+        ChildV.Del(0);
     }
     // the work buffer is sorted when merged, so its sub-threshold items form a prefix as well
     int DropItems = 0;
