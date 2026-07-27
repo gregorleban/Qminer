@@ -1293,11 +1293,15 @@ public:
 class TStoreIterDenseMap : public TStoreIter {
 private:
     const TVec<TPgBlobPt, int64>& PtV;
+    /// record id of slot 0 (the map's id offset)
+    TUInt64 RecIdOffset;
     int64 RecN;
 
-    TStoreIterDenseMap(const TVec<TPgBlobPt, int64>& _PtV) : PtV(_PtV), RecN(-1) {}
+    TStoreIterDenseMap(const TVec<TPgBlobPt, int64>& _PtV, const uint64& _RecIdOffset) :
+        PtV(_PtV), RecIdOffset(_RecIdOffset), RecN(-1) {}
 public:
-    static PStoreIter New(const TVec<TPgBlobPt, int64>& PtV) { return new TStoreIterDenseMap(PtV); }
+    static PStoreIter New(const TVec<TPgBlobPt, int64>& PtV, const uint64& RecIdOffset) {
+        return new TStoreIterDenseMap(PtV, RecIdOffset); }
 
     bool Next() {
         for (RecN++; RecN < PtV.Len(); RecN++) {
@@ -1305,83 +1309,133 @@ public:
         }
         return false;
     }
-    uint64 GetRecId() const { return (uint64)RecN; }
+    uint64 GetRecId() const { return (uint64)RecN + RecIdOffset; }
 };
 
 ///////////////////////////////////////////////////////////////////////////////////
 /// Record-id to blob-pointer map of a paged store, direct-indexed. Record ids are
 /// assigned by a monotone counter and never reused, so the id space is dense and
-/// the record id can be the index into a vector of blob pointers: 8 B per slot
-/// (vs ~26 B per record for the hash) and a lookup is a single indexed read.
-/// A deleted record id keeps an Empty() sentinel slot forever - fine for stores
-/// where deletes are a small fraction of the id space; a store that continuously
-/// deletes old records grows the vector without bound and should stay hash-backed.
+/// (record id - RecIdOffset) can be the index into a vector of blob pointers:
+/// 8 B per slot (vs ~26 B per record for the hash) and a lookup is a single
+/// indexed read. A deleted record id keeps an Empty() sentinel slot, so the
+/// vector spans [RecIdOffset, largest live id]. RecIdOffset anchors to the first
+/// id inserted into an empty map: the store rebuilds (DefragTo, MigrateSchemaTo,
+/// ConvertMapsTo) refill the map in ascending id order, so every rebuild trims
+/// the leading ids freed by rolling deletes - stores that continuously delete
+/// their oldest records stay compact as long as they are defragged periodically.
 class TPbBlobRecMapDense {
 private:
-    /// blob pointer per record id; Empty() = no record with this id
+    /// blob pointer per (record id - RecIdOffset); Empty() = no record with this id
     TVec<TPgBlobPt, int64> PtV;
+    /// record id of slot 0; anchored by the first AddDat into an empty vector
+    /// (rebuilds insert in ascending id order, so this is the smallest live id
+    /// at rebuild time). 0 for maps written before the offset existed.
+    TUInt64 RecIdOffset;
     /// number of non-empty slots
     TInt64 Recs;
 public:
-    TPbBlobRecMapDense() : Recs(0) {}
+    TPbBlobRecMapDense() : RecIdOffset(uint64(0)), Recs(0) {}
 
     /// Store type name that selects this representation
     static const char* GetStoreTypeNm() { return "TStorePbBlobDense"; }
 
-    /// The unsigned compare also rejects TUInt64::Mx, which callers use as the
+    /// The unsigned compares also reject TUInt64::Mx, which callers use as the
     /// no-record sentinel (a signed cast would turn it into index -1)
-    bool IsKey(const uint64& RecId) const { return RecId < (uint64)PtV.Len() && !PtV[(int64)RecId].Empty(); }
+    bool IsKey(const uint64& RecId) const {
+        return RecId >= RecIdOffset && RecId - RecIdOffset < (uint64)PtV.Len() &&
+            !PtV[(int64)(RecId - RecIdOffset)].Empty();
+    }
     const TPgBlobPt& GetDat(const uint64& RecId) const {
         EAssert(IsKey(RecId));
-        return PtV[(int64)RecId];
+        return PtV[(int64)(RecId - RecIdOffset)];
     }
     TPgBlobPt& GetDat(const uint64& RecId) {
         EAssert(IsKey(RecId));
-        return PtV[(int64)RecId];
+        return PtV[(int64)(RecId - RecIdOffset)];
     }
     /// Insert or overwrite the pointer for the given record id
     void AddDat(const uint64& RecId, const TPgBlobPt& Pt) {
         EAssert(!Pt.Empty());
         EAssert((int64)RecId >= 0);	// rejects TUInt64::Mx and other out-of-range ids
+        // the first insert into an empty vector anchors the id offset; ids only
+        // grow (monotone counter; rebuilds refill in ascending id order), so
+        // later inserts never precede the anchor
+        if (PtV.Empty()) { RecIdOffset = RecId; }
+        EAssertR(RecId >= RecIdOffset, "[TPbBlobRecMapDense] record id " +
+            TUInt64::GetStr(RecId) + " precedes the map's id offset " + TUInt64::GetStr(RecIdOffset));
+        const int64 SlotN = (int64)(RecId - RecIdOffset);
         // fill the gap with sentinel slots; ids come from a monotone counter, so
         // beyond-the-end inserts are appends (a gap only appears when the records
         // at the end of the id space were deleted before a save)
-        while (PtV.Len() <= (int64)RecId) { PtV.Add(TPgBlobPt()); }
-        if (PtV[(int64)RecId].Empty()) { Recs++; }
-        PtV[(int64)RecId] = Pt;
+        while (PtV.Len() <= SlotN) { PtV.Add(TPgBlobPt()); }
+        if (PtV[SlotN].Empty()) { Recs++; }
+        PtV[SlotN] = Pt;
     }
     void DelKey(const uint64& RecId) {
         EAssert(IsKey(RecId));
-        PtV[(int64)RecId].Clr();
+        PtV[(int64)(RecId - RecIdOffset)].Clr();
         Recs--;
     }
-    void Clr() { PtV.Clr(); Recs = 0; }
+    void Clr() { PtV.Clr(); RecIdOffset = uint64(0); Recs = 0; }
     /// Number of live records in the map
     int64 Len() const { return Recs; }
+    /// Record id of slot 0 (0 = unanchored or legacy map); for tests/diagnostics
+    uint64 GetRecIdOffset() const { return RecIdOffset; }
+    /// Number of allocated slots (live + deleted-sentinel); for tests/diagnostics
+    int64 Slots() const { return PtV.Len(); }
     /// Collect all record ids (ascending id order by construction)
     void GetKeyV(TUInt64V& RecIdV) const {
         RecIdV.Clr();
         for (int64 RecN = 0; RecN < PtV.Len(); RecN++) {
-            if (!PtV[RecN].Empty()) { RecIdV.Add((uint64)RecN); }
+            if (!PtV[RecN].Empty()) { RecIdV.Add((uint64)RecN + RecIdOffset); }
         }
     }
     /// Smallest record id in the map (TUInt64::Mx when empty)
     uint64 GetFirstRecId() const {
         for (int64 RecN = 0; RecN < PtV.Len(); RecN++) {
-            if (!PtV[RecN].Empty()) { return (uint64)RecN; }
+            if (!PtV[RecN].Empty()) { return (uint64)RecN + RecIdOffset; }
         }
         return TUInt64::Mx;
     }
     /// Largest record id in the map (TUInt64::Mx when empty)
     uint64 GetLastRecId() const {
         for (int64 RecN = PtV.Len() - 1; RecN >= 0; RecN--) {
-            if (!PtV[RecN].Empty()) { return (uint64)RecN; }
+            if (!PtV[RecN].Empty()) { return (uint64)RecN + RecIdOffset; }
         }
         return TUInt64::Mx;
     }
-    PStoreIter GetIter() const { return TStoreIterDenseMap::New(PtV); }
-    void Load(TSIn& SIn) { PtV.Load(SIn); Recs.Load(SIn); }
-    void Save(TSOut& SOut) const { PtV.Save(SOut); Recs.Save(SOut); }
+    PStoreIter GetIter() const { return TStoreIterDenseMap::New(PtV, RecIdOffset); }
+    void Load(TSIn& SIn) {
+        // the current layout starts with an impossible vector length (-1) as a
+        // format marker, then a version, the id offset and the payload. Maps
+        // written before the offset existed start directly with PtV's length
+        // fields (TVec::Save wrote MxVals >= 0 first) - detect them and read
+        // the old layout with offset 0, so already-converted dense stores load
+        // unchanged (their next save upgrades them to the current layout).
+        int64 First; SIn.Load(First);
+        if (First == -1) {
+            TInt Version; Version.Load(SIn);
+            EAssertR(Version == 1, "[TPbBlobRecMapDense] unsupported dense record map version " + Version.GetStr());
+            RecIdOffset.Load(SIn);
+            PtV.Load(SIn);
+            Recs.Load(SIn);
+        } else {
+            // legacy layout: MxVals (just consumed), Vals, the elements, Recs
+            RecIdOffset = uint64(0);
+            int64 Vals; SIn.Load(Vals);
+            EAssertR(Vals >= 0 && Vals <= First, "[TPbBlobRecMapDense] corrupt legacy dense record map header");
+            PtV.Gen(Vals);
+            for (int64 ValN = 0; ValN < Vals; ValN++) { PtV[ValN] = TPgBlobPt(SIn); }
+            Recs.Load(SIn);
+        }
+    }
+    void Save(TSOut& SOut) const {
+        SOut.Save((int64)-1);	// format marker, see Load
+        TInt(1).Save(SOut);		// version
+        RecIdOffset.Save(SOut);
+        PtV.Save(SOut);
+        Recs.Save(SOut);
+    }
 };
 
 template <class TRecPtMap>
