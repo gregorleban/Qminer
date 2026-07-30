@@ -6991,10 +6991,13 @@ void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const
 
     TEnv::Logger->OnStatus("Defragmenting " + GixNm + " ...");
     // create the destination gix. it shares the split length provider, so per-key
-    // split lengths (e.g. from the store definition) are applied to all copied data
+    // split lengths (e.g. from the store definition) are applied to all copied
+    // data, and keeps the source's key dictionary representation (the sorted
+    // copy order lets a sorted dictionary build its compact arrays directly)
     TPt<TGix<TQmGixKey, TQmGixItem> > DestGix = TGix<TQmGixKey, TQmGixItem>::New(GixNm,
         DestFPath, faCreate, GixItemHandler, CacheSize, SrcGix->GetSplitLen(),
-        SrcGix->CanFirstChildBeUnfilled(), SrcGix->GetSplitLenMin(), SrcGix->GetSplitLenMax());
+        SrcGix->CanFirstChildBeUnfilled(), SrcGix->GetSplitLenMin(), SrcGix->GetSplitLenMax(),
+        SrcGix->GetKeyDictType());
     DestGix->SetSplitLenProvider(SplitLenProvider);
     // copy all keys; each key's data is verified by count during the copy
     const int SrcKeys = SrcGix->GetKeys();
@@ -7069,17 +7072,24 @@ void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
             GixNm.CStr(), StrayKeys));
     }
     // create the destination gix. it shares the live split length provider, so
-    // per-key split lengths (e.g. from the store definition) are applied to all data
+    // per-key split lengths (e.g. from the store definition) are applied to all
+    // data, and keeps the live gix's key dictionary representation
     TPt<TGix<TQmGixKey, TQmGixItem> > DestGix = TGix<TQmGixKey, TQmGixItem>::New(GixNm,
         DestFPath, faCreate, GixItemHandler, CacheSize, LiveGix->GetSplitLen(),
-        LiveGix->CanFirstChildBeUnfilled(), LiveGix->GetSplitLenMin(), LiveGix->GetSplitLenMax());
+        LiveGix->CanFirstChildBeUnfilled(), LiveGix->GetSplitLenMin(), LiveGix->GetSplitLenMax(),
+        LiveGix->GetKeyDictType());
     DestGix->SetSplitLenProvider(SplitLenProvider);
     // copy all keys that were NOT rebuilt from the live gix (sorted = contiguous);
     // each key's item count is verified during the copy
     uint64 LiveItems = 0; int LiveEmptyKeys = 0;
     LiveGix->CopyTo(*DestGix, &LiveItems, &LiveEmptyKeys, &KeepOtherF);
     const int KeysAfterLiveCopy = DestGix->GetKeys();
-    // copy the rebuilt keys from the stage gix
+    // copy the rebuilt keys from the stage gix. Note for a sorted key
+    // dictionary: these keys interleave in key space with the ones copied
+    // above, so in a MIXED gix they land in the dictionary's overlay hash -
+    // still correct, just not compact until the next defrag. In the ER bases
+    // the rebuilt (pos) gix holds only text keys, so the first copy is empty
+    // and this pass builds the compact arrays directly
     uint64 StageItems = 0; int StageEmptyKeys = 0;
     StageGix->CopyTo(*DestGix, &StageItems, &StageEmptyKeys, &KeepRebuiltF);
     const int DestKeys = DestGix->GetKeys();
@@ -7158,6 +7168,25 @@ void TIndex::ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
             DestFPath, ItemHandlerPos, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
         RebuiltGixNmV.Add("Index.GixPos");
     }
+}
+
+TGixKeyDictType TIndex::GetGixKeyDictType(const TStr& GixNm) const {
+    const TStr LcGixNm = GixNm.GetLc();
+    if (LcGixNm == "full") { return GixFull->GetKeyDictType(); }
+    if (LcGixNm == "small") { return GixSmall->GetKeyDictType(); }
+    if (LcGixNm == "tiny") { return GixTiny->GetKeyDictType(); }
+    if (LcGixNm == "pos") { return GixPos->GetKeyDictType(); }
+    throw TQmExcept::New("[TIndex::GetGixKeyDictType] unknown gix name " + GixNm);
+}
+
+void TIndex::SaveGixKeyDictAsType(const TStr& GixNm, const TStr& FNm,
+        const TGixKeyDictType& TargetType) const {
+    const TStr LcGixNm = GixNm.GetLc();
+    if (LcGixNm == "full") { GixFull->SaveKeyDictFileAsType(FNm, TargetType); return; }
+    if (LcGixNm == "small") { GixSmall->SaveKeyDictFileAsType(FNm, TargetType); return; }
+    if (LcGixNm == "tiny") { GixTiny->SaveKeyDictFileAsType(FNm, TargetType); return; }
+    if (LcGixNm == "pos") { GixPos->SaveKeyDictFileAsType(FNm, TargetType); return; }
+    throw TQmExcept::New("[TIndex::SaveGixKeyDictAsType] unknown gix name " + GixNm);
 }
 
 // out-of-class definitions - the constants are passed by const reference (an

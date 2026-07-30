@@ -95,6 +95,305 @@ public:
 };
 
 /////////////////////////////////////////////////
+/// Gix key dictionary representation
+typedef enum {
+    gkdtHash = 0,   ///< THash-backed - the default; best for write-heavy indexes
+    gkdtSorted = 1  ///< sorted parallel arrays + overlay hash - ~45% less memory,
+                    ///< bulk (single-read) load; best for read-mostly indexes
+} TGixKeyDictType;
+
+/////////////////////////////////////////////////
+/// Gix key dictionary: key -> blob pointer of the key's itemset.
+/// Two interchangeable representations behind one THash-like interface:
+///
+/// - gkdtHash: a plain THash<TKey, TBlobPt> (~32 B/key incl. buckets for the
+///   qminer (keyId, wordId) keys). Saved in the LEGACY format, so hash-type
+///   files remain readable by older binaries and all existing files load
+///   unchanged.
+/// - gkdtSorted: three parallel arrays sorted by key (key, blob segment, blob
+///   address; ~18 B/key, no buckets) plus a small overlay hash. Lookups check
+///   the overlay first, then binary-search the arrays. Existing keys update
+///   their blob pointer in place; keys added in ascending order (how CopyTo
+///   and the defrag/reindex rebuilds emit them) extend the arrays directly;
+///   out-of-order additions go to the overlay; deletions of array keys leave
+///   a tombstone (empty blob address - itemset pointers are never empty).
+///   Overlay and tombstones are folded away by the next conversion or rebuild.
+///   The arrays are flat-serializable, so the dictionary loads with bulk reads
+///   instead of element-wise deserialization.
+///
+/// The representation is chosen when the gix is created and persisted in the
+/// .Gix file itself (self-describing - the sorted format starts with a marker
+/// that cannot appear in a legacy hash file), so opening auto-detects it.
+/// Use ConvertTo/SaveFileAsType to switch an existing gix, e.g. hash while an
+/// index is being written heavily, sorted once it turns read-mostly.
+template <class TKey>
+class TGixKeyDict {
+private:
+    /// First int of the sorted-format file. A legacy THash file starts with
+    /// PortV.MxVals, which is never negative in a saved hash
+    static const int FormatMarker = -1;
+    static const int FormatVersion = 1;
+
+    TGixKeyDictType Type;
+    /// hash representation (gkdtHash)
+    THash<TKey, TBlobPt> KeyBlobPtH;
+    /// sorted representation (gkdtSorted): parallel arrays sorted by key
+    TVec<TKey> SortedKeyV;
+    TVec<TUInt16> SortedSegV;
+    TVec<TUInt> SortedAddrV;
+    /// number of tombstones (deleted keys) in the sorted arrays
+    TInt SortedDels;
+    /// out-of-order additions that could not extend the sorted arrays
+    THash<TKey, TBlobPt> OverlayH;
+
+    /// Binary search; position in the sorted arrays or -1 (tombstones are found)
+    int GetSortedKeyN(const TKey& Key) const {
+        int LoN = 0; int HiN = SortedKeyV.Len() - 1;
+        while (LoN <= HiN) {
+            const int MidN = LoN + (HiN - LoN) / 2;
+            if (SortedKeyV[MidN] < Key) { LoN = MidN + 1; }
+            else if (Key < SortedKeyV[MidN]) { HiN = MidN - 1; }
+            else { return MidN; }
+        }
+        return -1;
+    }
+    /// Is the sorted-array entry a tombstone? Live itemset pointers always
+    /// have a valid address (they come from TBlobBs::PutBlob)
+    bool IsSortedTomb(const int& KeyN) const { return SortedAddrV[KeyN] == TUInt::Mx; }
+    TBlobPt GetSortedPt(const int& KeyN) const {
+        return TBlobPt((uint16)SortedSegV[KeyN].Val, SortedAddrV[KeyN].Val); }
+    void PutSortedPt(const int& KeyN, const TBlobPt& Pt) {
+        SortedSegV[KeyN] = Pt.Seg; SortedAddrV[KeyN] = Pt.Addr; }
+
+public:
+    TGixKeyDict(const TGixKeyDictType& _Type = gkdtHash): Type(_Type), SortedDels(0) {}
+
+    TGixKeyDictType GetType() const { return Type; }
+    int Len() const {
+        return Type == gkdtHash ? KeyBlobPtH.Len() :
+            SortedKeyV.Len() - SortedDels + OverlayH.Len(); }
+    void Clr() {
+        KeyBlobPtH.Clr(); SortedKeyV.Clr(); SortedSegV.Clr(); SortedAddrV.Clr();
+        SortedDels = 0; OverlayH.Clr(); }
+
+    bool IsKey(const TKey& Key) const {
+        if (Type == gkdtHash) { return KeyBlobPtH.IsKey(Key); }
+        if (OverlayH.IsKey(Key)) { return true; }
+        const int KeyN = GetSortedKeyN(Key);
+        return (KeyN != -1) && !IsSortedTomb(KeyN);
+    }
+    /// Get the blob pointer of an EXISTING key
+    TBlobPt GetDat(const TKey& Key) const {
+        if (Type == gkdtHash) { return KeyBlobPtH.GetDat(Key); }
+        if (OverlayH.IsKey(Key)) { return OverlayH.GetDat(Key); }
+        const int KeyN = GetSortedKeyN(Key);
+        EAssert(KeyN != -1 && !IsSortedTomb(KeyN));
+        return GetSortedPt(KeyN);
+    }
+    /// Add a key or update an existing key's blob pointer
+    void AddDat(const TKey& Key, const TBlobPt& Pt) {
+        if (Type == gkdtHash) { KeyBlobPtH.AddDat(Key, Pt); return; }
+        if (OverlayH.IsKey(Key)) { OverlayH.AddDat(Key, Pt); return; }
+        const int KeyN = GetSortedKeyN(Key);
+        if (KeyN != -1) {
+            // in-place update; also revives a tombstoned key
+            if (IsSortedTomb(KeyN)) { SortedDels--; }
+            PutSortedPt(KeyN, Pt);
+            return;
+        }
+        // keys arriving in ascending order extend the arrays directly - this is
+        // how the sorted key-by-key rebuilds (CopyTo, defrag, reindex) and the
+        // conversion build the compact form without going through the overlay
+        if (SortedKeyV.Empty() || SortedKeyV.Last() < Key) {
+            SortedKeyV.Add(Key);
+            SortedSegV.Add(TUInt16(Pt.Seg));
+            SortedAddrV.Add(TUInt(Pt.Addr));
+            return;
+        }
+        OverlayH.AddDat(Key, Pt);
+    }
+    /// Delete an EXISTING key
+    void DelKey(const TKey& Key) {
+        if (Type == gkdtHash) { KeyBlobPtH.DelKey(Key); return; }
+        if (OverlayH.IsKey(Key)) { OverlayH.DelKey(Key); return; }
+        const int KeyN = GetSortedKeyN(Key);
+        EAssert(KeyN != -1 && !IsSortedTomb(KeyN));
+        SortedAddrV[KeyN] = TUInt::Mx;
+        SortedDels++;
+    }
+    /// All live keys (unsorted for the hash representation)
+    void GetKeyV(TVec<TKey>& KeyV) const {
+        if (Type == gkdtHash) { KeyBlobPtH.GetKeyV(KeyV); return; }
+        KeyV.Clr(); KeyV.Reserve(Len());
+        for (int KeyN = 0; KeyN < SortedKeyV.Len(); KeyN++) {
+            if (!IsSortedTomb(KeyN)) { KeyV.Add(SortedKeyV[KeyN]); }
+        }
+        int OverlayKeyId = OverlayH.FFirstKeyId();
+        while (OverlayH.FNextKeyId(OverlayKeyId)) { KeyV.Add(OverlayH.GetKey(OverlayKeyId)); }
+    }
+
+    // key-id based iteration, mirroring THash. For the sorted representation the
+    // ids are the array positions, followed by the overlay hash's key ids offset
+    // by the array length. Ids stay valid for the lifetime of the loaded gix
+    int FFirstKeyId() const {
+        return Type == gkdtHash ? KeyBlobPtH.FFirstKeyId() : -1; }
+    bool FNextKeyId(int& KeyId) const {
+        if (Type == gkdtHash) { return KeyBlobPtH.FNextKeyId(KeyId); }
+        const int SortedLen = SortedKeyV.Len();
+        while (KeyId + 1 < SortedLen) {
+            KeyId++;
+            if (!IsSortedTomb(KeyId)) { return true; }
+        }
+        int OverlayKeyId = (KeyId < SortedLen) ? OverlayH.FFirstKeyId() : KeyId - SortedLen;
+        if (OverlayH.FNextKeyId(OverlayKeyId)) { KeyId = SortedLen + OverlayKeyId; return true; }
+        return false;
+    }
+    bool IsKeyId(const int& KeyId) const {
+        if (Type == gkdtHash) { return KeyBlobPtH.IsKeyId(KeyId); }
+        if (KeyId >= 0 && KeyId < SortedKeyV.Len()) { return !IsSortedTomb(KeyId); }
+        return OverlayH.IsKeyId(KeyId - SortedKeyV.Len());
+    }
+    const TKey& GetKey(const int& KeyId) const {
+        if (Type == gkdtHash) { return KeyBlobPtH.GetKey(KeyId); }
+        if (KeyId < SortedKeyV.Len()) { return SortedKeyV[KeyId]; }
+        return OverlayH.GetKey(KeyId - SortedKeyV.Len());
+    }
+    TBlobPt operator[](const int& KeyId) const {
+        if (Type == gkdtHash) { return KeyBlobPtH[KeyId]; }
+        if (KeyId < SortedKeyV.Len()) { return GetSortedPt(KeyId); }
+        return OverlayH[KeyId - SortedKeyV.Len()];
+    }
+
+    /// Sort the hash representation by key; the sorted representation's arrays
+    /// are ordered already (its overlay stays in insertion order)
+    void SortByKey(const bool& Asc) {
+        if (Type == gkdtHash) { KeyBlobPtH.SortByKey(Asc); }
+    }
+
+    /// Convert in place between the representations. Hash -> sorted folds the
+    /// keys into the arrays in sorted order; sorted -> hash also folds in the
+    /// overlay and drops the tombstones
+    void ConvertTo(const TGixKeyDictType& NewType) {
+        if (NewType == Type) { return; }
+        if (NewType == gkdtSorted) {
+            TVec<TKey> KeyV; KeyBlobPtH.GetKeyV(KeyV); KeyV.Sort();
+            SortedKeyV.Gen(KeyV.Len(), 0);
+            SortedSegV.Gen(KeyV.Len(), 0);
+            SortedAddrV.Gen(KeyV.Len(), 0);
+            for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
+                const TBlobPt Pt = KeyBlobPtH.GetDat(KeyV[KeyN]);
+                SortedKeyV.Add(KeyV[KeyN]);
+                SortedSegV.Add(TUInt16(Pt.Seg));
+                SortedAddrV.Add(TUInt(Pt.Addr));
+            }
+            SortedDels = 0; OverlayH.Clr();
+            KeyBlobPtH.Clr();
+            Type = gkdtSorted;
+        } else {
+            KeyBlobPtH.Gen(Len());
+            int KeyId = FFirstKeyId();
+            while (FNextKeyId(KeyId)) { KeyBlobPtH.AddDat(GetKey(KeyId), operator[](KeyId)); }
+            SortedKeyV.Clr(); SortedSegV.Clr(); SortedAddrV.Clr();
+            SortedDels = 0; OverlayH.Clr();
+            Type = gkdtHash;
+        }
+    }
+
+    /// Load from a .Gix file, auto-detecting the representation: files written
+    /// by older binaries (or for a hash-type dictionary) hold a raw THash
+    void LoadFile(const TStr& FNm) {
+        Clr();
+        bool LegacyP;
+        {
+            // peek the first int: a legacy THash file starts with the (never
+            // negative) bucket-vector size, the new format with the marker
+            TFIn PeekFIn(FNm);
+            const TInt FirstInt(PeekFIn);
+            LegacyP = (FirstInt != FormatMarker);
+        }
+        TFIn FIn(FNm);
+        if (LegacyP) {
+            Type = gkdtHash;
+            KeyBlobPtH.Load(FIn);
+        } else {
+            const TInt Marker(FIn); EAssert(Marker == FormatMarker);
+            const TInt Version(FIn);
+            EAssertR(Version <= FormatVersion, "Unsupported .Gix key dictionary version " + TInt::GetStr(Version));
+            const TInt TypeInt(FIn);
+            Type = (TGixKeyDictType)(int)TypeInt;
+            if (Type == gkdtHash) {
+                KeyBlobPtH.Load(FIn);
+            } else {
+                SortedKeyV.Load(FIn);
+                SortedSegV.Load(FIn);
+                SortedAddrV.Load(FIn);
+                SortedDels.Load(FIn);
+                OverlayH.Load(FIn);
+            }
+        }
+    }
+    /// Save to a .Gix file. The hash representation is written in the legacy
+    /// format (readable by older binaries); the sorted one with the marker
+    void SaveFile(const TStr& FNm) const {
+        TFOut FOut(FNm);
+        if (Type == gkdtHash) {
+            KeyBlobPtH.Save(FOut);
+        } else {
+            TInt(FormatMarker).Save(FOut);
+            TInt(FormatVersion).Save(FOut);
+            TInt((int)Type).Save(FOut);
+            SortedKeyV.Save(FOut);
+            SortedSegV.Save(FOut);
+            SortedAddrV.Save(FOut);
+            SortedDels.Save(FOut);
+            OverlayH.Save(FOut);
+        }
+    }
+    /// Save to a .Gix file in the given representation without changing this
+    /// instance - used to convert an existing index offline (only the key
+    /// dictionary file is rewritten, the posting blobs are untouched)
+    void SaveFileAsType(const TStr& FNm, const TGixKeyDictType& TargetType) const {
+        if (TargetType == Type) { SaveFile(FNm); return; }
+        if (TargetType == gkdtSorted) {
+            // collect the live keys in sorted order and write the arrays directly
+            TVec<TKey> KeyV; GetKeyV(KeyV); KeyV.Sort();
+            TVec<TUInt16> SegV(KeyV.Len(), 0);
+            TVec<TUInt> AddrV(KeyV.Len(), 0);
+            for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
+                const TBlobPt Pt = GetDat(KeyV[KeyN]);
+                SegV.Add(TUInt16(Pt.Seg));
+                AddrV.Add(TUInt(Pt.Addr));
+            }
+            TFOut FOut(FNm);
+            TInt(FormatMarker).Save(FOut);
+            TInt(FormatVersion).Save(FOut);
+            TInt((int)gkdtSorted).Save(FOut);
+            KeyV.Save(FOut);
+            SegV.Save(FOut);
+            AddrV.Save(FOut);
+            TInt(0).Save(FOut);
+            THash<TKey, TBlobPt>().Save(FOut);
+        } else {
+            THash<TKey, TBlobPt> KeyPtH; KeyPtH.Gen(Len());
+            int KeyId = FFirstKeyId();
+            while (FNextKeyId(KeyId)) { KeyPtH.AddDat(GetKey(KeyId), operator[](KeyId)); }
+            TFOut FOut(FNm);
+            KeyPtH.Save(FOut);
+        }
+    }
+
+    uint64 GetMemUsed(const bool& DeepP = false) const {
+        return sizeof(TGixKeyDictType) +
+            KeyBlobPtH.GetMemUsed(DeepP) +
+            SortedKeyV.GetMemUsed() +
+            SortedSegV.GetMemUsed() +
+            SortedAddrV.GetMemUsed() +
+            sizeof(TInt) +
+            OverlayH.GetMemUsed(DeepP);
+    }
+};
+
+/////////////////////////////////////////////////
 /// Key-To-String transformer
 template <class TKey>
 class TGixKeyStr {
@@ -379,10 +678,11 @@ private:
     TStr GixFNm;
     /// Name of the BLOB file
     TStr GixBlobFNm;
-    /// mapping between key and BLOB pointer
-    THash<TKey, TBlobPt> KeyIdH;
+    /// mapping between key and BLOB pointer. The representation (hash or
+    /// sorted arrays) is chosen at creation and self-described in the file
+    TGixKeyDict<TKey> KeyIdH;
     /// set when KeyIdH was modified since load; when still false at destruction
-    /// time the (potentially huge) hash is not rewritten to GixFNm
+    /// time the (potentially huge) dictionary is not rewritten to GixFNm
     bool KeyIdHDirtyP;
 
     /// ItemHandler used for packing item vectors in item sets
@@ -465,14 +765,19 @@ private:
     TGix(const TStr& Nm, const TStr& FPath, const TFAccess& _Access,
         const TGixItemHandler<TKey, TItem>* ItemHandler, const int64& CacheSize,
         const int _SplitLen, const bool _FirstChildBeUnfilledP,
-        const int _SplitLenMin, const int _SplitLenMax);
+        const int _SplitLenMin, const int _SplitLenMax,
+        const TGixKeyDictType _KeyDictType);
 public:
+    /// KeyDictType selects the key-dictionary representation for a NEWLY
+    /// CREATED gix (Access == faCreate); an existing gix always opens with the
+    /// representation persisted in its .Gix file
     static PGix New(const TStr& Nm, const TStr& FPath, const TFAccess& Access,
         const TGixItemHandler<TKey, TItem>* ItemHandler, const int64& CacheSize = 100000000,
         const int SplitLen = 1024, const bool FirstChildBeUnfilledP = true,
-        const int SplitLenMin = 512, const int SplitLenMax = 2048) {
+        const int SplitLenMin = 512, const int SplitLenMax = 2048,
+        const TGixKeyDictType KeyDictType = gkdtHash) {
         return new TGix(Nm, FPath, Access, ItemHandler, CacheSize, SplitLen,
-            FirstChildBeUnfilledP, SplitLenMin, SplitLenMax);
+            FirstChildBeUnfilledP, SplitLenMin, SplitLenMax, KeyDictType);
     }
 
     ~TGix();
@@ -528,6 +833,14 @@ public:
     /// was the key hash modified since the gix was created/loaded?
     bool IsKeyIdHDirty() const { return KeyIdHDirtyP; }
 
+    /// representation of the key dictionary (hash or sorted arrays)
+    TGixKeyDictType GetKeyDictType() const { return KeyIdH.GetType(); }
+    /// write the key dictionary to FNm in the given representation without
+    /// modifying this gix - the posting blobs are referenced unchanged, so the
+    /// written file can replace this gix's .Gix file to convert the index
+    void SaveKeyDictFileAsType(const TStr& FNm, const TGixKeyDictType& TargetType) const {
+        KeyIdH.SaveFileAsType(FNm, TargetType); }
+
     /// get item set for given key
     PGixItemSet GetItemSet(const TKey& Key) const;
     /// get item set for given BLOB pointer
@@ -575,7 +888,7 @@ public:
     /// blob pointer of the itemset stored under the given key id. Sorting key ids by their
     /// blob pointer lets a whole-index scan read the itemsets in disk order (mostly
     /// sequential I/O) instead of a random read per key in hash order
-    const TBlobPt& GetKeyBlobPt(const int& KeyId) const { return KeyIdH[KeyId]; }
+    TBlobPt GetKeyBlobPt(const int& KeyId) const { return KeyIdH[KeyId]; }
 
     /// Get amount of memory currently used
     int64 GetMemUsed() const;

@@ -3702,6 +3702,17 @@ public:
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
         const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const;
 
+    /// Key-dictionary representation of the given gix ("full", "small", "tiny"
+    /// or "pos"). The representation is persisted in each gix's .Gix file
+    TGixKeyDictType GetGixKeyDictType(const TStr& GixNm) const;
+    /// Write the given gix's key dictionary to FNm in the target representation
+    /// without modifying the live index. The written file references the
+    /// posting blobs unchanged, so swapping it in for the live .Gix file (with
+    /// the index closed) converts the index between the hash and the compact
+    /// sorted representation - the blob files are not touched
+    void SaveGixKeyDictAsType(const TStr& GixNm, const TStr& FNm,
+        const TGixKeyDictType& TargetType) const;
+
     /// Gix ids used in the (index key id, gix id) result pairs of GetPostingLenStats
     static const int PostingStatsGixFull = 1;
     static const int PostingStatsGixSmall = 2;

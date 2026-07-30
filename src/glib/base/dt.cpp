@@ -3216,19 +3216,28 @@ void TStrPool::Save(TSOut &SOut) const
 TStrPool &TStrPool::operator=(const TStrPool &Pool)
 {
     if (this != &Pool) {
-        GrowBy = Pool.GrowBy;
-        MxBfL = Pool.MxBfL;
-        BfL = Pool.BfL;
+        // check the OLD buffer state before overwriting the sizes - a missing
+        // buffer is only legal for an empty pool (e.g. one deserialized from an
+        // empty save, which allocates nothing)
         if (Bf)
             free(Bf);
         else
             IAssertR(MxBfL == 0, TStr::Fmt("size: %u, expected size: 0", MxBfL).CStr());
-        Bf = (char *)malloc(MxBfL);
-        IAssertR(Bf, TStr::Fmt("Can not resize buffer to %u bytes. [Program failed to allocate "
-                               "more memory. Solution: Get a bigger machine.]",
-                               MxBfL)
-                         .CStr());
-        memcpy(Bf, Pool.Bf, BfL);
+        GrowBy = Pool.GrowBy;
+        MxBfL = Pool.MxBfL;
+        BfL = Pool.BfL;
+        // mirror the constructors: an empty pool holds no buffer (malloc(0) may
+        // legally return NULL, which the assert below would misreport as OOM)
+        if (MxBfL > 0) {
+            Bf = (char *)malloc(MxBfL);
+            IAssertR(Bf, TStr::Fmt("Can not resize buffer to %u bytes. [Program failed to allocate "
+                                   "more memory. Solution: Get a bigger machine.]",
+                                   MxBfL)
+                             .CStr());
+            memcpy(Bf, Pool.Bf, BfL);
+        } else {
+            Bf = NULL;
+        }
     }
     return *this;
 }

@@ -887,8 +887,9 @@ void TGix<TKey, TItem>::RefreshStats() const {
 template <class TKey, class TItem>
 TGix<TKey, TItem>::TGix(const TStr& Nm, const TStr& FPath, const TFAccess& _Access,
     const TGixItemHandler<TKey, TItem>* _ItemHandler, const int64& CacheSize, const int _SplitLen,
-    const bool _FirstChildBeUnfilledP, const int _SplitLenMin, const int _SplitLenMax) :
-        Access(_Access), KeyIdHDirtyP(false), ItemHandler(_ItemHandler),
+    const bool _FirstChildBeUnfilledP, const int _SplitLenMin, const int _SplitLenMax,
+    const TGixKeyDictType _KeyDictType) :
+        Access(_Access), KeyIdH(_KeyDictType), KeyIdHDirtyP(false), ItemHandler(_ItemHandler),
         ItemSetCache(CacheSize, 1000000, GetVoidThis()),
         SplitLen(_SplitLen), SplitLenMin(_SplitLenMin), SplitLenMax(_SplitLenMax),
         FirstChildBeUnfilledP(_FirstChildBeUnfilledP), SplitLenProvider(NULL) {
@@ -898,13 +899,14 @@ TGix<TKey, TItem>::TGix(const TStr& Nm, const TStr& FPath, const TFAccess& _Acce
     GixBlobFNm = TStr::GetNrFPath(FPath) + Nm.GetFBase() + ".GixDat";
     // check in what mode should we open
     if (Access == faCreate) {
-        // creating a new Gix
+        // creating a new Gix; the key dictionary keeps the requested representation
         ItemSetBlobBs = TMBlobBs::New(GixBlobFNm, faCreate);
     } else {
         // loading an old Gix and getting it ready for search and update
         EAssert((Access == faUpdate) || (Access == faRdOnly) || (Access == faRestore));
-        // load Gix from GixFNm
-        TFIn FIn(GixFNm); KeyIdH.Load(FIn);
+        // load Gix from GixFNm; the file itself dictates the key dictionary
+        // representation, the _KeyDictType parameter is only used for faCreate
+        KeyIdH.LoadFile(GixFNm);
         // load ItemSets from GixBlobFNm
         ItemSetBlobBs = TMBlobBs::New(GixBlobFNm, Access);
     }
@@ -920,11 +922,11 @@ TGix<TKey, TItem>::~TGix() {
         // flush all the latest changes in cache to the disk
         // (storing a dirty itemset updates KeyIdH and sets KeyIdHDirtyP)
         ItemSetCache.Flush();
-        // save the key hash to GixFNm; skipped in update mode when no key was
-        // added/moved/removed - rewriting the unchanged (potentially huge) hash
-        // dominated shutdown time on large read-mostly indexes
+        // save the key dictionary to GixFNm; skipped in update mode when no key
+        // was added/moved/removed - rewriting the unchanged (potentially huge)
+        // dictionary dominated shutdown time on large read-mostly indexes
         if ((Access == faCreate) || KeyIdHDirtyP) {
-            TFOut FOut(GixFNm); KeyIdH.Save(FOut);
+            KeyIdH.SaveFile(GixFNm);
         }
     }
 }
@@ -1008,9 +1010,9 @@ TBlobPt TGix<TKey, TItem>::StoreItemSet(const TBlobPt& KeyId) {
         ItemSet->Save(MOut);
         int ReleasedSize;
         TBlobPt NewKeyId = ItemSetBlobBs->PutBlob(KeyId, MOut.GetSIn(), ReleasedSize);
-        // and update the KeyId in the hash table
+        // and update the KeyId in the key dictionary
         if (!(KeyIdH.GetDat(ItemSet->GetKey()) == NewKeyId)) {
-            KeyIdH.GetDat(ItemSet->GetKey()) = NewKeyId;
+            KeyIdH.AddDat(ItemSet->GetKey(), NewKeyId);
             KeyIdHDirtyP = true;
         }
         return NewKeyId;
