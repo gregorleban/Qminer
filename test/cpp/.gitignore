@@ -10,3 +10,6 @@
 x64/
 *.log
 *.pdb
+
+# written by the pgblob tests on every run - generated, not fixtures
+/files/pgblob/
