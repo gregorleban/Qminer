@@ -6830,6 +6830,11 @@ TVec<TWPt<TStore> > CreateStoresFromSchema(const TWPt<TBase>& Base, const PJsonV
 
     // apply per-key split length overrides from the schema
     ApplyIndexKeySplitLen(Base, SchemaVal);
+    // apply the requested key-dictionary representations to the (still empty)
+    // gixes of the just-created index. The data window is conservatively
+    // reported as open (conditional values resolve to hash) - callers that
+    // know their window is closed re-apply while the gixes are still empty
+    ApplyIndexKeyDictTypes(Base, SchemaVal, false, true);
 
     // done
     return NewStoreV;
@@ -6873,6 +6878,74 @@ void ApplyIndexKeySplitLen(const TWPt<TBase>& Base, const PJsonVal& SchemaVal) {
                     InfoLog("Using split length " + TInt::GetStr(SplitLen) + " for join key " + StoreNm + "." + JoinNm);
                 }
             }
+        }
+    }
+}
+
+void ParseIndexKeyDictTypes(const PJsonVal& SchemaVal, const bool& DataWindowClosedP,
+        THash<TStr, TInt>& GixNmTypeH) {
+    GixNmTypeH.Clr();
+    // the schema can be a single store definition or an array of them
+    PJsonVal SchemaArrVal = SchemaVal;
+    if (!SchemaVal->IsArr()) {
+        TJsonValV StoreValV; StoreValV.Add(SchemaVal);
+        SchemaArrVal = TJsonVal::NewArr(StoreValV);
+    }
+    bool FoundP = false;
+    for (int SchemaN = 0; SchemaN < SchemaArrVal->GetArrVals(); SchemaN++) {
+        PJsonVal StoreVal = SchemaArrVal->GetArrVal(SchemaN);
+        // the (base-wide) index options ride as an extra attribute of one store
+        // definition - older binaries ignore unknown store attributes, so a
+        // schema carrying them stays readable by exes that predate this option
+        if (!StoreVal->IsObj() || !StoreVal->IsObjKey("indexOptions")) { continue; }
+        QmAssertR(!FoundP, "The schema contains more than one indexOptions entry");
+        FoundP = true;
+        PJsonVal IndexOptionsVal = StoreVal->GetObjKey("indexOptions");
+        if (!IndexOptionsVal->IsObjKey("keyDict")) { continue; }
+        PJsonVal KeyDictVal = IndexOptionsVal->GetObjKey("keyDict");
+        QmAssertR(KeyDictVal->IsObj(), "indexOptions.keyDict must be an object mapping gix names to representations");
+        for (int KeyN = 0; KeyN < KeyDictVal->GetObjKeys(); KeyN++) {
+            TStr GixNm; PJsonVal TypeVal;
+            KeyDictVal->GetObjKeyVal(KeyN, GixNm, TypeVal);
+            GixNm = GixNm.GetLc();
+            QmAssertR(GixNm == "full" || GixNm == "small" || GixNm == "tiny" || GixNm == "pos",
+                "indexOptions.keyDict: unknown gix name '" + GixNm + "' (expected full, small, tiny or pos)");
+            QmAssertR(TypeVal->IsStr(), "indexOptions.keyDict." + GixNm + " must be a string");
+            const TStr TypeStr = TypeVal->GetStr();
+            QmAssertR(TypeStr == "hash" || TypeStr == "sorted" || TypeStr == "sortedWhenClosed",
+                "indexOptions.keyDict." + GixNm + ": unknown representation '" + TypeStr + "' (expected hash, sorted or sortedWhenClosed)");
+            // the conditional value keeps write-heavy instances (data window
+            // still open) on the hash and switches to sorted once it closes
+            const bool SortedP = (TypeStr == "sorted") ||
+                (TypeStr == "sortedWhenClosed" && DataWindowClosedP);
+            GixNmTypeH.AddDat(GixNm, SortedP ? (int) gkdtSorted : (int) gkdtHash);
+        }
+    }
+}
+
+void ApplyIndexKeyDictTypes(const TWPt<TBase>& Base, const PJsonVal& SchemaVal,
+        const bool& DataWindowClosedP, const bool& CreatedP) {
+    THash<TStr, TInt> GixNmTypeH; ParseIndexKeyDictTypes(SchemaVal, DataWindowClosedP, GixNmTypeH);
+    if (GixNmTypeH.Empty()) { return; }
+    int GixKeyId = GixNmTypeH.FFirstKeyId();
+    while (GixNmTypeH.FNextKeyId(GixKeyId)) {
+        const TStr& GixNm = GixNmTypeH.GetKey(GixKeyId);
+        const TGixKeyDictType Type = (TGixKeyDictType) (int) GixNmTypeH[GixKeyId];
+        const TGixKeyDictType CurrentType = Base->GetIndex()->GetGixKeyDictType(GixNm);
+        if (CurrentType == Type) { continue; }
+        const TStr TypeStr = (Type == gkdtHash) ? "hash" : "sorted";
+        if (CreatedP) {
+            // a just-created gix is empty, so the switch is free
+            Base->GetIndex()->PutGixKeyDictType(GixNm, Type);
+            InfoLog("Using the " + TypeStr + " key dictionary for the " + GixNm + " index");
+        } else {
+            // an existing index keeps what its files say - converting multi-GB
+            // dictionaries must be an explicit offline action, not a side
+            // effect of opening the base; just make the drift visible
+            InfoLog("NOTE: the schema requests the " + TypeStr + " key dictionary for the " +
+                GixNm + " index, but the existing index uses " +
+                ((CurrentType == gkdtHash) ? "hash" : "sorted") +
+                " - run the ConvertIndexKeyDict action to convert it");
         }
     }
 }

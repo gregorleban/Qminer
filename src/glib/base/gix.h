@@ -835,6 +835,16 @@ public:
 
     /// representation of the key dictionary (hash or sorted arrays)
     TGixKeyDictType GetKeyDictType() const { return KeyIdH.GetType(); }
+    /// convert the key dictionary to the given representation in memory (the
+    /// posting blobs are untouched). Free on an empty gix - used right after
+    /// creation to apply a schema-requested representation; on a populated gix
+    /// both representations exist transiently while converting
+    void ConvertKeyDictTo(const TGixKeyDictType& NewType) {
+        if (KeyIdH.GetType() == NewType) { return; }
+        AssertReadOnly();
+        KeyIdH.ConvertTo(NewType);
+        KeyIdHDirtyP = true;
+    }
     /// write the key dictionary to FNm in the given representation without
     /// modifying this gix - the posting blobs are referenced unchanged, so the
     /// written file can replace this gix's .Gix file to convert the index

@@ -232,6 +232,136 @@ TEST(GixKeyDictTests, CopyToSortedDestination) {
     TDir::DelNonEmptyDir(DestFPath);
 }
 
+// the schema's indexOptions.keyDict entry selects the per-gix representation
+// at base creation; on load of an existing base the .Gix files stay
+// authoritative (a differing schema only logs a notice)
+TEST(GixKeyDictTests, SchemaDrivenCreation) { try {
+    const TStr FPath = "./test/cpp/data/keydict_schema_base/";
+    if (TDir::Exists(FPath)) { TDir::DelNonEmptyDir(FPath); }
+    TDir::GenDir(FPath);
+
+    if (!TUnicodeDef::IsDef()) { TUnicodeDef::Load("./src/glib/bin/UnicodeDef.Bin"); }
+    if (!TQm::TEnv::IsInit()) { TQm::TEnv::Init(); }
+
+    // tiny and pos are requested sorted; full and small stay at the default
+    // (hash). The base-wide indexOptions ride as an extra attribute of a store
+    // definition - unknown store attributes are ignored by older binaries, so
+    // the schema must parse as a plain store list (the Lang key also carries a
+    // splitLen to prove the rest of the entry is processed normally)
+    const char* SchemaStr =
+        "[{ \"name\": \"Doc\","
+        "   \"indexOptions\": { \"keyDict\": { \"tiny\": \"sorted\", \"pos\": \"sorted\" } },"
+        "   \"fields\": [ { \"name\": \"Name\", \"type\": \"string\", \"primary\": true },"
+        "                 { \"name\": \"Body\", \"type\": \"string\" },"
+        "                 { \"name\": \"Lang\", \"type\": \"string\" } ],"
+        "   \"keys\": [ { \"field\": \"Body\", \"type\": \"text_position\" },"
+        "               { \"field\": \"Lang\", \"type\": \"value\", \"storage\": \"tiny\", \"splitLen\": 50 } ]"
+        "}]";
+    PJsonVal SchemaVal = TJsonVal::GetValFromStr(SchemaStr);
+    const int Docs = 100;
+    {
+        PBase Base = NewBase(FPath, SchemaVal, 10000000, 10000000, true);
+        const TWPt<TIndex> Index = Base->GetIndex();
+        EXPECT_EQ(Index->GetGixKeyDictType("full"), gkdtHash);
+        EXPECT_EQ(Index->GetGixKeyDictType("small"), gkdtHash);
+        EXPECT_EQ(Index->GetGixKeyDictType("tiny"), gkdtSorted);
+        EXPECT_EQ(Index->GetGixKeyDictType("pos"), gkdtSorted);
+        for (int DocN = 0; DocN < Docs; DocN++) {
+            PJsonVal DocVal = TJsonVal::NewObj();
+            DocVal->AddToObj("Name", TStr::Fmt("doc%d", DocN));
+            DocVal->AddToObj("Body", TStr::Fmt("body uniqueword%d shared words", DocN));
+            DocVal->AddToObj("Lang", (DocN % 2 == 0) ? "eng" : "deu");
+            Base->AddRec("Doc", DocVal);
+        }
+        SaveBase(Base);
+    }
+    // reload: the representations persist through the .Gix files; a schema that
+    // requests something else only logs, it must not modify the loaded index
+    {
+        PBase Base = LoadBase(FPath, faRdOnly, 10000000, 10000000);
+        const TWPt<TIndex> Index = Base->GetIndex();
+        EXPECT_EQ(Index->GetGixKeyDictType("tiny"), gkdtSorted);
+        EXPECT_EQ(Index->GetGixKeyDictType("pos"), gkdtSorted);
+        PJsonVal AllHashSchemaVal = TJsonVal::GetValFromStr(
+            "[{ \"name\": \"Doc\", \"indexOptions\": { \"keyDict\": { \"tiny\": \"hash\", \"pos\": \"hash\" } } }]");
+        EXPECT_NO_THROW(ApplyIndexKeyDictTypes(Base, AllHashSchemaVal, false, false));
+        EXPECT_EQ(Index->GetGixKeyDictType("tiny"), gkdtSorted);
+        EXPECT_EQ(Index->GetGixKeyDictType("pos"), gkdtSorted);
+        // and the data is searchable
+        TWPt<TStore> Store = Base->GetStoreByStoreNm("Doc");
+        const PIndexVoc IndexVoc = Base->GetIndexVoc();
+        const int LangKeyId = IndexVoc->GetKeyId(Store->GetStoreId(), "Lang");
+        EXPECT_EQ((int) Index->SearchGix(Base, LangKeyId, IndexVoc->GetWordId(LangKeyId, "eng"))->GetRecs(), Docs / 2);
+        const int BodyKeyId = IndexVoc->GetKeyId(Store->GetStoreId(), "Body");
+        TUInt64V WordIdV; WordIdV.Add(IndexVoc->GetWordId(BodyKeyId, "shared"));
+        EXPECT_EQ((int) Index->SearchTextPos(Base, BodyKeyId, WordIdV, TIntV())->GetRecs(), Docs);
+    }
+    // malformed entries are rejected
+    {
+        THash<TStr, TInt> GixNmTypeH;
+        EXPECT_THROW(ParseIndexKeyDictTypes(TJsonVal::GetValFromStr(
+            "[{ \"name\": \"A\", \"indexOptions\": { \"keyDict\": { \"nosuchgix\": \"sorted\" } } }]"), false, GixNmTypeH), PExcept);
+        EXPECT_THROW(ParseIndexKeyDictTypes(TJsonVal::GetValFromStr(
+            "[{ \"name\": \"A\", \"indexOptions\": { \"keyDict\": { \"pos\": \"nosuchtype\" } } }]"), false, GixNmTypeH), PExcept);
+        EXPECT_THROW(ParseIndexKeyDictTypes(TJsonVal::GetValFromStr(
+            "[{ \"name\": \"A\", \"indexOptions\": {} }, { \"name\": \"B\", \"indexOptions\": {} }]"), false, GixNmTypeH), PExcept);
+        EXPECT_NO_THROW(ParseIndexKeyDictTypes(TJsonVal::GetValFromStr(
+            "[{ \"name\": \"NoOptionsHere\" }]"), false, GixNmTypeH));
+        EXPECT_TRUE(GixNmTypeH.Empty());
+    }
+    // the conditional "sortedWhenClosed" resolves against the data-window flag:
+    // hash while the instance is still being written, sorted once it closed
+    {
+        PJsonVal CondSchemaVal = TJsonVal::GetValFromStr(
+            "[{ \"name\": \"A\", \"indexOptions\": { \"keyDict\": { \"small\": \"sortedWhenClosed\", \"pos\": \"sorted\", \"tiny\": \"hash\" } } }]");
+        THash<TStr, TInt> GixNmTypeH;
+        ParseIndexKeyDictTypes(CondSchemaVal, false, GixNmTypeH);
+        EXPECT_EQ((int) GixNmTypeH.GetDat("small"), (int) gkdtHash);
+        EXPECT_EQ((int) GixNmTypeH.GetDat("pos"), (int) gkdtSorted);
+        EXPECT_EQ((int) GixNmTypeH.GetDat("tiny"), (int) gkdtHash);
+        ParseIndexKeyDictTypes(CondSchemaVal, true, GixNmTypeH);
+        EXPECT_EQ((int) GixNmTypeH.GetDat("small"), (int) gkdtSorted);
+        EXPECT_EQ((int) GixNmTypeH.GetDat("pos"), (int) gkdtSorted);
+        EXPECT_EQ((int) GixNmTypeH.GetDat("tiny"), (int) gkdtHash);
+    }
+    // creating an instance whose data window is already closed (a rebuilt past
+    // year): NewBase conservatively resolves the conditional to hash, and the
+    // creator re-applies with the closed flag while the gixes are still empty
+    // - what TNewsBase::Create does
+    {
+        const TStr ClosedFPath = "./test/cpp/data/keydict_schema_closed/";
+        if (TDir::Exists(ClosedFPath)) { TDir::DelNonEmptyDir(ClosedFPath); }
+        TDir::GenDir(ClosedFPath);
+        PJsonVal CondSchemaVal = TJsonVal::GetValFromStr(
+            "[{ \"name\": \"Item\","
+            "   \"indexOptions\": { \"keyDict\": { \"tiny\": \"sortedWhenClosed\" } },"
+            "   \"fields\": [ { \"name\": \"Name\", \"type\": \"string\", \"primary\": true },"
+            "                 { \"name\": \"Value\", \"type\": \"string\" } ],"
+            "   \"keys\": [ { \"field\": \"Value\", \"type\": \"value\", \"storage\": \"tiny\" } ]"
+            "}]");
+        {
+            PBase Base = NewBase(ClosedFPath, CondSchemaVal, 10000000, 10000000, true);
+            EXPECT_EQ(Base->GetIndex()->GetGixKeyDictType("tiny"), gkdtHash);
+            ApplyIndexKeyDictTypes(Base, CondSchemaVal, true, true);
+            EXPECT_EQ(Base->GetIndex()->GetGixKeyDictType("tiny"), gkdtSorted);
+            PJsonVal RecVal = TJsonVal::GetValFromStr("{ \"Name\": \"rec0\", \"Value\": \"v0\" }");
+            Base->AddRec("Item", RecVal);
+            SaveBase(Base);
+        }
+        {
+            PBase Base = LoadBase(ClosedFPath, faRdOnly, 10000000, 10000000);
+            EXPECT_EQ(Base->GetIndex()->GetGixKeyDictType("tiny"), gkdtSorted);
+            TWPt<TStore> Store = Base->GetStoreByStoreNm("Item");
+            const PIndexVoc IndexVoc = Base->GetIndexVoc();
+            const int ValueKeyId = IndexVoc->GetKeyId(Store->GetStoreId(), "Value");
+            EXPECT_EQ((int) Base->GetIndex()->SearchGix(Base, ValueKeyId, IndexVoc->GetWordId(ValueKeyId, "v0"))->GetRecs(), 1);
+        }
+        TDir::DelNonEmptyDir(ClosedFPath);
+    }
+
+    TDir::DelNonEmptyDir(FPath);
+} catch (PExcept E) { FAIL() << E->GetMsgStr().CStr(); } }
+
 // full-base conversion, as the ConvertIndexKeyDict console action performs it:
 // write the converted .Gix files aside, swap them in with the base closed,
 // reload and search - value keys, text keys and joins must be intact

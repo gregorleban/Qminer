@@ -2001,6 +2001,40 @@ TVec<TWPt<TStore> > CreateStoresFromSchema(const TWPt<TBase>& Base, const PJsonV
 void ApplyIndexKeySplitLen(const TWPt<TBase>& Base, const PJsonVal& SchemaVal);
 
 ///////////////////////////////
+/// Parse the per-gix key-dictionary representations from a schema definition.
+/// Exactly one store definition in the schema may carry an extra
+///     "indexOptions": { "keyDict": { "full": "hash", "small": "sorted", ... } }
+/// attribute (the options are base-wide - they ride on a store definition
+/// because older binaries ignore unknown store attributes, which keeps the
+/// schema readable by exes that predate this option). The entry maps gix
+/// names ("full", "small", "tiny", "pos") to a representation: "hash",
+/// "sorted" (see TGixKeyDictType), or the conditional "sortedWhenClosed",
+/// which resolves to sorted when the caller reports the instance's data
+/// window as closed (DataWindowClosedP - e.g. a yearly instance whose dataEnd
+/// has passed, receiving only a trickle of late writes) and to hash while the
+/// window is still open (write-heavy). Only the gixes present in the entry
+/// are added to GixNmTypeH; gixes not listed are left to the caller's default
+/// (hash). Throws on unknown gix names or representation values.
+void ParseIndexKeyDictTypes(const PJsonVal& SchemaVal, const bool& DataWindowClosedP,
+    THash<TStr, TInt>& GixNmTypeH);
+
+///////////////////////////////
+/// Apply the schema's index-options "keyDict" entry to the base's index.
+/// With CreatedP true (a just-created base - the gixes are still empty) each
+/// listed gix is switched to the requested representation; gixes not listed
+/// stay hash. With CreatedP false (an existing base was loaded) nothing is
+/// changed - the representation persisted in the .Gix files stays authoritative
+/// - but a notice is logged for every gix whose file differs from the schema,
+/// so the drift is visible; the ConvertIndexKeyDict console action brings the
+/// files in line with the schema. DataWindowClosedP resolves the conditional
+/// "sortedWhenClosed" value (see ParseIndexKeyDictTypes).
+/// CreateStoresFromSchema applies the entry automatically when creating, with
+/// the conservative DataWindowClosedP=false; callers that know their data
+/// window is closed re-apply with true while the gixes are still empty.
+void ApplyIndexKeyDictTypes(const TWPt<TBase>& Base, const PJsonVal& SchemaVal,
+    const bool& DataWindowClosedP, const bool& CreatedP);
+
+///////////////////////////////
 /// Create new base given a schema definition
 TWPt<TBase> NewBase(const TStr& FPath, const PJsonVal& SchemaVal, const uint64& IndexCacheSize,
     const uint64& DefStoreCacheSize, const bool& StrictNameP,

@@ -7179,6 +7179,15 @@ TGixKeyDictType TIndex::GetGixKeyDictType(const TStr& GixNm) const {
     throw TQmExcept::New("[TIndex::GetGixKeyDictType] unknown gix name " + GixNm);
 }
 
+void TIndex::PutGixKeyDictType(const TStr& GixNm, const TGixKeyDictType& Type) {
+    const TStr LcGixNm = GixNm.GetLc();
+    if (LcGixNm == "full") { GixFull->ConvertKeyDictTo(Type); return; }
+    if (LcGixNm == "small") { GixSmall->ConvertKeyDictTo(Type); return; }
+    if (LcGixNm == "tiny") { GixTiny->ConvertKeyDictTo(Type); return; }
+    if (LcGixNm == "pos") { GixPos->ConvertKeyDictTo(Type); return; }
+    throw TQmExcept::New("[TIndex::PutGixKeyDictType] unknown gix name " + GixNm);
+}
+
 void TIndex::SaveGixKeyDictAsType(const TStr& GixNm, const TStr& FNm,
         const TGixKeyDictType& TargetType) const {
     const TStr LcGixNm = GixNm.GetLc();
