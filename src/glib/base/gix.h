@@ -83,6 +83,18 @@ public:
 };
 
 /////////////////////////////////////////////////
+/// Key filter.
+/// Selects a subset of keys for full-scan operations (CopyTo, VerifySample).
+template <class TKey>
+class TGixKeyFilter {
+public:
+    virtual ~TGixKeyFilter() {}
+
+    /// Return true when the key should be processed, false to skip it
+    virtual bool KeepKeyP(const TKey& Key) const = 0;
+};
+
+/////////////////////////////////////////////////
 /// Key-To-String transformer
 template <class TKey>
 class TGixKeyStr {
@@ -602,13 +614,18 @@ public:
     /// and the number of source keys with no items (fully deleted posting lists) -
     /// such keys are not created in the destination, which is the one legitimate way
     /// the destination key count may be lower than the source key count.
-    void CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut = NULL, int* EmptyKeysOut = NULL) const;
+    /// An optional KeyFilter restricts the copy to the keys it keeps; filtered-out
+    /// keys are not read at all and are not counted as copied or empty.
+    void CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut = NULL, int* EmptyKeysOut = NULL,
+        const TGixKeyFilter<TKey>* KeyFilter = NULL) const;
     /// Compare data stored under the given key in this and the other gix.
     /// Keys with more than MxItems items are compared by count and first/last item only.
     bool IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const TKey& Key, const int& MxItems = 5000000) const;
     /// Compare data of (approximately) SampleKeys keys, evenly sampled over all keys,
     /// between this and the other gix. Returns false if any compared key differs.
-    bool VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys) const;
+    /// An optional KeyFilter restricts the sampling to the keys it keeps.
+    bool VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys,
+        const TGixKeyFilter<TKey>* KeyFilter = NULL) const;
 
     /// print statistics for index keys
     void SaveTxt(const TStr& FNm, const PGixKeyStr& KeyStr) const;

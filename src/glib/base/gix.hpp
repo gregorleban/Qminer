@@ -1243,10 +1243,21 @@ void TGix<TKey, TItem>::DropFromCache(const TKey& Key) const {
 }
 
 template <class TKey, class TItem>
-void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut, int* EmptyKeysOut) const {
+void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut, int* EmptyKeysOut,
+        const TGixKeyFilter<TKey>* KeyFilter) const {
     // collect and sort the keys, so that the data of all words belonging to the
     // same index key is also stored together in the destination
-    TVec<TKey> KeyV; KeyIdH.GetKeyV(KeyV); KeyV.Sort();
+    TVec<TKey> KeyV;
+    if (KeyFilter == NULL) {
+        KeyIdH.GetKeyV(KeyV);
+    } else {
+        int KeyId = KeyIdH.FFirstKeyId();
+        while (KeyIdH.FNextKeyId(KeyId)) {
+            const TKey& Key = KeyIdH.GetKey(KeyId);
+            if (KeyFilter->KeepKeyP(Key)) { KeyV.Add(Key); }
+        }
+    }
+    KeyV.Sort();
     printf("Copying %s: %d keys\n", GixFNm.GetFMid().CStr(), KeyV.Len());
     uint64 TotalItems = 0;
     int EmptyKeys = 0;
@@ -1307,9 +1318,20 @@ bool TGix<TKey, TItem>::IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const 
 }
 
 template <class TKey, class TItem>
-bool TGix<TKey, TItem>::VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys) const {
+bool TGix<TKey, TItem>::VerifySample(const TGix<TKey, TItem>& OtherGix, const int& SampleKeys,
+        const TGixKeyFilter<TKey>* KeyFilter) const {
     if (SampleKeys <= 0) { return true; }
-    TVec<TKey> KeyV; KeyIdH.GetKeyV(KeyV); KeyV.Sort();
+    TVec<TKey> KeyV;
+    if (KeyFilter == NULL) {
+        KeyIdH.GetKeyV(KeyV);
+    } else {
+        int KeyId = KeyIdH.FFirstKeyId();
+        while (KeyIdH.FNextKeyId(KeyId)) {
+            const TKey& Key = KeyIdH.GetKey(KeyId);
+            if (KeyFilter->KeepKeyP(Key)) { KeyV.Add(Key); }
+        }
+    }
+    KeyV.Sort();
     const int Step = KeyV.Len() > SampleKeys ? KeyV.Len() / SampleKeys : 1;
     int Checked = 0, Failed = 0;
     for (int KeyN = 0; KeyN < KeyV.Len(); KeyN += Step) {

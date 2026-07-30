@@ -2578,6 +2578,15 @@ public:
     /// its field table - key ids themselves do not change, so the index and the
     /// vocabularies stay valid as-is. Marks the vocabulary dirty.
     void RemapStoreFieldIds(const uint& StoreId, const TIntV& OldToNewFieldIdV);
+    /// Create a copy of this vocabulary in which the word vocabularies of the
+    /// given keys are replaced by new EMPTY ones (names preserved), so the keys
+    /// can be re-populated from scratch - used by the index text rebuild. Key
+    /// definitions (ids, types, tokenizers) are copied unchanged; the word
+    /// vocabularies of all other keys are SHARED with this instance, so the
+    /// clone must only add words through the cleared keys. Throws when a
+    /// cleared vocabulary is also used by a key outside KeyIdSet (its word ids
+    /// would dangle).
+    PIndexVoc CloneWithFreshWordVocs(const TIntSet& KeyIdSet) const;
 
     /// Checks if given key contains a word vocabulary
     bool IsWordVoc(const int& KeyId) const;
@@ -3436,6 +3445,31 @@ private:
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const int64& CacheSize, const int& VerifySampleKeys) const;
 
+    /// Gix key filter keeping the (keyId, wordId) keys whose index key is in
+    /// (or, inverted, not in) the given set - used by the reindex gix rebuild
+    class TQmGixKeyIdSetFilter : public TGixKeyFilter<TQmGixKey> {
+    private:
+        /// Index key ids to match; not owned
+        const TIntSet& KeyIdSet;
+        /// False: keep keys IN the set. True: keep keys NOT in the set
+        TBool InvertP;
+    public:
+        TQmGixKeyIdSetFilter(const TIntSet& _KeyIdSet, const bool& _InvertP):
+            KeyIdSet(_KeyIdSet), InvertP(_InvertP) {}
+        bool KeepKeyP(const TQmGixKey& Key) const { return KeyIdSet.IsKey(Key.Val1) != InvertP; }
+    };
+
+    /// Rebuild one gix into DestFPath by combining the live gix (all keys NOT in
+    /// RebuiltKeyIdSet) with a stage gix holding the freshly rebuilt postings of
+    /// the keys in RebuiltKeyIdSet. Both sources are streamed key-by-key in
+    /// sorted order, so every key's child vectors end up contiguous in the
+    /// destination - a separate defrag pass is not needed. Used by ReindexCopyGix
+    template <class TQmGixItem>
+    void ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+        const TPt<TGix<TQmGixKey, TQmGixItem> >& StageGix, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const TIntSet& RebuiltKeyIdSet, const int64& CacheSize, const int& VerifySampleKeys) const;
+
     /// Scan one gix and aggregate its posting-list lengths per index key into
     /// KeyStatsH, keyed by (index key id, gix id) - used by GetPostingLenStats
     template <class TQmGixItem>
@@ -3650,6 +3684,23 @@ public:
     /// from both indices and compared in depth after each rebuild.
     void DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
         const int& VerifySampleKeys) const;
+
+    /// Combine this (live) index with a stage index holding freshly rebuilt
+    /// postings of the text keys in RebuiltKeyIdSet into new gix files at
+    /// DestFPath. Only the gixes that store postings of the rebuilt keys are
+    /// written (their file-name prefixes are returned in RebuiltGixNmV); all
+    /// other gix files are not touched and must be kept from the live index.
+    /// For each written gix: keys NOT in RebuiltKeyIdSet are copied from the
+    /// live gix and keys in the set are copied from the stage gix, both in
+    /// sorted key order (contiguous on disk, current per-key split lengths
+    /// applied). Item counts are verified for every key during the copy; when
+    /// VerifySampleKeys > 0, a sample of keys from each source is additionally
+    /// compared in depth against the destination. The stage index must contain
+    /// ONLY keys from RebuiltKeyIdSet. Used by the ReindexIndex console action,
+    /// together with a vocabulary produced by TIndexVoc::CloneWithFreshWordVocs
+    void ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
+        const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
+        const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const;
 
     /// Gix ids used in the (index key id, gix id) result pairs of GetPostingLenStats
     static const int PostingStatsGixFull = 1;

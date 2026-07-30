@@ -4436,6 +4436,45 @@ void TIndexVoc::RemapStoreFieldIds(const uint& StoreId, const TIntV& OldToNewFie
     DirtyP = true;
 }
 
+PIndexVoc TIndexVoc::CloneWithFreshWordVocs(const TIntSet& KeyIdSet) const {
+    // collect the word vocabularies used by the keys that will be re-populated
+    TIntSet WordVocIdSet;
+    int KeyIdSetN = KeyIdSet.FFirstKeyId();
+    while (KeyIdSet.FNextKeyId(KeyIdSetN)) {
+        const int KeyId = KeyIdSet.GetKey(KeyIdSetN);
+        QmAssertR(IsKeyId(KeyId), "[TIndexVoc::CloneWithFreshWordVocs] unknown key id " + TInt::GetStr(KeyId));
+        const TIndexKey& Key = KeyH[KeyId];
+        QmAssertR(Key.IsWordVoc(), "[TIndexVoc::CloneWithFreshWordVocs] key " + Key.GetKeyNm() + " has no word vocabulary");
+        WordVocIdSet.AddKey(Key.GetWordVocId());
+    }
+    // a cleared vocabulary must not be used by any key outside KeyIdSet - the
+    // untouched postings of such a key would reference dangling word ids
+    int KeyId = KeyH.FFirstKeyId();
+    while (KeyH.FNextKeyId(KeyId)) {
+        const TIndexKey& Key = KeyH[KeyId];
+        if (!KeyIdSet.IsKey(KeyId) && Key.IsWordVoc() && WordVocIdSet.IsKey(Key.GetWordVocId())) {
+            throw TQmExcept::New("[TIndexVoc::CloneWithFreshWordVocs] key " + Key.GetKeyNm() +
+                " shares a word vocabulary with a key whose vocabulary is being cleared");
+        }
+    }
+    // clone: key definitions and store-key sets are copied; word vocabularies of
+    // the cleared keys start empty (names preserved), all others are SHARED with
+    // this instance - the clone must only add words through the cleared keys
+    PIndexVoc CloneVoc = TIndexVoc::New();
+    CloneVoc->KeyH = KeyH;
+    CloneVoc->StoreIdKeyIdSetH = StoreIdKeyIdSetH;
+    CloneVoc->WordVocV = WordVocV;
+    int WordVocIdSetN = WordVocIdSet.FFirstKeyId();
+    while (WordVocIdSet.FNextKeyId(WordVocIdSetN)) {
+        const int WordVocId = WordVocIdSet.GetKey(WordVocIdSetN);
+        const TStr WordVocNm = WordVocV[WordVocId]->GetWordVocNm();
+        CloneVoc->WordVocV[WordVocId] = TIndexWordVoc::New();
+        if (!WordVocNm.Empty()) { CloneVoc->WordVocV[WordVocId]->SetWordVocNm(WordVocNm); }
+    }
+    CloneVoc->DirtyP = true;
+    return CloneVoc;
+}
+
 bool TIndexVoc::IsWordVoc(const int& KeyId) const {
     return KeyH[KeyId].GetWordVocId() != -1;
 }
@@ -7005,6 +7044,119 @@ void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& 
     }
     if (AllP || LcGixNmV.IsIn("pos")) {
         DefragOneGix<TQmGixItemPos>(GixPos, "Index.GixPos", DestFPath, ItemHandlerPos, CacheSize, VerifySampleKeys);
+    }
+}
+
+template <class TQmGixItem>
+void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+        const TPt<TGix<TQmGixKey, TQmGixItem> >& StageGix, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const TIntSet& RebuiltKeyIdSet, const int64& CacheSize, const int& VerifySampleKeys) const {
+
+    TEnv::Logger->OnStatus("Rebuilding " + GixNm + " from the live and reindexed data ...");
+    // the stage gix is only ever fed through the rebuilt keys - anything else in
+    // it means the caller reindexed a key it did not declare
+    TQmGixKeyIdSetFilter KeepRebuiltF(RebuiltKeyIdSet, false);
+    TQmGixKeyIdSetFilter KeepOtherF(RebuiltKeyIdSet, true);
+    {
+        int StrayKeys = 0;
+        int StageKeyId = StageGix->FFirstKeyId();
+        while (StageGix->FNextKeyId(StageKeyId)) {
+            if (!KeepRebuiltF.KeepKeyP(StageGix->GetKey(StageKeyId))) { StrayKeys++; }
+        }
+        EAssertR(StrayKeys == 0, TStr::Fmt(
+            "[TIndex::ReindexCopyOneGix] %s: the stage gix contains %d key(s) outside the rebuilt key set",
+            GixNm.CStr(), StrayKeys));
+    }
+    // create the destination gix. it shares the live split length provider, so
+    // per-key split lengths (e.g. from the store definition) are applied to all data
+    TPt<TGix<TQmGixKey, TQmGixItem> > DestGix = TGix<TQmGixKey, TQmGixItem>::New(GixNm,
+        DestFPath, faCreate, GixItemHandler, CacheSize, LiveGix->GetSplitLen(),
+        LiveGix->CanFirstChildBeUnfilled(), LiveGix->GetSplitLenMin(), LiveGix->GetSplitLenMax());
+    DestGix->SetSplitLenProvider(SplitLenProvider);
+    // copy all keys that were NOT rebuilt from the live gix (sorted = contiguous);
+    // each key's item count is verified during the copy
+    uint64 LiveItems = 0; int LiveEmptyKeys = 0;
+    LiveGix->CopyTo(*DestGix, &LiveItems, &LiveEmptyKeys, &KeepOtherF);
+    const int KeysAfterLiveCopy = DestGix->GetKeys();
+    // copy the rebuilt keys from the stage gix
+    uint64 StageItems = 0; int StageEmptyKeys = 0;
+    StageGix->CopyTo(*DestGix, &StageItems, &StageEmptyKeys, &KeepRebuiltF);
+    const int DestKeys = DestGix->GetKeys();
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Reindex] %s: %s items in %s keys kept from the live index, %s items in %s keys from the reindex",
+        GixNm.CStr(), TStrUtil::GetStr(LiveItems).CStr(), TStrUtil::GetStr(KeysAfterLiveCopy).CStr(),
+        TStrUtil::GetStr(StageItems).CStr(), TStrUtil::GetStr(DestKeys - KeysAfterLiveCopy).CStr()));
+    // before/after accounting, as in the defrag rebuild: only fully-deleted
+    // posting lists may be missing from the destination
+    if (DestKeys - KeysAfterLiveCopy != StageGix->GetKeys() - StageEmptyKeys) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Reindex] WARNING: %s rebuilt key count %d does not match the %d non-empty stage keys - "
+            "index entries were lost or duplicated by the rebuild, do not swap this index in!",
+            GixNm.CStr(), DestKeys - KeysAfterLiveCopy, StageGix->GetKeys() - StageEmptyKeys));
+    }
+    // deep-compare samples of both sources against the destination
+    if (VerifySampleKeys > 0) {
+        QmAssertR(LiveGix->VerifySample(*DestGix, VerifySampleKeys, &KeepOtherF),
+            "[TIndex::ReindexCopyGix] Verification of " + GixNm + " failed - the kept keys do not match the live index");
+        QmAssertR(StageGix->VerifySample(*DestGix, VerifySampleKeys, &KeepRebuiltF),
+            "[TIndex::ReindexCopyGix] Verification of " + GixNm + " failed - the rebuilt keys do not match the reindexed data");
+    }
+    // releasing the destination gix flushes it and saves its key hash table
+    DestGix.Clr();
+    TEnv::Logger->OnStatus("Rebuilding " + GixNm + " done");
+}
+
+void TIndex::ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
+        const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
+        const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const {
+
+    RebuiltGixNmV.Clr();
+    QmAssertR(!RebuiltKeyIdSet.Empty(), "[TIndex::ReindexCopyGix] the rebuilt key set is empty");
+    // determine which gixes store postings of the rebuilt keys
+    bool FullP = false, SmallP = false, TinyP = false, PosP = false;
+    int KeyIdSetN = RebuiltKeyIdSet.FFirstKeyId();
+    while (RebuiltKeyIdSet.FNextKeyId(KeyIdSetN)) {
+        const int KeyId = RebuiltKeyIdSet.GetKey(KeyIdSetN);
+        const TIndexKey& Key = IndexVoc->GetKey(KeyId);
+        QmAssertR(Key.IsText() || Key.IsTextPos(),
+            "[TIndex::ReindexCopyGix] key " + Key.GetKeyNm() + " is not a text key");
+        // a combined text+textpos key is indexed only as text by the record
+        // indexer, so rebuilding it here would be ambiguous
+        QmAssertR(!(Key.IsText() && Key.IsTextPos()),
+            "[TIndex::ReindexCopyGix] key " + Key.GetKeyNm() + " combines text and text-position indexing");
+        if (Key.IsTextPos()) {
+            PosP = true;
+        } else {
+            switch (Key.GetGixType()) {
+                case oikgtFull: FullP = true; break;
+                case oikgtSmall: SmallP = true; break;
+                case oikgtTiny: TinyP = true; break;
+                default: throw TQmExcept::New(
+                    "[TIndex::ReindexCopyGix] unsupported gix type for text key " + Key.GetKeyNm());
+            }
+        }
+    }
+    TDir::GenDir(DestFPath);
+    if (FullP) {
+        ReindexCopyOneGix<TQmGixItemFull>(GixFull, StageIndex->GixFull, "Index.GixFull",
+            DestFPath, SumItemHandlerFull, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        RebuiltGixNmV.Add("Index.GixFull");
+    }
+    if (SmallP) {
+        ReindexCopyOneGix<TQmGixItemSmall>(GixSmall, StageIndex->GixSmall, "Index.GixSmall",
+            DestFPath, SumItemHandlerSmall, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        RebuiltGixNmV.Add("Index.GixSmall");
+    }
+    if (TinyP) {
+        ReindexCopyOneGix<TQmGixItemTiny>(GixTiny, StageIndex->GixTiny, "Index.GixTiny",
+            DestFPath, ItemHandlerTiny, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        RebuiltGixNmV.Add("Index.GixTiny");
+    }
+    if (PosP) {
+        ReindexCopyOneGix<TQmGixItemPos>(GixPos, StageIndex->GixPos, "Index.GixPos",
+            DestFPath, ItemHandlerPos, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        RebuiltGixNmV.Add("Index.GixPos");
     }
 }
 
