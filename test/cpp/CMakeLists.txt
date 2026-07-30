@@ -51,24 +51,8 @@ list(FILTER TEST_SOURCES EXCLUDE REGEX "/run-all-tests\\.cpp$")
 list(FILTER TEST_SOURCES EXCLUDE REGEX "/run_tests\\.")   # js runner, not a TU
 list(FILTER TEST_SOURCES EXCLUDE REGEX "/test_main\\.cpp$") # vestigial old main; main comes from run-all-tests.cpp
 
-# Stale duplicates: old hyphen test-*.cpp (2018-02) superseded by the maintained
-# underscore test_*.cpp (2018-03/04, converted from microtest to gtest). Building
-# both double-defines tests (and test-TGix/test_tgix collide outright). Exclude the
-# stale hyphen copies. (Recommend deleting these files outright in a follow-up.)
-foreach(stale
-    test-sizeof test-TStr test-THash test-TGix test-tpt
-    test-TQQueue test-zipfl test-TEmaSpVec test-TSumSpVec)
-  list(FILTER TEST_SOURCES EXCLUDE REGEX "/${stale}\\.cpp$")
-endforeach()
-
-# Pre-existing tests that reference APIs no longer on this branch (verified they
-# fail to compile; they were never in the old 4-file Linux Makefile so this was
-# unnoticed). Excluded to keep CI green — FIX OR DELETE in a follow-up:
-#   test-aggr.cpp        -> uses TStreamAggrs::PSlottedHistogram (now TOnlineSlottedHistogram)
-# (test_batch_delete.cpp is enabled again on this branch - BatchDeleteRecs exists here)
-foreach(broken test-aggr)
-  list(FILTER TEST_SOURCES EXCLUDE REGEX "/${broken}\\.cpp$")
-endforeach()
+# (The stale hyphen test-*.cpp duplicates of the maintained test_*.cpp files,
+# and the broken test-aggr.cpp, were deleted 2026-07-30 - no exclusions needed.)
 
 # glib.a's mine.o wraps LIBSVM but the implementation is a separate third-party
 # TU (built by binding.gyp on the node path) - compile it into the test binary

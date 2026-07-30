@@ -45,6 +45,12 @@ nbproject
 
 # build results
 build
+
+# temporary bases written by the c++ tests when run from the repository root
+/qm_*/
+
+# local cmake build of the standalone libuv (not part of the sources)
+/src/third_party/libuv/build-linux/
 doc
 Doxyfile-tmp
 log-doxygen.txt

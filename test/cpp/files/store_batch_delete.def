@@ -1,0 +1,53 @@
+[
+	{
+		"name" : "Article",
+		"fields" : [
+			{ "name" : "URI", "type" : "string", "primary" : true },
+			{ "name" : "Title", "type" : "string", "store" : "cache" },
+			{ "name" : "Body", "type" : "string", "store" : "cache" },
+			{ "name" : "Language", "type" : "string", "codebook" : true },
+			{ "name" : "DateTime", "type" : "datetime" }
+		],
+		"joins" : [
+			{ "name" : "hasSource", "type" : "field", "store" : "Source", "inverse" : "hasArticle", "storage": "uint-" },
+			{ "name" : "hasConcept", "type" : "index", "store" : "Concept", "inverse" : "hasArticle", "storage": "small" }
+		],
+		"keys" : [
+			{ "field" : "Title", "type" : "text" },
+			{ "field" : "Body", "type" : "text_position" },
+			{ "field" : "Language", "type" : "value", "storage": "tiny" }
+		],
+		"options": {
+			"type": "paged"
+		}
+	},
+	{
+		"name" : "Source",
+		"fields" : [
+			{ "name" : "URI", "type" : "string", "primary" : true },
+			{ "name" : "Title", "type" : "string" }
+		],
+		"joins" : [
+			{ "name" : "hasArticle", "type" : "index", "store" : "Article", "inverse" : "hasSource", "storage": "tiny" }
+		],
+		"keys" : [
+			{ "field" : "Title", "type" : "value", "storage": "small" }
+		],
+		"options": {
+			"type": "paged"
+		}
+	},
+	{
+		"name" : "Concept",
+		"fields" : [
+			{ "name" : "URI", "type" : "string", "primary" : true },
+			{ "name" : "Label", "type" : "string" }
+		],
+		"joins" : [
+			{ "name" : "hasArticle", "type" : "index", "store" : "Article", "inverse" : "hasConcept", "storage": "small" }
+		],
+		"options": {
+			"type": "paged"
+		}
+	}
+]
