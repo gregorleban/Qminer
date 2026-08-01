@@ -1077,10 +1077,17 @@ void TGix<TKey, TItem>::AddItemV(const TKey& Key, const TVec<TItem>& ItemV) {
     } else {
         // we don't have this key, create a new itemset and add new item immidiatelly
         PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, this);
+        // report the base size of the new itemset to the cache growth counter -
+        // AddItemV itself only reports the per-item deltas (same accounting as
+        // AddItem's NotifyCacheOnlyDelta = false first add)
+        AddToNewCacheSizeInc(ItemSet->GetMemUsed());
         ItemSet->AddItemV(ItemV);
         TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to disk
         KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
         KeyIdHDirtyP = true;
+        // keep it cached, as AddItem does - the very next AddItemV/GetItemSet for
+        // this key would otherwise re-read the itemset from the blob
+        ItemSetCache.Put(KeyId, ItemSet);
     }
     // check if we have to drop anything from the cache
     RefreshMemUsed();
@@ -1245,6 +1252,17 @@ void TGix<TKey, TItem>::DropFromCache(const TKey& Key) const {
 }
 
 template <class TKey, class TItem>
+void TGix<TKey, TItem>::StoreAndDropFromCache(const TKey& Key) {
+    if (IsKey(Key)) {
+        const TBlobPt KeyId = KeyIdH.GetDat(Key);
+        // deleting with the event call routes a dirty itemset through
+        // OnDelFromCache -> StoreItemSet, the same path the LRU purge uses;
+        // a key that is not cached is a no-op
+        ItemSetCache.Del(KeyId, true);
+    }
+}
+
+template <class TKey, class TItem>
 void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut, int* EmptyKeysOut,
         const TGixKeyFilter<TKey>* KeyFilter) const {
     // collect and sort the keys, so that the data of all words belonging to the
@@ -1278,6 +1296,10 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
             EAssertR(DestItems == SrcItems, TStr::Fmt(
                 "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination",
                 KeyN, KeyV.Len(), SrcItems, DestItems));
+            // the destination itemset is finished (keys are copied in sorted order
+            // and never revisited) - flush it and evict it so the destination cache
+            // holds only the key in flight instead of every key copied so far
+            DestGix.StoreAndDropFromCache(Key);
         } else {
             // fully deleted posting list - the key is not created in the destination
             EmptyKeys++;
