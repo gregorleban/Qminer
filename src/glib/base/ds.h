@@ -286,6 +286,7 @@ public:
 
   int GetPrimHashCd() const {return  TPairHashImpl::GetHashCd(TPairHashImpl::GetHashCd(Val1.GetPrimHashCd(), Val2.GetPrimHashCd()), TPairHashImpl::GetHashCd(Val3.GetPrimHashCd(), Val4.GetPrimHashCd())); }
   int GetSecHashCd() const {return TPairHashImpl::GetHashCd(TPairHashImpl::GetHashCd(Val2.GetSecHashCd(), Val3.GetSecHashCd()), TPairHashImpl::GetHashCd(Val4.GetSecHashCd(), Val1.GetSecHashCd())); }
+  uint64 GetMemUsed() const {return Val1.GetMemUsed()+Val2.GetMemUsed()+Val3.GetMemUsed()+Val4.GetMemUsed();}
 
   void GetVal(TVal1& _Val1, TVal2& _Val2, TVal3& _Val3, TVal4& _Val4) const {
     _Val1=Val1; _Val2=Val2; _Val3=Val3; _Val4=Val4;}
