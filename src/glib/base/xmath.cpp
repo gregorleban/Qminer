@@ -6,9 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 #if defined(GLib_MSC)
-#ifndef __lzcnt
+// include unconditionally: newer toolsets recognize __lzcnt as a builtin (so an
+// "#ifndef __lzcnt" guard would skip this) yet still need the header for __lzcnt64
 #include <intrin.h>
-#endif
 #endif
 
 /////////////////////////////////////////////////
@@ -34,8 +34,12 @@ uint64 TMath::FloorLog2(const uint64& Val) {
     return (unsigned) (8 * sizeof(uint64) - __builtin_clzll(Val) - 1);
 #elif defined(GLib_CLANG)
     return (unsigned) (8 * sizeof(uint64) - __builtin_clzll(Val) - 1);
-#elif defined(GLib_MSC)
+#elif defined(GLib_MSC) && (defined(_M_X64) || defined(_M_ARM64))
     return (unsigned) (8 * sizeof(uint64) - __lzcnt64(Val) - 1);
+#elif defined(GLib_MSC)
+    // 32-bit MSVC has no __lzcnt64
+    const uint Hi = (uint) (Val >> 32);
+    return (Hi != 0) ? 32 + FloorLog2(Hi) : FloorLog2((uint) Val);
 #else
     Fail; return 0;
 #endif
