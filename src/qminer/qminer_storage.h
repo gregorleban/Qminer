@@ -33,6 +33,9 @@ public:
     TBool CodebookP;
     /// Is small string?
     TBool SmallStringP;
+    /// Should the value be zstd-compressed when serialized? Only valid for
+    /// non-codebook string fields; fixed at store creation.
+    TBool CompressedP;
     /// Default value if value not specified
     PJsonVal DefaultVal;
 public:
@@ -305,6 +308,8 @@ private:
         TBool CodebookP;
         /// Is this field a short string?
         TBool SmallStringP;
+        /// Is the value zstd-compressed inside the var part (strings only)
+        TBool CompressedP;
         /// Default value if value not specified
         PJsonVal DefaultVal;
 
@@ -313,8 +318,12 @@ private:
         TFieldSerialDesc(TSIn& SIn){ Load(SIn); }
 
         // methods required for (de)serialization of this class inside TVec into TSOut and TSIn
+        // (legacy layout, no CompressedP - used when the serializator saves version 0)
         void Save(TSOut& SOut) const;
         void Load(TSIn& SIn);
+        // versioned layout: version >= 1 appends CompressedP
+        void Save(TSOut& SOut, const int& Version) const;
+        void Load(TSIn& SIn, const int& Version);
     };
 
     /// Utility class for delaying deletes of deleted TOASTs
@@ -333,6 +342,15 @@ private:
     static const char ToastNo;
     /// Flag if field is TOAST-ed
     static const char ToastYes;
+
+    /// Version of the serializator stream saved when any field is compressed.
+    /// Streams without compressed fields keep the legacy (unversioned) layout,
+    /// which older binaries can still load.
+    static const int SerializatorVersion;
+    /// The versioned layout is announced by a negative value in the leading
+    /// int (where the legacy layout stores the non-negative TStoreLoc):
+    /// leading value = SerializatorVersionSentinel - version
+    static const int SerializatorVersionSentinel;
 private:
     /// Only store fields with this storage flag
     TStoreLoc TargetStorage;
@@ -365,6 +383,8 @@ private:
 
     /// returns field serialization description
     const TFieldSerialDesc& GetFieldSerialDesc(const int& FieldId) const;
+    /// true when any field is marked compressed (forces the versioned save format)
+    bool HasCompressedFields() const;
     /// finds location inside the buffer for fixed-width fields
     char* GetLocationFixed(const TMemBase& RecMem, const TFieldSerialDesc& FieldSerialDesc) const;
     /// finds location inside the buffer for variable-width fields

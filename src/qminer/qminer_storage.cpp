@@ -8,6 +8,9 @@
 
 #include "qminer_storage.h"
 
+// vendored zstd (single-file amalgamation) - used for "compressed" string fields
+#include "../third_party/zstd/zstd.h"
+
 namespace TQm {
 
 namespace TStorage {
@@ -84,6 +87,7 @@ TFieldDescEx TStoreSchema::ParseFieldDescEx(const PJsonVal& FieldVal) {
     // parse flags
     FieldDescEx.SmallStringP = FieldVal->GetObjBool("shortstring", false);
     FieldDescEx.CodebookP = FieldVal->GetObjBool("codebook", false);
+    FieldDescEx.CompressedP = FieldVal->GetObjBool("compressed", false);
     // load default value (if available)
     if (FieldVal->IsObjKey("default")) {
         FieldDescEx.DefaultVal = FieldVal->GetObjKey("default");
@@ -445,6 +449,7 @@ TStoreSchema::TStoreSchema(const TWPt<TBase>& Base, const PJsonVal& StoreVal) : 
             FieldDescEx.FieldStoreLoc = slDisk;
             FieldDescEx.SmallStringP = false;
             FieldDescEx.CodebookP = false;
+            FieldDescEx.CompressedP = false;
             FieldExH.AddDat(FieldDesc.GetFieldNm(), FieldDescEx);
 
             WndDesc.TimeFieldNm = FieldDesc.GetFieldNm();
@@ -757,10 +762,23 @@ void TRecSerializator::TFieldSerialDesc::Load(TSIn& SIn) {
     DefaultVal = PJsonVal(SIn);
 }
 
+void TRecSerializator::TFieldSerialDesc::Save(TSOut& SOut, const int& Version) const {
+    Save(SOut);
+    if (Version >= 1) { CompressedP.Save(SOut); }
+}
+
+void TRecSerializator::TFieldSerialDesc::Load(TSIn& SIn, const int& Version) {
+    Load(SIn);
+    if (Version >= 1) { CompressedP.Load(SIn); }
+}
+
 /// Flag if field is not TOAST-ed
 const char TRecSerializator::ToastNo = 'n';
 /// Flag if field is TOAST-ed
 const char TRecSerializator::ToastYes = 'y';
+
+const int TRecSerializator::SerializatorVersion = 1;
+const int TRecSerializator::SerializatorVersionSentinel = -1000;
 
 ///////////////////////////////
 // Serialization and de-serialization of records to TMem
@@ -1222,6 +1240,49 @@ void TRecSerializator::CheckToastDel(const TMemBase& InRecMem, const TFieldSeria
     }
 }
 
+/// zstd level for "compressed" string fields: good ratio at ingest-friendly speed
+static const int ZstdCompressionLevel = 3;
+
+/// Serialize a string value of a "compressed" field:
+/// [TInt uncompressed length][TInt compressed length][compressed bytes]
+/// (empty strings store just the leading zero length)
+static void SaveCompressedStr(TMOut& SOut, const TStr& Str) {
+    const int StrLen = Str.Len();
+    TInt(StrLen).Save(SOut);
+    if (StrLen == 0) { return; }
+    const size_t CompBound = ZSTD_compressBound((size_t)StrLen);
+    QmAssertR(CompBound <= (size_t)TInt::Mx, "[SaveCompressedStr] string too long to compress");
+    TMem CompMem((int)CompBound);
+    const size_t CompLen = ZSTD_compress(CompMem.GetBf(), CompBound,
+        Str.CStr(), (size_t)StrLen, ZstdCompressionLevel);
+    QmAssertR(!ZSTD_isError(CompLen),
+        TStr("[SaveCompressedStr] zstd compression failed: ") + TStr(ZSTD_getErrorName(CompLen)));
+    TInt((int)CompLen).Save(SOut);
+    SOut.AppendBf(CompMem.GetBf(), (int)CompLen);
+}
+
+/// Deserialize a string value written by SaveCompressedStr
+static TStr LoadCompressedStr(TThinMIn& min) {
+    const int UncompLen = TInt(min).Val;
+    if (UncompLen == 0) { return TStr(); }
+    const int CompLen = TInt(min).Val;
+    QmAssertR(UncompLen > 0 && CompLen > 0, "[LoadCompressedStr] corrupt compressed value lengths");
+    TMem CompMem(CompLen);
+    min.GetBf(CompMem.GetBf(), CompLen);
+    char* UncompBf = new char[UncompLen + 1];
+    const size_t Res = ZSTD_decompress(UncompBf, (size_t)UncompLen,
+        CompMem.GetBf(), (size_t)CompLen);
+    if (ZSTD_isError(Res) || (int)Res != UncompLen) {
+        delete[] UncompBf;
+        throw TQmExcept::New(TStr("[LoadCompressedStr] zstd decompression failed: ") +
+            TStr(ZSTD_isError(Res) ? ZSTD_getErrorName(Res) : "unexpected decompressed length"));
+    }
+    UncompBf[UncompLen] = '\0';
+    TStr Str(UncompBf);
+    delete[] UncompBf;
+    return Str;
+}
+
 void TRecSerializator::SetFieldIntV(TMem& RecMem, TMOut& SOut,
         const TFieldSerialDesc& FieldSerialDesc, const TIntV& IntV) {
 
@@ -1245,7 +1306,13 @@ void TRecSerializator::SetFieldStr(TMem& RecMem, TMOut& SOut,
     SetLocationVar(RecMem, FieldSerialDesc, VarContentOffset);
     // update value
     if (UseToast) { SOut.PutCh(ToastNo); }
-    Str.Save(SOut, FieldSerialDesc.SmallStringP);
+    if (FieldSerialDesc.CompressedP) {
+        // compressing before the TOAST-length check below means values that
+        // shrink under the limit stay inline instead of being TOAST-ed
+        SaveCompressedStr(SOut, Str);
+    } else {
+        Str.Save(SOut, FieldSerialDesc.SmallStringP);
+    }
     // Perform TOAST-ing if needed
     CheckToast(SOut, VarContentOffset);
 }
@@ -1469,6 +1536,15 @@ void TRecSerializator::InitFromFields(const TWPt<TToaster>& _Toaster, const TFie
         const TFieldDescEx& FieldDescEx = StoreSchema.FieldExH.GetDat(FieldName);
         // skip field if it does not match targeted storage
         if (FieldDescEx.FieldStoreLoc != TargetStorage) { continue; }
+        // "compressed" is only supported for plain variable-length strings
+        if (FieldDescEx.CompressedP) {
+            QmAssertR(FieldDesc.GetFieldType() == oftStr, "[TRecSerializator] field " + FieldName +
+                ": \"compressed\" is only supported for string fields");
+            QmAssertR(!FieldDescEx.CodebookP, "[TRecSerializator] field " + FieldName +
+                ": \"compressed\" cannot be combined with \"codebook\"");
+            QmAssertR(!FieldDescEx.SmallStringP, "[TRecSerializator] field " + FieldName +
+                ": \"compressed\" cannot be combined with \"shortstring\"");
+        }
         // check if field is fixed-width and if yes, what is its width
         int FixedSize = 0; bool FixedP = true;
         switch (FieldDesc.GetFieldType()) {
@@ -1506,6 +1582,7 @@ void TRecSerializator::InitFromFields(const TWPt<TToaster>& _Toaster, const TFie
         FieldSerialDesc.Offset = (FixedP ? FixedIndexOffset : VarIndexOffset);
         FieldSerialDesc.CodebookP = FieldDescEx.CodebookP;
         FieldSerialDesc.SmallStringP = FieldDescEx.SmallStringP;
+        FieldSerialDesc.CompressedP = FieldDescEx.CompressedP;
         FieldSerialDesc.DefaultVal = FieldDescEx.DefaultVal;
         // remember serialization description
         int FieldSerialDescId = FieldSerialDescV.Add(FieldSerialDesc);
@@ -1523,12 +1600,41 @@ void TRecSerializator::InitFromFields(const TWPt<TToaster>& _Toaster, const TFie
     VarContentPartOffset = VarIndexPartOffset + VarFieldCount * sizeof(int);
 }
 
+bool TRecSerializator::HasCompressedFields() const {
+    for (int FieldSerialDescN = 0; FieldSerialDescN < FieldSerialDescV.Len(); FieldSerialDescN++) {
+        if (FieldSerialDescV[FieldSerialDescN].CompressedP) { return true; }
+    }
+    return false;
+}
+
 void TRecSerializator::Load(TSIn& SIn) {
-    TargetStorage = TStoreLoc(TInt(SIn).Val);
+    // the legacy (unversioned) layout starts with the non-negative TStoreLoc;
+    // the versioned layout announces itself with SerializatorVersionSentinel - version
+    const int LeadingInt = TInt(SIn).Val;
+    int Version = 0;
+    if (LeadingInt <= SerializatorVersionSentinel) {
+        Version = SerializatorVersionSentinel - LeadingInt;
+        QmAssertR(Version <= SerializatorVersion, TStr::Fmt(
+            "[TRecSerializator] stream version %d is newer than this binary supports (%d) - "
+            "the store was created by a newer binary", Version, SerializatorVersion));
+        TargetStorage = TStoreLoc(TInt(SIn).Val);
+    } else {
+        TargetStorage = TStoreLoc(LeadingInt);
+    }
     FixedPartOffset.Load(SIn);
     VarIndexPartOffset.Load(SIn);
     VarContentPartOffset.Load(SIn);
-    FieldSerialDescV.Load(SIn);
+    if (Version == 0) {
+        FieldSerialDescV.Load(SIn);
+    } else {
+        const int Descs = TInt(SIn).Val;
+        FieldSerialDescV.Gen(Descs, 0);
+        for (int DescN = 0; DescN < Descs; DescN++) {
+            TFieldSerialDesc FieldSerialDesc;
+            FieldSerialDesc.Load(SIn, Version);
+            FieldSerialDescV.Add(FieldSerialDesc);
+        }
+    }
     FieldIdToSerialDescIdH.Load(SIn);
     CodebookH.Load(SIn);
     UseToast.Load(SIn);
@@ -1536,11 +1642,26 @@ void TRecSerializator::Load(TSIn& SIn) {
 }
 
 void TRecSerializator::Save(TSOut& SOut) {
+    // stores without compressed fields keep the legacy byte-identical layout so
+    // their files remain loadable by older binaries; compressed fields force
+    // the versioned layout (older binaries cannot open such stores - they would
+    // not be able to decompress the values anyway)
+    const int Version = HasCompressedFields() ? SerializatorVersion : 0;
+    if (Version > 0) {
+        TInt(SerializatorVersionSentinel - Version).Save(SOut);
+    }
     TInt(TargetStorage).Save(SOut);
     FixedPartOffset.Save(SOut);
     VarIndexPartOffset.Save(SOut);
     VarContentPartOffset.Save(SOut);
-    FieldSerialDescV.Save(SOut);
+    if (Version == 0) {
+        FieldSerialDescV.Save(SOut);
+    } else {
+        TInt(FieldSerialDescV.Len()).Save(SOut);
+        for (int DescN = 0; DescN < FieldSerialDescV.Len(); DescN++) {
+            FieldSerialDescV[DescN].Save(SOut, Version);
+        }
+    }
     FieldIdToSerialDescIdH.Save(SOut);
     CodebookH.Save(SOut);
     UseToast.Save(SOut);
@@ -1867,10 +1988,12 @@ TStr TRecSerializator::GetFieldStr(TThinMIn& min, const int& FieldId) const {
             TMem Mem;
             Toaster->UnToastVal(Pt, Mem);
             TThinMIn min2(Mem);
+            if (FieldSerialDesc.CompressedP) { return LoadCompressedStr(min2); }
             TStr Str;
             Str.Load(min2, FieldSerialDesc.SmallStringP);
             return Str;
         } else {
+            if (FieldSerialDesc.CompressedP) { return LoadCompressedStr(min); }
             TStr Str;
             Str.Load(min, FieldSerialDesc.SmallStringP);
             return Str;
