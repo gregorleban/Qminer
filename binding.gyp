@@ -294,6 +294,8 @@
                 # Geospatial
                 'src/third_party/geospatial/geospatial_aggr.h',
                 'src/third_party/geospatial/geospatial_aggr.cpp',
+                # zstd (compressed string fields in qminer_storage.cpp)
+                'src/third_party/zstd/zstd.c',
                 # External sources
                 '<@(ADDITIONAL_QMINER_SOURCES)'
             ],
