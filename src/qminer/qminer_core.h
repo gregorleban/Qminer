@@ -3477,6 +3477,13 @@ private:
         const TStr& GixNm, const int& GixN,
         THash<TIntPr, TIndexKeyPostingLenStats>& KeyStatsH) const;
 
+    /// Open the gix file set GixNm in FPath read-only and try to fully read every
+    /// itemset - used by VerifyGixFiles
+    template <class TQmGixItem>
+    static int VerifyOneGixFiles(const TStr& GixNm, const TStr& FPath,
+        const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const int64& CacheSize, TStrV& FailedKeyStrV);
+
     /// Executes GIX join query against the full index
     void DoJoinQueryFull(const int& KeyId, const TUInt64V& RecIdV, TUInt64IntKdV& RecIdFqV) const;
     /// Executes GIX join query against the small index
@@ -3701,6 +3708,16 @@ public:
     void ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
         const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const;
+
+    /// Diagnostic: open the gix file set of GixNm ("full", "small", "tiny" or
+    /// "pos") in FPath read-only and try to fully read every itemset (header
+    /// blob and all child vectors), in blob-pointer order (mostly sequential
+    /// I/O). Nothing is modified. Every unreadable key is reported into
+    /// FailedKeyStrV as "<seg:addr> <error message>". Returns the number of
+    /// keys scanned. Static - works on any gix file set (e.g. the reindex
+    /// stage folder), no open index needed
+    static int VerifyGixFiles(const TStr& FPath, const TStr& GixNm,
+        const int64& CacheSize, TStrV& FailedKeyStrV);
 
     /// Key-dictionary representation of the given gix ("full", "small", "tiny"
     /// or "pos"). The representation is persisted in each gix's .Gix file

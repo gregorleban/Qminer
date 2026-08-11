@@ -419,8 +419,11 @@ uint64 TGixItemSet<TKey, TItem>::GetMemUsed() const {
 
 template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::OnDelFromCache(const TBlobPt& BlobPt, void* Gix) {
-    // TODO: is IsReadOnly() test necessary? Isn't the only case when DirtyP == true if we are allowed write access?
-    if (!((TGix<TKey, TItem>*)Gix)->IsReadOnly() && DirtyP) {
+    // read-only gixes dirty itemsets through content-preserving merges (Def()) only,
+    // so their in-memory changes can be discarded; the same holds for any gix in
+    // discard-dirty-on-drop mode (its blobs were flushed current first)
+    if (!((TGix<TKey, TItem>*)Gix)->IsReadOnly() &&
+        !((TGix<TKey, TItem>*)Gix)->IsDiscardDirtyOnDrop() && DirtyP) {
         ((TGix<TKey, TItem>*)Gix)->StoreItemSet(BlobPt);
     }
 }
@@ -891,6 +894,7 @@ TGix<TKey, TItem>::TGix(const TStr& Nm, const TStr& FPath, const TFAccess& _Acce
     const TGixKeyDictType _KeyDictType) :
         Access(_Access), KeyIdH(_KeyDictType), KeyIdHDirtyP(false), ItemHandler(_ItemHandler),
         ItemSetCache(CacheSize, 1000000, GetVoidThis()),
+        DiscardDirtyOnDropP(false),
         SplitLen(_SplitLen), SplitLenMin(_SplitLenMin), SplitLenMax(_SplitLenMax),
         FirstChildBeUnfilledP(_FirstChildBeUnfilledP), SplitLenProvider(NULL) {
 
@@ -933,22 +937,31 @@ TGix<TKey, TItem>::~TGix() {
 
 template <class TKey, class TItem>
 TPt<TGixItemSet<TKey, TItem> > TGix<TKey, TItem>::GetItemSet(const TKey& Key) const {
-    TBlobPt KeyId = GetKeyId(Key);
-    return GetItemSet(KeyId);
+    // reads grow the cache as well (itemsets and their child vectors get loaded),
+    // so the size recomputation + purge has to be triggered from here too - with
+    // write-only triggering a query-mostly process would grow far beyond the
+    // configured cache size. It MUST run before the blob pointer is resolved:
+    // the purge stores dirty itemsets, and a store can relocate an itemset's
+    // blob (freeing the old one) and update KeyIdH - resolving first and purging
+    // second read the itemset through a freed (possibly already reused) blob
+    // pointer whenever the purge evicted the very key being fetched
+    RefreshMemUsed();
+    const TBlobPt KeyId = GetKeyId(Key);
+    PGixItemSet ItemSet = GetItemSetNoRefresh(KeyId);
+    // a stale pointer whose blob slot was reused delivers a well-formed itemset
+    // of a DIFFERENT key - fail loudly instead of serving wrong postings
+    EAssertR(KeyId.Empty() || ItemSet->GetKey() == Key,
+        "TGix::GetItemSet: the itemset loaded from blob " + KeyId.GetAddrStr() +
+        " belongs to a different key (stale blob pointer)");
+    return ItemSet;
 }
 
 template <class TKey, class TItem>
-TPt<TGixItemSet<TKey, TItem> > TGix<TKey, TItem>::GetItemSet(const TBlobPt& KeyId) const {
+TPt<TGixItemSet<TKey, TItem> > TGix<TKey, TItem>::GetItemSetNoRefresh(const TBlobPt& KeyId) const {
     if (KeyId.Empty()) {
         // return empty itemset
         return TGixItemSet<TKey, TItem>::New(TKey(), this);
     }
-    // reads grow the cache as well (itemsets and their child vectors get loaded),
-    // so the size recomputation + purge has to be triggered from here too - with
-    // write-only triggering a query-mostly process would grow far beyond the
-    // configured cache size. done before touching the cache so the itemset
-    // returned by this call cannot be a purge victim
-    RefreshMemUsed();
     PGixItemSet ItemSet;
     if (!ItemSetCache.Get(KeyId, ItemSet)) {
         // have to load it from the hard drive...
@@ -1244,8 +1257,10 @@ void TGix<TKey, TItem>::DropFromCache(const TKey& Key) const {
         const TBlobPt KeyId = KeyIdH.GetDat(Key);
         PGixItemSet ItemSet;
         // only clean itemsets can be dropped without storing - discarding a dirty
-        // itemset would lose all its changes that are not yet written to the blob
-        if (ItemSetCache.Get(KeyId, ItemSet) && !ItemSet->IsDirty()) {
+        // itemset would lose all its changes that are not yet written to the blob.
+        // In discard-dirty-on-drop mode dirty itemsets are dropped too: their only
+        // changes are content-preserving merges over a flushed-current blob
+        if (ItemSetCache.Get(KeyId, ItemSet) && (DiscardDirtyOnDropP || !ItemSet->IsDirty())) {
             ItemSetCache.Del(KeyId, false);
         }
     }
@@ -1264,7 +1279,7 @@ void TGix<TKey, TItem>::StoreAndDropFromCache(const TKey& Key) {
 
 template <class TKey, class TItem>
 void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut, int* EmptyKeysOut,
-        const TGixKeyFilter<TKey>* KeyFilter) const {
+        const TGixKeyFilter<TKey>* KeyFilter, TVec<TKey>* FailedKeyV) const {
     // collect and sort the keys, so that the data of all words belonging to the
     // same index key is also stored together in the destination
     TVec<TKey> KeyV;
@@ -1283,26 +1298,36 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
     int EmptyKeys = 0;
     for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
         const TKey& Key = KeyV[KeyN];
-        // load the itemset and stream its content (child vectors + work buffer) into the destination
-        PGixItemSet ItemSet = GetItemSet(Key);
-        ItemSet->Def();
-        const int SrcItems = ItemSet->GetItems();
-        if (SrcItems > 0) {
-            TCopyToHandler Handler(DestGix, Key);
-            ItemSet->GetItemV(Handler);
-            TotalItems += (uint64) SrcItems;
-            // validate that the destination received all the items
-            const int DestItems = DestGix.GetItemSet(Key)->GetItems();
-            EAssertR(DestItems == SrcItems, TStr::Fmt(
-                "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination",
-                KeyN, KeyV.Len(), SrcItems, DestItems));
-            // the destination itemset is finished (keys are copied in sorted order
-            // and never revisited) - flush it and evict it so the destination cache
-            // holds only the key in flight instead of every key copied so far
-            DestGix.StoreAndDropFromCache(Key);
-        } else {
-            // fully deleted posting list - the key is not created in the destination
-            EmptyKeys++;
+        try {
+            // load the itemset and stream its content (child vectors + work buffer) into the destination
+            PGixItemSet ItemSet = GetItemSet(Key);
+            ItemSet->Def();
+            const int SrcItems = ItemSet->GetItems();
+            if (SrcItems > 0) {
+                TCopyToHandler Handler(DestGix, Key);
+                ItemSet->GetItemV(Handler);
+                TotalItems += (uint64) SrcItems;
+                // validate that the destination received all the items
+                const int DestItems = DestGix.GetItemSet(Key)->GetItems();
+                EAssertR(DestItems == SrcItems, TStr::Fmt(
+                    "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination",
+                    KeyN, KeyV.Len(), SrcItems, DestItems));
+                // the destination itemset is finished (keys are copied in sorted order
+                // and never revisited) - flush it and evict it so the destination cache
+                // holds only the key in flight instead of every key copied so far
+                DestGix.StoreAndDropFromCache(Key);
+            } else {
+                // fully deleted posting list - the key is not created in the destination
+                EmptyKeys++;
+            }
+        } catch (PExcept& Except) {
+            // without a failure collector the first broken key aborts, as before
+            if (FailedKeyV == NULL) { throw; }
+            // record the key and keep scanning - the caller gets the complete list
+            // of broken keys in one pass (it must not use the destination afterwards)
+            FailedKeyV->Add(Key);
+            printf("\nTGix::CopyTo: FAILED reading key %d of %d (blob %s): %s\n",
+                KeyN, KeyV.Len(), GetKeyId(Key).GetAddrStr().CStr(), Except->GetMsgStr().CStr());
         }
         // release the source itemset so the full scan does not grow the cache without bound
         DropFromCache(Key);
@@ -1313,8 +1338,64 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
     }
     printf("%s / %s keys (100.0%%), %s items copied, %s empty keys skipped\n",
         TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(TotalItems).CStr(), TStrUtil::GetStr(EmptyKeys).CStr());
+    if (FailedKeyV != NULL && !FailedKeyV->Empty()) {
+        printf("TGix::CopyTo: %d key(s) FAILED - the destination is incomplete and must not be used\n", FailedKeyV->Len());
+    }
     if (CopiedItemsOut != NULL) { *CopiedItemsOut = TotalItems; }
     if (EmptyKeysOut != NULL) { *EmptyKeysOut = EmptyKeys; }
+}
+
+template <class TKey, class TItem>
+int TGix<TKey, TItem>::VerifyAllKeys(TStrV& FailedKeyStrV) const {
+    // handler that only forces every child vector to be loaded from the blob
+    struct TCountHandler {
+        uint64 Items;
+        TCountHandler(): Items(0) {}
+        void operator()(const TVec<TItem>& ItemV) { Items += (uint64) ItemV.Len(); }
+    };
+    // collect (blob pointer, key) pairs and scan in blob-pointer order, so the
+    // reads walk the blob files mostly sequentially instead of a random read
+    // per key in dictionary order
+    TVec<TPair<TBlobPt, TKey> > PtKeyV; PtKeyV.Gen(KeyIdH.Len(), 0);
+    int KeyId = KeyIdH.FFirstKeyId();
+    while (KeyIdH.FNextKeyId(KeyId)) {
+        PtKeyV.Add(TPair<TBlobPt, TKey>(KeyIdH[KeyId], KeyIdH.GetKey(KeyId)));
+    }
+    PtKeyV.Sort();
+    printf("Verifying %s: %d keys\n", GixFNm.GetFMid().CStr(), PtKeyV.Len());
+    uint64 TotalItems = 0;
+    for (int KeyN = 0; KeyN < PtKeyV.Len(); KeyN++) {
+        const TKey& Key = PtKeyV[KeyN].Val2;
+        try {
+            // read the header blob and stream through every child vector; any
+            // corrupt blob (of the itemset or a child) throws here
+            PGixItemSet ItemSet = GetItemSet(Key);
+            TCountHandler Handler;
+            ItemSet->GetItemV(Handler);
+            TotalItems += Handler.Items;
+        } catch (PExcept& Except) {
+            FailedKeyStrV.Add(TStr::Fmt("%s %s",
+                PtKeyV[KeyN].Val1.GetAddrStr().CStr(), Except->GetMsgStr().CStr()));
+            printf("\nTGix::VerifyAllKeys: FAILED key %d of %d (blob %s): %s\n",
+                KeyN, PtKeyV.Len(), PtKeyV[KeyN].Val1.GetAddrStr().CStr(), Except->GetMsgStr().CStr());
+        } catch (...) {
+            FailedKeyStrV.Add(TStr::Fmt("%s unknown exception", PtKeyV[KeyN].Val1.GetAddrStr().CStr()));
+            printf("\nTGix::VerifyAllKeys: FAILED key %d of %d (blob %s): unknown exception\n",
+                KeyN, PtKeyV.Len(), PtKeyV[KeyN].Val1.GetAddrStr().CStr());
+        }
+        // release the itemset so the scan does not grow the cache without bound
+        DropFromCache(Key);
+        if (KeyN % 10000 == 0) {
+            printf("%s / %s keys (%.1f%%), %s items read, %d failed\r",
+                TStrUtil::GetStr(KeyN).CStr(), TStrUtil::GetStr(PtKeyV.Len()).CStr(),
+                PtKeyV.Len() > 0 ? 100.0 * KeyN / PtKeyV.Len() : 100.0,
+                TStrUtil::GetStr(TotalItems).CStr(), FailedKeyStrV.Len());
+        }
+    }
+    printf("%s / %s keys (100.0%%), %s items read, %d failed             \n",
+        TStrUtil::GetStr(PtKeyV.Len()).CStr(), TStrUtil::GetStr(PtKeyV.Len()).CStr(),
+        TStrUtil::GetStr(TotalItems).CStr(), FailedKeyStrV.Len());
+    return PtKeyV.Len();
 }
 
 template <class TKey, class TItem>

@@ -700,6 +700,13 @@ private:
     /// flag indicating cache is full (mutable - the cache is refreshed/purged also
     /// from the const read path, see GetItemSet)
     mutable bool CacheFullP;
+    /// When set, dirty itemsets leaving the cache (LRU purge, DropFromCache) are
+    /// DISCARDED instead of stored. Only safe when every itemset's blob content is
+    /// current (call Flush() first): from then on itemsets only become dirty through
+    /// content-preserving transformations (Def() merging), so their stored form is
+    /// equivalent. Used on throwaway gixes scanned by CopyTo (the reindex stage),
+    /// where the write-back would pointlessly rewrite the blob while it is read.
+    TBool DiscardDirtyOnDropP;
 
     /// Size of work-buffer
     TInt SplitLen;
@@ -747,6 +754,15 @@ private:
     /// purge would make the periodic clean-up walks scale with the number of
     /// copied keys instead of the cache limit.
     void StoreAndDropFromCache(const TKey& Key);
+
+    /// cache-lookup / blob-load / cache-insert core of GetItemSet. Deliberately
+    /// does NOT call RefreshMemUsed: the purge it triggers stores dirty itemsets,
+    /// and a store can RELOCATE an itemset's blob (freeing the old one) and update
+    /// KeyIdH - so the blob pointer passed here must be resolved AFTER the last
+    /// potential purge, never before (the pre-2026-08 GetItemSet did it the other
+    /// way around and read freed/reused blobs when the purge evicted the very key
+    /// being fetched - the ER7 reindex stage "corruption")
+    PGixItemSet GetItemSetNoRefresh(const TBlobPt& Pt) const;
 
     /// get keyid of a given key and create it if does not exist
     TBlobPt AddKeyId(const TKey& Key);
@@ -857,10 +873,10 @@ public:
     void SaveKeyDictFileAsType(const TStr& FNm, const TGixKeyDictType& TargetType) const {
         KeyIdH.SaveFileAsType(FNm, TargetType); }
 
-    /// get item set for given key
+    /// get item set for given key. Verifies that the itemset loaded from the blob
+    /// really belongs to Key, so a wrong-content read (stale pointer into a freed
+    /// and reused blob slot) fails loudly instead of serving another key's postings
     PGixItemSet GetItemSet(const TKey& Key) const;
-    /// get item set for given BLOB pointer
-    PGixItemSet GetItemSet(const TBlobPt& Pt) const;
     /// Get items for given key
     void GetItemV(const TKey& Key, TVec<TItem>& ItemV) const;
     /// Like GetItemV, but only returns items whose value lies in the half-open range [MinItem, MaxItem).
@@ -931,6 +947,14 @@ public:
     /// Update cache increment (or decrement)
     void AddToNewCacheSizeInc(const uint64& OldSize, const uint64& NewSize) const;
 
+    /// Discard (instead of store) dirty itemsets that leave the cache. ONLY safe
+    /// right after Flush(): every blob is then current and itemsets re-dirty only
+    /// through content-preserving merges (Def()), so the stored form stays
+    /// equivalent. See DiscardDirtyOnDropP.
+    void SetDiscardDirtyOnDrop(const bool& DiscardP) { DiscardDirtyOnDropP = DiscardP; }
+    /// Are dirty itemsets leaving the cache discarded instead of stored?
+    bool IsDiscardDirtyOnDrop() const { return DiscardDirtyOnDropP; }
+
 
     /// Copy the complete content of this gix into DestGix. Keys are processed in
     /// sorted order and one key at a time, so all child vectors of one key (and of
@@ -945,8 +969,20 @@ public:
     /// the destination key count may be lower than the source key count.
     /// An optional KeyFilter restricts the copy to the keys it keeps; filtered-out
     /// keys are not read at all and are not counted as copied or empty.
+    /// When FailedKeyV is given, a key whose source itemset cannot be read (or whose
+    /// copy fails verification) is recorded and reported instead of aborting the
+    /// whole copy, and the scan continues - the caller gets the complete list of
+    /// broken keys in one pass. The destination MUST NOT be used when any key
+    /// failed (it may hold a partial itemset for such keys). Without FailedKeyV the
+    /// first failure propagates as before.
     void CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOut = NULL, int* EmptyKeysOut = NULL,
-        const TGixKeyFilter<TKey>* KeyFilter = NULL) const;
+        const TGixKeyFilter<TKey>* KeyFilter = NULL, TVec<TKey>* FailedKeyV = NULL) const;
+    /// Diagnostic full scan: try to completely read every itemset (header blob and
+    /// all child vectors) without modifying anything. Keys are visited in blob-pointer
+    /// order, so the scan reads the blob mostly sequentially. Each unreadable key is
+    /// reported into FailedKeyStrV as "<seg:addr> <error message>". Returns the
+    /// number of keys scanned.
+    int VerifyAllKeys(TStrV& FailedKeyStrV) const;
     /// Compare data stored under the given key in this and the other gix.
     /// Keys with more than MxItems items are compared by count and first/last item only.
     bool IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const TKey& Key, const int& MxItems = 5000000) const;

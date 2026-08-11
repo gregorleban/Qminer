@@ -6999,10 +6999,17 @@ void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const
         SrcGix->CanFirstChildBeUnfilled(), SrcGix->GetSplitLenMin(), SrcGix->GetSplitLenMax(),
         SrcGix->GetKeyDictType());
     DestGix->SetSplitLenProvider(SplitLenProvider);
-    // copy all keys; each key's data is verified by count during the copy
+    // copy all keys; each key's data is verified by count during the copy. Broken
+    // keys are collected instead of aborting on the first one, so a corrupt source
+    // yields a complete damage report in a single pass
     const int SrcKeys = SrcGix->GetKeys();
     uint64 CopiedItems = 0; int EmptyKeys = 0;
-    SrcGix->CopyTo(*DestGix, &CopiedItems, &EmptyKeys);
+    TVec<TQmGixKey> FailedKeyV;
+    SrcGix->CopyTo(*DestGix, &CopiedItems, &EmptyKeys, NULL, &FailedKeyV);
+    QmAssertR(FailedKeyV.Empty(), TStr::Fmt(
+        "[TIndex::DefragGix] %s: %d key(s) could not be copied (unreadable source itemsets, "
+        "see the listing above) - the rebuilt gix is incomplete and must not be swapped in",
+        GixNm.CStr(), FailedKeyV.Len()));
     // before/after accounting: the only legitimate key-count difference is source
     // keys whose posting list is fully deleted (they are not created in the rebuilt
     // gix and cannot match any search). Anything else means keys were lost or invented.
@@ -7080,10 +7087,20 @@ void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
         LiveGix->GetKeyDictType());
     DestGix->SetSplitLenProvider(SplitLenProvider);
     // copy all keys that were NOT rebuilt from the live gix (sorted = contiguous);
-    // each key's item count is verified during the copy
+    // each key's item count is verified during the copy. Broken keys are collected
+    // instead of aborting on the first one, so a corrupt source yields a complete
+    // damage report in a single pass
+    TVec<TQmGixKey> FailedKeyV;
     uint64 LiveItems = 0; int LiveEmptyKeys = 0;
-    LiveGix->CopyTo(*DestGix, &LiveItems, &LiveEmptyKeys, &KeepOtherF);
+    LiveGix->CopyTo(*DestGix, &LiveItems, &LiveEmptyKeys, &KeepOtherF, &FailedKeyV);
     const int KeysAfterLiveCopy = DestGix->GetKeys();
+    // the stage gix is throwaway: after a flush its blobs are current, and the
+    // copy re-dirties itemsets only through content-preserving Def() merges, so
+    // storing them back on eviction is wasted time - discard them instead. Also
+    // lets DropFromCache release Def()-dirtied itemsets promptly on a read-only
+    // (resume-mode) stage, where they otherwise linger until the LRU purge
+    StageGix->Flush();
+    StageGix->SetDiscardDirtyOnDrop(true);
     // copy the rebuilt keys from the stage gix. Note for a sorted key
     // dictionary: these keys interleave in key space with the ones copied
     // above, so in a MIXED gix they land in the dictionary's overlay hash -
@@ -7091,7 +7108,11 @@ void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
     // the rebuilt (pos) gix holds only text keys, so the first copy is empty
     // and this pass builds the compact arrays directly
     uint64 StageItems = 0; int StageEmptyKeys = 0;
-    StageGix->CopyTo(*DestGix, &StageItems, &StageEmptyKeys, &KeepRebuiltF);
+    StageGix->CopyTo(*DestGix, &StageItems, &StageEmptyKeys, &KeepRebuiltF, &FailedKeyV);
+    QmAssertR(FailedKeyV.Empty(), TStr::Fmt(
+        "[TIndex::ReindexCopyOneGix] %s: %d key(s) could not be copied (unreadable source "
+        "itemsets, see the listing above) - the rebuilt gix is incomplete and must not be swapped in",
+        GixNm.CStr(), FailedKeyV.Len()));
     const int DestKeys = DestGix->GetKeys();
     TEnv::Logger->OnStatus(TStr::Fmt(
         "[Reindex] %s: %s items in %s keys kept from the live index, %s items in %s keys from the reindex",
@@ -7168,6 +7189,39 @@ void TIndex::ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
             DestFPath, ItemHandlerPos, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
         RebuiltGixNmV.Add("Index.GixPos");
     }
+}
+
+template <class TQmGixItem>
+int TIndex::VerifyOneGixFiles(const TStr& GixNm, const TStr& FPath,
+        const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const int64& CacheSize, TStrV& FailedKeyStrV) {
+
+    TPt<TGix<TQmGixKey, TQmGixItem> > Gix = TGix<TQmGixKey, TQmGixItem>::New(GixNm,
+        FPath, faRdOnly, GixItemHandler, CacheSize);
+    return Gix->VerifyAllKeys(FailedKeyStrV);
+}
+
+int TIndex::VerifyGixFiles(const TStr& FPath, const TStr& GixNm,
+        const int64& CacheSize, TStrV& FailedKeyStrV) {
+
+    const TStr LcGixNm = GixNm.GetLc();
+    if (LcGixNm == "full") {
+        TQmGixSumItemHandler<TQmGixItemFull> Handler;
+        return VerifyOneGixFiles<TQmGixItemFull>("Index.GixFull", FPath, &Handler, CacheSize, FailedKeyStrV);
+    }
+    if (LcGixNm == "small") {
+        TQmGixSumItemHandler<TQmGixItemSmall> Handler;
+        return VerifyOneGixFiles<TQmGixItemSmall>("Index.GixSmall", FPath, &Handler, CacheSize, FailedKeyStrV);
+    }
+    if (LcGixNm == "tiny") {
+        TGixDefItemHandler<TQmGixKey, TQmGixItemTiny> Handler;
+        return VerifyOneGixFiles<TQmGixItemTiny>("Index.GixTiny", FPath, &Handler, CacheSize, FailedKeyStrV);
+    }
+    if (LcGixNm == "pos") {
+        TGixDefItemHandler<TQmGixKey, TQmGixItemPos> Handler;
+        return VerifyOneGixFiles<TQmGixItemPos>("Index.GixPos", FPath, &Handler, CacheSize, FailedKeyStrV);
+    }
+    throw TQmExcept::New("[TIndex::VerifyGixFiles] unknown gix name " + GixNm);
 }
 
 TGixKeyDictType TIndex::GetGixKeyDictType(const TStr& GixNm) const {
