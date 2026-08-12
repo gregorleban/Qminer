@@ -1243,6 +1243,22 @@ void TRecSerializator::CheckToastDel(const TMemBase& InRecMem, const TFieldSeria
 /// zstd level for "compressed" string fields: good ratio at ingest-friendly speed
 static const int ZstdCompressionLevel = 3;
 
+/// Per-thread reusable ZSTD contexts. The one-shot ZSTD_compress()/ZSTD_decompress()
+/// helpers allocate and free a full context (multi-KB work buffers) on every call,
+/// which dominated CPU during store migration (heavy heap alloc/free churn). A
+/// context recycles its internal buffers across calls, so keeping one per thread
+/// removes that per-value allocation; thread-local keeps it lock-free across workers.
+struct TZstdThreadCtx {
+    ZSTD_CCtx* CCtx;
+    ZSTD_DCtx* DCtx;
+    TZstdThreadCtx() : CCtx(ZSTD_createCCtx()), DCtx(ZSTD_createDCtx()) {}
+    ~TZstdThreadCtx() { ZSTD_freeCCtx(CCtx); ZSTD_freeDCtx(DCtx); }
+};
+static thread_local TZstdThreadCtx ZstdThreadCtx;
+/// Per-thread scratch buffer for decompressed bytes, grown on demand and reused
+/// (TMem::Resize only grows), so LoadCompressedStr does no per-call heap alloc.
+static thread_local TMem ZstdDecompressBf;
+
 /// Serialize a string value of a "compressed" field:
 /// [TInt uncompressed length][TInt compressed length][compressed bytes]
 /// (empty strings store just the leading zero length)
@@ -1253,7 +1269,7 @@ static void SaveCompressedStr(TMOut& SOut, const TStr& Str) {
     const size_t CompBound = ZSTD_compressBound((size_t)StrLen);
     QmAssertR(CompBound <= (size_t)TInt::Mx, "[SaveCompressedStr] string too long to compress");
     TMem CompMem((int)CompBound);
-    const size_t CompLen = ZSTD_compress(CompMem.GetBf(), CompBound,
+    const size_t CompLen = ZSTD_compressCCtx(ZstdThreadCtx.CCtx, CompMem.GetBf(), CompBound,
         Str.CStr(), (size_t)StrLen, ZstdCompressionLevel);
     QmAssertR(!ZSTD_isError(CompLen),
         TStr("[SaveCompressedStr] zstd compression failed: ") + TStr(ZSTD_getErrorName(CompLen)));
@@ -1269,18 +1285,17 @@ static TStr LoadCompressedStr(TThinMIn& min) {
     QmAssertR(UncompLen > 0 && CompLen > 0, "[LoadCompressedStr] corrupt compressed value lengths");
     TMem CompMem(CompLen);
     min.GetBf(CompMem.GetBf(), CompLen);
-    char* UncompBf = new char[UncompLen + 1];
-    const size_t Res = ZSTD_decompress(UncompBf, (size_t)UncompLen,
+    // decompress into the reused per-thread scratch buffer (no per-call new[]/delete[])
+    ZstdDecompressBf.Reserve(UncompLen + 1, false);
+    char* UncompBf = ZstdDecompressBf.GetBf();
+    const size_t Res = ZSTD_decompressDCtx(ZstdThreadCtx.DCtx, UncompBf, (size_t)UncompLen,
         CompMem.GetBf(), (size_t)CompLen);
     if (ZSTD_isError(Res) || (int)Res != UncompLen) {
-        delete[] UncompBf;
         throw TQmExcept::New(TStr("[LoadCompressedStr] zstd decompression failed: ") +
             TStr(ZSTD_isError(Res) ? ZSTD_getErrorName(Res) : "unexpected decompressed length"));
     }
     UncompBf[UncompLen] = '\0';
-    TStr Str(UncompBf);
-    delete[] UncompBf;
-    return Str;
+    return TStr(UncompBf);
 }
 
 void TRecSerializator::SetFieldIntV(TMem& RecMem, TMOut& SOut,
@@ -6435,6 +6450,11 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
     // into the rebuilt disk blob while reads keep coming from the live blobs
     ToastWriteRedirectBlob = NewDataBlob;
     uint64 WrittenRecs = 0; int DroppedRecs = 0;
+    // progress timing: report throughput (records/second) alongside the counter.
+    // the rate shown on each line is the instantaneous rate since the previous
+    // progress line; the final line reports the overall average.
+    TExeTm MigrateTm;
+    int LastProgRecN = 0; double LastProgSecs = 0.0;
     try {
         for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
             const uint64 RecId = RecIdV[RecN];
@@ -6481,8 +6501,12 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
             }
             WrittenRecs++;
             if (RecN % 100000 == 0) {
-                printf("%d / %d records migrated (%.1f%%)\r", RecN, RecIdV.Len(),
-                    RecIdV.Len() > 0 ? 100.0 * RecN / RecIdV.Len() : 100.0);
+                const double NowSecs = MigrateTm.GetSecs();
+                const double DeltaSecs = NowSecs - LastProgSecs;
+                const double RecsPerSec = DeltaSecs > 0 ? (RecN - LastProgRecN) / DeltaSecs : 0.0;
+                printf("%d / %d records migrated (%.1f%%), %.0f rec/s          \r", RecN, RecIdV.Len(),
+                    RecIdV.Len() > 0 ? 100.0 * RecN / RecIdV.Len() : 100.0, RecsPerSec);
+                LastProgRecN = RecN; LastProgSecs = NowSecs;
             }
         }
     } catch (...) {
@@ -6491,7 +6515,12 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
         throw;
     }
     ToastWriteRedirectBlob = NULL;
-    printf("%d / %d records migrated (100.0%%)\n", RecIdV.Len(), RecIdV.Len());
+    {
+        const double TotSecs = MigrateTm.GetSecs();
+        const double AvgRecsPerSec = TotSecs > 0 ? RecIdV.Len() / TotSecs : 0.0;
+        printf("%d / %d records migrated (100.0%%) in %s, avg %.0f rec/s\n",
+            RecIdV.Len(), RecIdV.Len(), MigrateTm.GetStr(), AvgRecsPerSec);
+    }
 
     // report and explain every difference
     const auto SampleStr = [](const TUInt64V& SampleV) {
