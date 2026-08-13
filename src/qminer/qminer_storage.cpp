@@ -11,6 +11,15 @@
 // vendored zstd (single-file amalgamation) - used for "compressed" string fields
 #include "../third_party/zstd/zstd.h"
 
+// parallel schema migration (TStorePbBlobT::MigrateSchemaToT, -migrateThreads:N)
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <thread>
+#include <vector>
+
 namespace TQm {
 
 namespace TStorage {
@@ -979,7 +988,15 @@ void TRecSerializator::SetFieldStr(char* Bf, const int& BfL,
     const TFieldSerialDesc& FieldSerialDesc, const TStr& Str) {
 
     char* bf = GetLocationFixed(Bf, BfL, FieldSerialDesc);
-    const int StrId = CodebookH.AddKey(Str);
+    int StrId;
+    if (CodebookMxP != nullptr) {
+        // parallel schema migration: several workers add codebook strings while
+        // verifier threads read them back - serialize the codebook access
+        std::lock_guard<std::mutex> CodebookLock(*CodebookMxP);
+        StrId = CodebookH.AddKey(Str);
+    } else {
+        StrId = CodebookH.AddKey(Str);
+    }
     *((int*)bf) = StrId;
     // set the null field to false
     SetFieldNull(Bf, BfL, FieldSerialDesc, false);
@@ -1994,6 +2011,12 @@ TStr TRecSerializator::GetFieldStr(TThinMIn& min, const int& FieldId) const {
         // cast to codebook id value
         int StrId = *((int*)bf);
         // return string from codebook
+        if (CodebookMxP != nullptr) {
+            // parallel schema migration: the codebook may be growing (AddKey on
+            // the serializer workers) while this thread reads it
+            std::lock_guard<std::mutex> CodebookLock(*CodebookMxP);
+            return CodebookH.GetKey(StrId);
+        }
         return CodebookH.GetKey(StrId);
     } else {
         min.MoveTo(GetOffsetVar(min, GetFieldSerialDesc(FieldId)));
@@ -5944,16 +5967,54 @@ TStorePbBlobT<TRecPtMap>::~TStorePbBlobT() {
     }
 }
 
+/// Per-thread TOAST-read redirect: when non-NULL, UnToastVal reads TOAST-ed
+/// values from this blob instead of the store's DataBlob. VerifyMigratedRec
+/// sets/clears it around every field read of a rebuilt record; with
+/// -migrateThreads:N > 1 verification runs on several threads at once, so the
+/// slot must be per-thread. It is a raw pointer, not a PPgBlob: a thread_local
+/// TPt would decrement the blob's NON-atomic refcount at thread exit, racing
+/// other threads' refcount traffic. The raw slot avoids all refcounting; the
+/// pointed-to blob is guaranteed to outlive its users because MigrateSchemaToT
+/// joins every migration thread (and the serial path resets the slot to NULL,
+/// exactly like the PPgBlob member it replaces) before releasing the blob.
+/// Shared by both TStorePbBlobT instantiations - only one store migrates at a
+/// time on any given thread, and nothing else ever sets the slot.
+static thread_local TPgBlob* ToastReadRedirectBlobTls = nullptr;
+
 /// Store value into internal storage using TOAST method
 template <class TRecPtMap>
 TPgBlobPt TStorePbBlobT<TRecPtMap>::ToastVal(const TMemBase& Mem) {
+    if (MigrateParallelP) {
+        // parallel schema migration: TOAST writes come from the serializer
+        // workers and target the rebuilt blob (the write redirect) concurrently
+        // with the writer thread's record Puts - serialize the blob access.
+        // Only the page-blob writes are inside the lock; the (expensive) ZSTD
+        // compression of the value happened before ToastVal was called.
+        std::lock_guard<std::mutex> BlobLock(MigrateNewBlobMx);
+        return ToastValToBlob(ToastWriteRedirectBlob.Empty() ? DataBlob : ToastWriteRedirectBlob, Mem);
+    }
     return ToastValToBlob(ToastWriteRedirectBlob.Empty() ? DataBlob : ToastWriteRedirectBlob, Mem);
 }
 
 /// Retrieve value that is saved using TOAST method from storage
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::UnToastVal(const TPgBlobPt& Pt, TMem& Mem) {
-    UnToastValFromBlob(ToastReadRedirectBlob.Empty() ? DataBlob : ToastReadRedirectBlob, Pt, Mem);
+    TPgBlob* Blob = (ToastReadRedirectBlobTls != nullptr) ? ToastReadRedirectBlobTls : DataBlob();
+    if (!MigrateParallelP) {
+        UnToastValFromBlob(Blob, Pt, Mem);
+    } else if (Blob == DataBlob()) {
+        // parallel schema migration, un-TOASTing an OLD value out of the live
+        // blob (serializer getters and verifier "old side" reads) - serialize
+        // with the reader thread's page-cache accesses
+        std::lock_guard<std::mutex> BlobLock(MigrateOldBlobMx);
+        UnToastValFromBlob(Blob, Pt, Mem);
+    } else {
+        // parallel schema migration, reading a TOAST-ed value of a rebuilt
+        // record (the redirect points at the rebuilt blob) - serialize with the
+        // writer thread's Puts and the workers' TOAST writes
+        std::lock_guard<std::mutex> BlobLock(MigrateNewBlobMx);
+        UnToastValFromBlob(Blob, Pt, Mem);
+    }
 }
 
 /// Store value into the given page blob using the TOAST method
@@ -5976,6 +6037,13 @@ TPgBlobPt TStorePbBlobT<TRecPtMap>::ToastValToBlob(const PPgBlob& Blob, const TM
 /// Retrieve a TOAST-ed value from the given page blob
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, TMem& Mem) {
+    UnToastValFromBlob(Blob(), Pt, Mem);
+}
+
+/// Retrieve a TOAST-ed value from the given page blob (raw-pointer core; see
+/// the header - the thread-local read redirect must not construct a PPgBlob)
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::UnToastValFromBlob(TPgBlob* Blob, const TPgBlobPt& Pt, TMem& Mem) {
     TVec<TPgBlobPt> Pts;
     TThinMIn MIn = Blob->Get(Pt);
     Pts.Load(MIn);
@@ -6237,13 +6305,15 @@ void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRec
         // read the old value from the live blobs and the new value from the rebuilt
         // blob (TOAST-ed values of the rebuilt record live in NewToastBlob) and
         // compare them. EQ evaluates OldExpr with TOAST reads from the live blob
-        // and NewExpr with TOAST reads redirected to the rebuilt blob.
+        // and NewExpr with TOAST reads redirected to the rebuilt blob. The
+        // redirect is a per-thread slot (parallel migration verifies on several
+        // threads at once) and is always reset to NULL after the redirected read.
         #define QM_MIGRATE_FIELD_EQ(OldExpr, NewExpr, EqExpr) { \
-            ToastReadRedirectBlob = NULL; \
+            ToastReadRedirectBlobTls = NULL; \
             const auto OldVal = (OldExpr); (void) OldVal; \
-            ToastReadRedirectBlob = NewToastBlob; \
+            ToastReadRedirectBlobTls = NewToastBlob(); \
             const auto NewVal = (NewExpr); (void) NewVal; \
-            ToastReadRedirectBlob = NULL; \
+            ToastReadRedirectBlobTls = NULL; \
             EAssertR((EqExpr), TStr::Fmt( \
                 "[MigrateSchemaTo] value mismatch for field %s of record %s in store %s", \
                 FieldDesc.GetFieldNm().CStr(), TUInt64::GetStr(RecId).CStr(), GetStoreNm().CStr())); }
@@ -6319,17 +6389,17 @@ void TStorePbBlobT<TRecPtMap>::VerifyMigratedRec(const uint64& RecId, const TRec
 /// record maps use the representation the schema's "recIdMap" option selects
 template <class TRecPtMap>
 uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut) {
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut, const int& MigrateThreads) {
     return NewSchema.DenseRecIdMapP ?
-        MigrateSchemaToT<TPbBlobRecMapDense>(DestStoreFNm, NewSchema, CacheSize, OldToNewFieldIdVOut) :
-        MigrateSchemaToT<TPbBlobRecMapHash>(DestStoreFNm, NewSchema, CacheSize, OldToNewFieldIdVOut);
+        MigrateSchemaToT<TPbBlobRecMapDense>(DestStoreFNm, NewSchema, CacheSize, OldToNewFieldIdVOut, MigrateThreads) :
+        MigrateSchemaToT<TPbBlobRecMapHash>(DestStoreFNm, NewSchema, CacheSize, OldToNewFieldIdVOut, MigrateThreads);
 }
 
 /// MigrateSchemaTo body, parameterized on the rebuilt record-map representation
 template <class TRecPtMap>
 template <class TDstMap>
 uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut) {
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut, const int& MigrateThreads) {
 
     TEnv::Logger->OnStatus(TStr::Fmt("Migrating store '%s' to the new schema field placement...", GetStoreNm().CStr()));
     if (GetStoreType() != TDstMap::GetStoreTypeNm()) {
@@ -6455,6 +6525,8 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
     // progress line; the final line reports the overall average.
     TExeTm MigrateTm;
     int LastProgRecN = 0; double LastProgSecs = 0.0;
+    if (MigrateThreads <= 1) {
+    // the serial path - unchanged
     try {
         for (int RecN = 0; RecN < RecIdV.Len(); RecN++) {
             const uint64 RecId = RecIdV[RecN];
@@ -6511,8 +6583,360 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
         }
     } catch (...) {
         ToastWriteRedirectBlob = NULL;
-        ToastReadRedirectBlob = NULL;
+        ToastReadRedirectBlobTls = NULL;
         throw;
+    }
+    } else {
+        // ----------------------------------------------------------------------
+        // Pipelined parallel migration (-migrateThreads:N > 1). Same per-record
+        // work as the serial loop, split into stages:
+        //   R (this thread)      reads each record's section bytes out of the
+        //                        live page blobs in ascending record-id order
+        //                        and packages them into batches. Page-cache
+        //                        reads are not thread-safe, so ALL live-blob
+        //                        access is either here or under MigrateOldBlobMx
+        //                        (workers un-TOASTing old values).
+        //   S (N workers)        SerializeCopyRec into the new layout - the
+        //                        dominant CPU cost (ZSTD decompress+recompress
+        //                        of "compressed" string fields) runs without any
+        //                        lock; only un-TOASTing old values (old-blob mutex)
+        //                        and TOASTing oversized new ones (new-blob mutex)
+        //                        synchronize.
+        //   W (one writer)       Puts the serialized records into the rebuilt
+        //                        blobs STRICTLY in record-id order (batches are
+        //                        consumed in sequence-number order), fills the
+        //                        new record maps, copies the stored bytes back
+        //                        out and reports progress - so the record blobs,
+        //                        record maps and counters are filled exactly
+        //                        like a serial run.
+        //   V (the S workers)    VerifyMigratedRec through a second queue - the
+        //                        verification needs no ordering, and sharing the
+        //                        worker pool with stage S lets the threads load-
+        //                        balance between the two (total threads stay at
+        //                        MigrateThreads + 1 writer + this reader).
+        //
+        // The on-disk RESULT differs from a serial run only in the physical
+        // placement of TOAST-ed (oversized) values inside the rebuilt disk blob:
+        // stage-S workers TOAST values concurrently with the writer's record
+        // Puts, so the TOAST pages interleave with the record pages differently
+        // than in the serial loop. That is expected and harmless - record
+        // content and every record/TOAST pointer stay correct, which is exactly
+        // what VerifyMigratedRec proves for every single record.
+        //
+        // Shared-state inventory (everything else is batch-local):
+        //  - live blobs:       MigrateOldBlobMx (reader copies, worker un-TOASTs)
+        //  - rebuilt blobs:    MigrateNewBlobMx (writer Puts/read-backs, worker
+        //                      TOAST writes via ToastVal, verifier TOAST reads
+        //                      via the thread-local read redirect)
+        //  - new serializators' string codebook: CodebookMx via SetCodebookMx
+        //                      (AddKey from concurrent workers, GetKey from
+        //                      verifiers)
+        //  - record maps and WrittenRecs: writer thread only; DroppedRecs:
+        //                      reader thread only - no atomics needed
+        //  - batches own their buffers (TMem deep copies); no TStr instance
+        //    ever crosses a thread boundary (TStr refcounts are not atomic)
+        //  - ToastPtToDel is never touched: SerializeCopyRec does not call
+        //    CheckToastDel (see the EAssert in DelToastVal)
+        // All queues are bounded (backpressure); the first exception on any
+        // thread stops the pipeline, every thread is joined (a std::thread must
+        // never be destroyed joinable) and the exception is rethrown here with
+        // the redirects reset - the same contract as the serial catch block.
+        MigrateParallelP = true;
+        std::mutex CodebookMx;
+        NewSerCache.SetCodebookMx(&CodebookMx);
+        NewSerMem.SetCodebookMx(&CodebookMx);
+
+        struct TMigRec {
+            uint64 RecId = 0;
+            int RecN = 0;         // index in RecIdV, for the progress line
+            TMem OldCacheMem;     // disk-section bytes of the live record
+            TMem OldMemMem;       // memory-section bytes of the live record
+            TMem NewCacheRecMem;  // stage S: re-serialized disk section
+            TMem NewMemRecMem;    // stage S: re-serialized memory section
+            TMem StoredCacheMem;  // stage W: disk section read back after Put
+            TMem StoredMemMem;    // stage W: memory section read back after Put
+        };
+        struct TMigBatch {
+            int BatchN;           // sequence number, assigned in record-id order
+            TVec<TMigRec> RecV;
+            TMigBatch(const int& _BatchN, const int& MxRecs) : BatchN(_BatchN) { RecV.Gen(MxRecs, 0); }
+        };
+        const int BatchLen = 256;
+        // one monitor guards all queue state; the pipeline advances in ~BatchLen
+        // record steps, so the single lock is uncontended and easy to reason about
+        std::mutex QueueMx;
+        std::condition_variable QueueCv;
+        std::deque<TMigBatch*> SerializeQ;          // stage R -> stage S
+        std::map<int, TMigBatch*> SerializedBatchH; // stage S -> stage W, keyed by BatchN
+        std::deque<TMigBatch*> VerifyQ;             // stage W -> stage V
+        int NextWriteBatchN = 0;                    // guarded by QueueMx
+        int TotalBatches = -1;                      // set when the reader is done
+        bool ReaderDoneP = false;
+        bool WriterDoneP = false;
+        std::atomic<bool> StopP(false);
+        std::mutex ExcMx;
+        std::exception_ptr FirstExc = nullptr;
+        // queue bounds (backpressure). The ordered stage-S -> stage-W handoff
+        // cannot deadlock on its bound: batches leave SerializeQ in sequence
+        // order, so the batch the writer waits for is either already published
+        // or held by a worker, and that worker may always bypass the bound
+        const int SerializeQBound = 2 * MigrateThreads;
+        const int SerializedBound = 2 * MigrateThreads;
+        const int VerifyQBound = 2 * MigrateThreads;
+
+        auto OnThreadExc = [&]() {
+            {
+                std::lock_guard<std::mutex> ExcLock(ExcMx);
+                if (!FirstExc) { FirstExc = std::current_exception(); }
+            }
+            StopP = true;
+            QueueCv.notify_all();
+        };
+
+        // stage V body: verify one written batch (any order, no shared state
+        // beyond what VerifyMigratedRec itself locks)
+        auto VerifyBatch = [&](TMigBatch* Batch) {
+            for (int BatchRecN = 0; BatchRecN < Batch->RecV.Len(); BatchRecN++) {
+                TMigRec& Rec = Batch->RecV[BatchRecN];
+                if (NewCacheUsedP) {
+                    VerifyMigratedRec(Rec.RecId, NewSerCache, Rec.StoredCacheMem,
+                        Rec.OldMemMem, Rec.OldCacheMem, NewDataBlob, CopyOldToNewFieldIdV);
+                }
+                if (NewMemUsedP) {
+                    VerifyMigratedRec(Rec.RecId, NewSerMem, Rec.StoredMemMem,
+                        Rec.OldMemMem, Rec.OldCacheMem, NewDataBlob, CopyOldToNewFieldIdV);
+                }
+            }
+        };
+
+        // stage S + V worker: prefers publishing a finished batch to the writer,
+        // then verification (drains the pipeline tail and frees batch memory),
+        // then serialization; exits when the writer is done and nothing is queued
+        auto WorkerFun = [&]() {
+            TMigBatch* PendingPub = nullptr; // serialized, waiting for room at the writer
+            try {
+                for (;;) {
+                    TMigBatch* VerBatch = nullptr; TMigBatch* SerBatch = nullptr;
+                    {
+                        std::unique_lock<std::mutex> QueueLock(QueueMx);
+                        QueueCv.wait(QueueLock, [&] {
+                            if (StopP.load()) { return true; }
+                            if (PendingPub != nullptr) {
+                                return (int)SerializedBatchH.size() < SerializedBound ||
+                                    PendingPub->BatchN == NextWriteBatchN || !VerifyQ.empty();
+                            }
+                            return !VerifyQ.empty() || !SerializeQ.empty() || WriterDoneP;
+                        });
+                        if (StopP.load()) { delete PendingPub; return; }
+                        if (PendingPub != nullptr && ((int)SerializedBatchH.size() < SerializedBound ||
+                                PendingPub->BatchN == NextWriteBatchN)) {
+                            SerializedBatchH[PendingPub->BatchN] = PendingPub;
+                            PendingPub = nullptr;
+                        }
+                        if (!VerifyQ.empty()) {
+                            VerBatch = VerifyQ.front(); VerifyQ.pop_front();
+                        } else if (PendingPub == nullptr && !SerializeQ.empty()) {
+                            SerBatch = SerializeQ.front(); SerializeQ.pop_front();
+                        } else if (PendingPub == nullptr && WriterDoneP) {
+                            QueueLock.unlock();
+                            QueueCv.notify_all();
+                            return;
+                        }
+                    }
+                    QueueCv.notify_all();
+                    if (VerBatch != nullptr) {
+                        VerifyBatch(VerBatch);
+                        delete VerBatch;
+                    } else if (SerBatch != nullptr) {
+                        // re-serialize each record of the batch into the new layout;
+                        // the ZSTD work runs lock-free, only un-TOASTing old values /
+                        // TOASTing oversized new ones takes the blob mutexes
+                        for (int BatchRecN = 0; BatchRecN < SerBatch->RecV.Len(); BatchRecN++) {
+                            TMigRec& Rec = SerBatch->RecV[BatchRecN];
+                            if (NewCacheUsedP) {
+                                NewSerCache.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache,
+                                    Rec.OldMemMem, Rec.OldCacheMem, Rec.NewCacheRecMem, CopyNewToOldFieldIdV);
+                            }
+                            if (NewMemUsedP) {
+                                NewSerMem.SerializeCopyRec(this, *SerializatorMem, *SerializatorCache,
+                                    Rec.OldMemMem, Rec.OldCacheMem, Rec.NewMemRecMem, CopyNewToOldFieldIdV);
+                            }
+                        }
+                        PendingPub = SerBatch;
+                    }
+                    // else: only published PendingPub (or a spurious wakeup) - loop
+                }
+            } catch (...) {
+                delete PendingPub;
+                OnThreadExc();
+            }
+        };
+
+        // stage W: consume serialized batches strictly in sequence order, store
+        // the records, fill the record maps, read the stored bytes back out and
+        // hand the batch to the verifiers
+        auto WriterFun = [&]() {
+            try {
+                for (;;) {
+                    TMigBatch* Batch = nullptr;
+                    {
+                        std::unique_lock<std::mutex> QueueLock(QueueMx);
+                        QueueCv.wait(QueueLock, [&] {
+                            return StopP.load() || SerializedBatchH.count(NextWriteBatchN) > 0 ||
+                                (ReaderDoneP && NextWriteBatchN >= TotalBatches);
+                        });
+                        if (StopP.load()) { return; }
+                        if (SerializedBatchH.count(NextWriteBatchN) == 0) {
+                            // the reader is done and every batch has been written
+                            WriterDoneP = true;
+                            break;
+                        }
+                        Batch = SerializedBatchH[NextWriteBatchN];
+                        SerializedBatchH.erase(NextWriteBatchN);
+                        NextWriteBatchN++; // advanced under the lock so publishers see it
+                    }
+                    QueueCv.notify_all();
+                    for (int BatchRecN = 0; BatchRecN < Batch->RecV.Len(); BatchRecN++) {
+                        TMigRec& Rec = Batch->RecV[BatchRecN];
+                        if (NewCacheUsedP) {
+                            TPgBlobPt NewPt;
+                            {
+                                // the lock covers the Put and the read-back copy: the
+                                // workers TOAST/un-TOAST in the same blob concurrently
+                                std::lock_guard<std::mutex> BlobLock(MigrateNewBlobMx);
+                                NewPt = NewDataBlob->Put(Rec.NewCacheRecMem.GetBf(), Rec.NewCacheRecMem.Len());
+                                TMemBase MemBase = NewDataBlob->GetMemBase(NewPt);
+                                Rec.StoredCacheMem.AddBf(MemBase.GetBf(), MemBase.Len());
+                            }
+                            NewRecIdBlobPtH.AddDat(Rec.RecId, NewPt);
+                            Rec.NewCacheRecMem.Clr(); // the verifier reads the STORED bytes
+                        }
+                        if (NewMemUsedP) {
+                            TPgBlobPt NewPt;
+                            {
+                                std::lock_guard<std::mutex> BlobLock(MigrateNewBlobMx);
+                                NewPt = NewDataMem->Put(Rec.NewMemRecMem.GetBf(), Rec.NewMemRecMem.Len());
+                                TMemBase MemBase = NewDataMem->GetMemBase(NewPt);
+                                Rec.StoredMemMem.AddBf(MemBase.GetBf(), MemBase.Len());
+                            }
+                            NewRecIdBlobPtHMem.AddDat(Rec.RecId, NewPt);
+                            Rec.NewMemRecMem.Clr();
+                        }
+                        WrittenRecs++;
+                        if (Rec.RecN % 100000 == 0) {
+                            const double NowSecs = MigrateTm.GetSecs();
+                            const double DeltaSecs = NowSecs - LastProgSecs;
+                            const double RecsPerSec = DeltaSecs > 0 ? (Rec.RecN - LastProgRecN) / DeltaSecs : 0.0;
+                            printf("%d / %d records migrated (%.1f%%), %.0f rec/s          \r", Rec.RecN, RecIdV.Len(),
+                                RecIdV.Len() > 0 ? 100.0 * Rec.RecN / RecIdV.Len() : 100.0, RecsPerSec);
+                            LastProgRecN = Rec.RecN; LastProgSecs = NowSecs;
+                        }
+                    }
+                    // hand the written batch to the verifiers (bounded)
+                    {
+                        std::unique_lock<std::mutex> QueueLock(QueueMx);
+                        QueueCv.wait(QueueLock, [&] {
+                            return StopP.load() || (int)VerifyQ.size() < VerifyQBound; });
+                        if (StopP.load()) { delete Batch; return; }
+                        VerifyQ.push_back(Batch);
+                    }
+                    QueueCv.notify_all();
+                }
+                QueueCv.notify_all(); // WriterDoneP is set - let the workers wind down
+            } catch (...) {
+                OnThreadExc();
+            }
+        };
+
+        // stage R runs on this thread; spawn the writer and the workers first.
+        // Any failure path joins every spawned thread before unwinding
+        std::vector<std::thread> WorkerThreadV;
+        std::thread WriterThread;
+        TMigBatch* CurBatch = nullptr;
+        try {
+            WriterThread = std::thread(WriterFun);
+            for (int ThreadN = 0; ThreadN < MigrateThreads; ThreadN++) { WorkerThreadV.emplace_back(WorkerFun); }
+            int BatchesPushed = 0;
+            CurBatch = new TMigBatch(0, BatchLen);
+            for (int RecN = 0; RecN < RecIdV.Len() && !StopP.load(); RecN++) {
+                const uint64 RecId = RecIdV[RecN];
+                const bool InBlobP = DataBlobP && RecIdBlobPtH.IsKey(RecId);
+                const bool InMemP = DataMemP && RecIdBlobPtHMem.IsKey(RecId);
+                // same drop rule as the serial loop (fragments are reported below)
+                if ((DataBlobP && !InBlobP) || (DataMemP && !InMemP)) { DroppedRecs++; continue; }
+                TMigRec& Rec = CurBatch->RecV[CurBatch->RecV.Add()];
+                Rec.RecId = RecId; Rec.RecN = RecN;
+                // copy both sections into batch-owned buffers; the workers
+                // un-TOAST old values out of DataBlob concurrently, so the
+                // page-cache accesses are serialized by the old-blob mutex
+                if (InBlobP) {
+                    std::lock_guard<std::mutex> BlobLock(MigrateOldBlobMx);
+                    TMemBase MemBase = DataBlob->GetMemBase(RecIdBlobPtH.GetDat(RecId));
+                    Rec.OldCacheMem.AddBf(MemBase.GetBf(), MemBase.Len());
+                }
+                if (InMemP) {
+                    std::lock_guard<std::mutex> BlobLock(MigrateOldBlobMx);
+                    TMemBase MemBase = DataMem->GetMemBase(RecIdBlobPtHMem.GetDat(RecId));
+                    Rec.OldMemMem.AddBf(MemBase.GetBf(), MemBase.Len());
+                }
+                if (CurBatch->RecV.Len() >= BatchLen) {
+                    {
+                        std::unique_lock<std::mutex> QueueLock(QueueMx);
+                        QueueCv.wait(QueueLock, [&] {
+                            return StopP.load() || (int)SerializeQ.size() < SerializeQBound; });
+                        if (StopP.load()) { break; }
+                        SerializeQ.push_back(CurBatch); CurBatch = nullptr;
+                    }
+                    QueueCv.notify_all();
+                    BatchesPushed++;
+                    CurBatch = new TMigBatch(BatchesPushed, BatchLen);
+                }
+            }
+            // push the final partial batch and declare the reader done
+            {
+                std::unique_lock<std::mutex> QueueLock(QueueMx);
+                if (!StopP.load() && CurBatch != nullptr && CurBatch->RecV.Len() > 0) {
+                    QueueCv.wait(QueueLock, [&] {
+                        return StopP.load() || (int)SerializeQ.size() < SerializeQBound; });
+                    if (!StopP.load()) {
+                        SerializeQ.push_back(CurBatch); CurBatch = nullptr;
+                        BatchesPushed++;
+                    }
+                }
+                ReaderDoneP = true;
+                TotalBatches = BatchesPushed;
+            }
+            QueueCv.notify_all();
+        } catch (...) {
+            OnThreadExc();
+        }
+        // wind the pipeline down: the writer finishes once every batch is
+        // written (or StopP is set), the workers once the writer is done and the
+        // verify queue is drained; join them ALL before looking at the outcome
+        if (WriterThread.joinable()) { WriterThread.join(); }
+        QueueCv.notify_all(); // make WriterDoneP (or the writer's StopP) visible
+        for (size_t ThreadN = 0; ThreadN < WorkerThreadV.size(); ThreadN++) { WorkerThreadV[ThreadN].join(); }
+        // release whatever a stop left queued
+        delete CurBatch;
+        for (size_t BatchN = 0; BatchN < SerializeQ.size(); BatchN++) { delete SerializeQ[BatchN]; }
+        SerializeQ.clear();
+        for (std::map<int, TMigBatch*>::iterator BatchIt = SerializedBatchH.begin();
+                BatchIt != SerializedBatchH.end(); ++BatchIt) { delete BatchIt->second; }
+        SerializedBatchH.clear();
+        for (size_t BatchN = 0; BatchN < VerifyQ.size(); BatchN++) { delete VerifyQ[BatchN]; }
+        VerifyQ.clear();
+        // restore single-threaded mode
+        NewSerCache.SetCodebookMx(nullptr);
+        NewSerMem.SetCodebookMx(nullptr);
+        MigrateParallelP = false;
+        if (FirstExc) {
+            // same contract as the serial catch block
+            ToastWriteRedirectBlob = NULL;
+            ToastReadRedirectBlobTls = NULL;
+            std::rethrow_exception(FirstExc);
+        }
+        // a clean shutdown leaves nothing in flight
+        EAssert(WriterDoneP && SerializeQ.empty() && SerializedBatchH.empty() && VerifyQ.empty());
     }
     ToastWriteRedirectBlob = NULL;
     {
@@ -6680,6 +7104,11 @@ uint64 TStorePbBlobT<TRecPtMap>::ConvertStoreTypeTo(const TStr& DestStoreFNm, co
 /// Delete TOAST-ed value from storage
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::DelToastVal(const TPgBlobPt& Pt) {
+    // never reached during (parallel) schema migration: the store is opened
+    // read-only and SerializeCopyRec does not call CheckToastDel (only the
+    // record update/delete paths collect ToastPtToDel entries), so the shared
+    // ToastPtToDel vector and this live-blob mutation need no migration locking
+    EAssert(!MigrateParallelP);
     TVec<TPgBlobPt> Pts;
     TThinMIn MIn = DataBlob->Get(Pt);
     Pts.Load(MIn);

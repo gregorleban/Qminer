@@ -11,6 +11,8 @@
 
 #include "qminer_core.h"
 
+#include <mutex>
+
 namespace TQm {
 
 namespace TStorage {
@@ -375,6 +377,14 @@ private:
     TWPt<TToaster> Toaster;
     /// TOAST objects to delete
     TVec<TPgBlobPt> ToastPtToDel;
+    /// When non-NULL, serializes access to CodebookH: AddKey in the fixed-part
+    /// string setter and GetKey in the fixed-part string getter. Set by the
+    /// parallel schema migration (TStorePbBlobT::MigrateSchemaToT with
+    /// -migrateThreads:N > 1), where several worker threads SerializeCopyRec
+    /// into this serializator (AddKey) while verifier threads read the written
+    /// records back (GetKey). NULL (the default) means single-threaded use -
+    /// the only cost on that path is one pointer comparison.
+    std::mutex* CodebookMxP = nullptr;
 
     /// Dump report used on failed asserts
     TStr GetErrorMsg(const TMem& RecMem, const TFieldSerialDesc& FieldSerialDesc) const;
@@ -579,6 +589,11 @@ public:
         const TRecSerializator& SrcSerMem, const TRecSerializator& SrcSerCache,
         const TMemBase& SrcMemRec, const TMemBase& SrcCacheRec, TMem& RecMem,
         const TIntV& NewToOldFieldIdV = TIntV());
+
+    /// Set (or clear, with NULL) the mutex that serializes codebook access when
+    /// this serializator is used from several threads at once. Only the parallel
+    /// schema migration does that; see the CodebookMxP member.
+    void SetCodebookMx(std::mutex* MxP) { CodebookMxP = MxP; }
 
     /// Delete TOAST-ed values
     void DeleteToast(const TMemBase& RecMem);
@@ -1250,8 +1265,10 @@ public:
     /// schema drops fields (dropped fields map to -1); it is left empty when the field
     /// set is unchanged. When it is non-empty the caller must also swap in the rebuilt
     /// ".BaseStore" file and remap the index vocabulary (TIndexVoc::RemapStoreFieldIds).
+    /// MigrateThreads > 1 selects the pipelined parallel rebuild (same result,
+    /// see TStorePbBlobT::MigrateSchemaToT); 1 (the default) is the serial path.
     virtual uint64 MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut) = 0;
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut, const int& MigrateThreads = 1) = 0;
     /// True when the field is stored in the in-memory section (false = disk section)
     virtual bool IsFieldInMemory(const int& FieldId) const = 0;
     /// Write a "<prefix>PgBlobStore" state file with the record maps converted to the
@@ -1534,11 +1551,34 @@ private:
     /// When set, ToastVal writes TOAST-ed values into this blob instead of
     /// DataBlob. Set by MigrateSchemaTo so values TOAST-ed while re-serializing
     /// records land in the rebuilt blob while the source blobs stay untouched.
+    /// Set once before the migration loop and cleared after it; the parallel
+    /// migration workers only ever READ the pointer value.
     PPgBlob ToastWriteRedirectBlob;
-    /// When set, UnToastVal reads TOAST-ed values from this blob instead of
-    /// DataBlob. Set by MigrateSchemaTo while reading back rebuilt records
-    /// for verification.
-    PPgBlob ToastReadRedirectBlob;
+    // The TOAST-READ redirect (UnToastVal reading from the rebuilt blob instead
+    // of DataBlob while MigrateSchemaTo verifies rebuilt records) is NOT a
+    // member: VerifyMigratedRec sets/clears it around every single field read,
+    // and with -migrateThreads:N > 1 the verifiers run on several threads at
+    // once, so each thread needs its own slot. It lives in a file-scope
+    // `thread_local TPgBlob*` in qminer_storage.cpp (ToastReadRedirectBlobTls).
+    // A raw pointer instead of a PPgBlob because a thread_local TPt would run
+    // its destructor (non-atomic refcount decrement) at an arbitrary point of
+    // thread exit; the pointed-to blob always outlives the migration threads,
+    // which are joined inside MigrateSchemaToT before the blob is released.
+
+    /// True while MigrateSchemaToT runs its parallel pipeline (-migrateThreads:N
+    /// with N > 1). Switches ToastVal/UnToastVal and the migration call-sites to
+    /// take the two mutexes below; a single branch on this flag keeps the
+    /// serial-migration and live-server paths at ~zero extra cost.
+    bool MigrateParallelP = false;
+    /// Serializes page-cache access to the LIVE blobs (DataBlob/DataMem) during
+    /// parallel migration: the reader's record-section copies and the worker/
+    /// verifier threads un-TOASTing old values out of DataBlob.
+    std::mutex MigrateOldBlobMx;
+    /// Serializes access to the REBUILT blobs during parallel migration: the
+    /// writer thread's record Puts and read-backs, the serializer workers'
+    /// TOAST writes (ToastVal through ToastWriteRedirectBlob) and the verifier
+    /// threads' TOAST reads (UnToastVal through the thread-local read redirect).
+    std::mutex MigrateNewBlobMx;
 
     /// Counter for record IDs
     TUInt64 RecIdCounter;
@@ -1653,7 +1693,7 @@ private:
     /// record maps (picked from the schema's "recIdMap" option by the dispatcher)
     template <class TDstMap>
     uint64 MigrateSchemaToT(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut);
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut, const int& MigrateThreads);
 
 public:
     TStorePbBlobT(const TWPt<TBase>& _Base, const uint& StoreId,
@@ -1834,6 +1874,10 @@ public:
     static TPgBlobPt ToastValToBlob(const PPgBlob& Blob, const TMemBase& Mem);
     /// Retrieve a TOAST-ed value from the given page blob
     static void UnToastValFromBlob(const PPgBlob& Blob, const TPgBlobPt& Pt, TMem& Mem);
+    /// Same, through a raw blob pointer. Used with the thread-local TOAST-read
+    /// redirect - constructing a PPgBlob from it would touch the blob's
+    /// non-atomic refcount from several threads at once.
+    static void UnToastValFromBlob(TPgBlob* Blob, const TPgBlobPt& Pt, TMem& Mem);
 
     /// Rebuild (defragment) the record blobs into new page blob files with the given
     /// file name prefix. Records are written in ascending record id order and keep
@@ -1876,8 +1920,17 @@ public:
     /// TIndexVoc::RemapStoreFieldIds - the index itself needs no rebuild since
     /// key ids do not change.
     /// Returns the number of records written to the rebuilt store.
+    /// MigrateThreads > 1 runs the rebuild as a pipeline: this thread reads the
+    /// record sections out of the live blobs in record-id order, MigrateThreads
+    /// workers re-serialize (and, for "compressed" fields, ZSTD-recompress) the
+    /// records and verify the written ones, and a single writer thread stores
+    /// them into the rebuilt blobs strictly in record-id order. Record content,
+    /// record maps and all pointers are identical to a serial run - only the
+    /// physical interleaving of TOAST-ed (oversized) values inside the rebuilt
+    /// disk blob may differ, which VerifyMigratedRec proves harmless for every
+    /// record. MigrateThreads <= 1 (the default) is the unchanged serial path.
     uint64 MigrateSchemaTo(const TStr& DestStoreFNm, const TStoreSchema& NewSchema,
-        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut);
+        const uint64& CacheSize, TIntV& OldToNewFieldIdVOut, const int& MigrateThreads = 1);
 
     /// Write a "<prefix>PgBlobStore" state file with the record maps converted to
     /// the representation of TargetStoreTypeNm ("TStorePbBlob" = hash-backed,
