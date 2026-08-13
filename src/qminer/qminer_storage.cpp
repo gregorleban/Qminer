@@ -6504,8 +6504,14 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
                 const double NowSecs = MigrateTm.GetSecs();
                 const double DeltaSecs = NowSecs - LastProgSecs;
                 const double RecsPerSec = DeltaSecs > 0 ? (RecN - LastProgRecN) / DeltaSecs : 0.0;
-                printf("%d / %d records migrated (%.1f%%), %.0f rec/s          \r", RecN, RecIdV.Len(),
-                    RecIdV.Len() > 0 ? 100.0 * RecN / RecIdV.Len() : 100.0, RecsPerSec);
+                // remaining-time estimate from the overall average rate (more
+                // stable than the windowed rate shown next to it)
+                const double AvgRecsPerSec = NowSecs > 0 ? RecN / NowSecs : 0.0;
+                const double MinLeft = AvgRecsPerSec > 0 ? (RecIdV.Len() - RecN) / AvgRecsPerSec / 60.0 : 0.0;
+                printf("%s / %s records migrated (%.1f%%), %s rec/s, ~%.0f min left          \r",
+                    TStrUtil::GetStr(RecN).CStr(), TStrUtil::GetStr(RecIdV.Len()).CStr(),
+                    RecIdV.Len() > 0 ? 100.0 * RecN / RecIdV.Len() : 100.0,
+                    TStrUtil::GetStr((uint64)RecsPerSec).CStr(), MinLeft);
                 LastProgRecN = RecN; LastProgSecs = NowSecs;
             }
         }
@@ -6518,8 +6524,9 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
     {
         const double TotSecs = MigrateTm.GetSecs();
         const double AvgRecsPerSec = TotSecs > 0 ? RecIdV.Len() / TotSecs : 0.0;
-        printf("%d / %d records migrated (100.0%%) in %s, avg %.0f rec/s\n",
-            RecIdV.Len(), RecIdV.Len(), MigrateTm.GetStr(), AvgRecsPerSec);
+        printf("%s / %s records migrated (100.0%%) in %s, avg %s rec/s          \n",
+            TStrUtil::GetStr(RecIdV.Len()).CStr(), TStrUtil::GetStr(RecIdV.Len()).CStr(),
+            MigrateTm.GetStr(), TStrUtil::GetStr((uint64)AvgRecsPerSec).CStr());
     }
 
     // report and explain every difference
