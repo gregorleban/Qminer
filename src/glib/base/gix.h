@@ -743,18 +743,6 @@ private:
     /// asserts if we are allowed to change this index
     void AssertReadOnly() const;
 
-    /// Remove the itemset for given key from the cache without storing it.
-    /// Used during full index scans (CopyTo, VerifySample) - loading child vectors
-    /// is not accounted in the cache size, so a scan would otherwise grow the
-    /// cache without bound.
-    void DropFromCache(const TKey& Key) const;
-    /// Store the itemset for given key (if dirty) and remove it from the cache.
-    /// Used by CopyTo on the DESTINATION gix: keys are copied in sorted order and
-    /// never revisited, so keeping every finished itemset cached until the LRU
-    /// purge would make the periodic clean-up walks scale with the number of
-    /// copied keys instead of the cache limit.
-    void StoreAndDropFromCache(const TKey& Key);
-
     /// cache-lookup / blob-load / cache-insert core of GetItemSet. Deliberately
     /// does NOT call RefreshMemUsed: the purge it triggers stores dirty itemsets,
     /// and a store can RELOCATE an itemset's blob (freeing the old one) and update
@@ -908,6 +896,19 @@ public:
     void Flush() { ItemSetCache.FlushAndClr(); }
     /// flush a portion of data from cache to disk
     int PartialFlush(int WndInMsec = 500);
+
+    /// Remove the itemset for given key from the cache without storing it.
+    /// Used during full index scans (CopyTo, VerifySample, the reindex
+    /// partition merge) - loading child vectors is not accounted in the cache
+    /// size, so a scan would otherwise grow the cache without bound.
+    void DropFromCache(const TKey& Key) const;
+    /// Store the itemset for given key (if dirty) and remove it from the cache.
+    /// Used by CopyTo (and the reindex partition merge) on the DESTINATION gix:
+    /// keys are copied in sorted order and never revisited, so keeping every
+    /// finished itemset cached until the LRU purge would make the periodic
+    /// clean-up walks scale with the number of copied keys instead of the
+    /// cache limit.
+    void StoreAndDropFromCache(const TKey& Key);
 
     /// get first key id
     int FFirstKeyId() const { return KeyIdH.FFirstKeyId(); }

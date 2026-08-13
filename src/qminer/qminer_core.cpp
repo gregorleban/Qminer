@@ -10,6 +10,16 @@
 #include "qminer_ftr.h"
 #include "qminer_aggr.h"
 
+// used by TIndex::ReindexMergePartitionsGix (parallel merge of the reindex
+// partitions: reader threads + one ordered writer)
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <exception>
+#include <map>
+#include <vector>
+
 namespace TQm {
 
 ///////////////////////////////
@@ -4238,6 +4248,17 @@ uint64 TIndexWordVoc::AddWordStr(const TStr& WordStr) {
     return (uint64)WordId;
 }
 
+uint64 TIndexWordVoc::AddWordStrFq(const TStr& WordStr, const uint64& Fq) {
+    // get id for the (new) word
+    const int WordId = WordH.AddKey(WordStr);
+    // increase the count for the word by the carried frequency (used for
+    // autocomplete) - the word arrives from a source vocabulary where it was
+    // added Fq times
+    WordH[WordId] += (int)Fq;
+    // return the id
+    return (uint64)WordId;
+}
+
 void TIndexWordVoc::GetWcWordIdV(const TStr& WcStr, TUInt64V& WcWordIdV) {
     WcWordIdV.Clr();
     int WordId = WordH.FFirstKeyId();
@@ -4530,6 +4551,12 @@ uint64 TIndexVoc::AddWordStr(const int& KeyId, const TStr& WordStr) {
     // even when the word already exists
     DirtyP = true;
     return GetWordVoc(KeyId)->AddWordStr(WordStr);
+}
+
+uint64 TIndexVoc::AddWordStrFq(const int& KeyId, const TStr& WordStr, const uint64& Fq) {
+    // adding a word (or bumping its frequency) changes the vocabulary
+    DirtyP = true;
+    return GetWordVoc(KeyId)->AddWordStrFq(WordStr, Fq);
 }
 
 void TIndexVoc::AddWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& WordIdV) {
@@ -7187,6 +7214,488 @@ void TIndex::ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
     if (PosP) {
         ReindexCopyOneGix<TQmGixItemPos>(GixPos, StageIndex->GixPos, "Index.GixPos",
             DestFPath, ItemHandlerPos, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        RebuiltGixNmV.Add("Index.GixPos");
+    }
+}
+
+template <class TQmGixItem>
+void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+        const TVec<TPt<TGix<TQmGixKey, TQmGixItem> > >& WorkerGixV, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const TIntSet& RebuiltKeyIdSet, const TVec<THash<TInt, TUInt64V> >& WorkerVocWordMapV,
+        const int64& CacheSize, const int& VerifySampleKeys, const int& MergeThreads) const {
+
+    typedef TPt<TGixItemSet<TQmGixKey, TQmGixItem> > PQmGixItemSet;
+    // handler that appends the streamed child vectors to a caller-owned vector
+    struct TAppendHandler {
+        TVec<TQmGixItem>& DestItemV;
+        TAppendHandler(TVec<TQmGixItem>& _DestItemV): DestItemV(_DestItemV) {}
+        void operator()(const TVec<TQmGixItem>& ItemV) { DestItemV.AddV(ItemV); }
+    };
+    const int Workers = WorkerGixV.Len();
+    TEnv::Logger->OnStatus("Rebuilding " + GixNm + " from the live index and " +
+        TInt::GetStr(Workers) + " reindex partitions ...");
+    // a worker gix is only ever fed through the rebuilt keys - anything else in
+    // it means the build phase indexed a key it did not declare
+    TQmGixKeyIdSetFilter KeepRebuiltF(RebuiltKeyIdSet, false);
+    TQmGixKeyIdSetFilter KeepOtherF(RebuiltKeyIdSet, true);
+    for (int WorkerN = 0; WorkerN < Workers; WorkerN++) {
+        int StrayKeys = 0;
+        int WorkerKeyId = WorkerGixV[WorkerN]->FFirstKeyId();
+        while (WorkerGixV[WorkerN]->FNextKeyId(WorkerKeyId)) {
+            if (!KeepRebuiltF.KeepKeyP(WorkerGixV[WorkerN]->GetKey(WorkerKeyId))) { StrayKeys++; }
+        }
+        EAssertR(StrayKeys == 0, TStr::Fmt(
+            "[TIndex::ReindexMergeOneGix] %s: worker %d contains %d key(s) outside the rebuilt key set",
+            GixNm.CStr(), WorkerN, StrayKeys));
+    }
+    // create the destination gix. it shares the live split length provider, so
+    // per-key split lengths (e.g. from the store definition) are applied to all
+    // data, and keeps the live gix's key dictionary representation
+    TPt<TGix<TQmGixKey, TQmGixItem> > DestGix = TGix<TQmGixKey, TQmGixItem>::New(GixNm,
+        DestFPath, faCreate, GixItemHandler, CacheSize, LiveGix->GetSplitLen(),
+        LiveGix->CanFirstChildBeUnfilled(), LiveGix->GetSplitLenMin(), LiveGix->GetSplitLenMax(),
+        LiveGix->GetKeyDictType());
+    DestGix->SetSplitLenProvider(SplitLenProvider);
+    // copy all keys that were NOT rebuilt from the live gix (sorted = contiguous);
+    // each key's item count is verified during the copy. Broken keys are collected
+    // instead of aborting on the first one, so a corrupt source yields a complete
+    // damage report in a single pass
+    TVec<TQmGixKey> FailedKeyV;
+    uint64 LiveItems = 0; int LiveEmptyKeys = 0;
+    LiveGix->CopyTo(*DestGix, &LiveItems, &LiveEmptyKeys, &KeepOtherF, &FailedKeyV);
+    QmAssertR(FailedKeyV.Empty(), TStr::Fmt(
+        "[TIndex::ReindexMergeOneGix] %s: %d key(s) could not be copied from the live index "
+        "(unreadable source itemsets, see the listing above) - the rebuilt gix is incomplete "
+        "and must not be swapped in", GixNm.CStr(), FailedKeyV.Len()));
+    const int KeysAfterLiveCopy = DestGix->GetKeys();
+
+    // build the union of translated final keys. Per final key the flat source
+    // table records, for every worker, the LOCAL word id of the worker key that
+    // contributes to it (or TUInt64::Mx when the worker has no postings for it):
+    // SrcWordIdV[FinalKeyIdx * Workers + WorkerN]. Local ids of one worker
+    // translate injectively into final ids, so each worker contributes at most
+    // one local key per final key
+    THash<TQmGixKey, TInt> FinalKeyIdxH;
+    TUInt64V SrcWordIdV;
+    for (int WorkerN = 0; WorkerN < Workers; WorkerN++) {
+        const THash<TInt, TUInt64V>& VocWordMapH = WorkerVocWordMapV[WorkerN];
+        int WorkerKeyId = WorkerGixV[WorkerN]->FFirstKeyId();
+        while (WorkerGixV[WorkerN]->FNextKeyId(WorkerKeyId)) {
+            const TQmGixKey& WorkerKey = WorkerGixV[WorkerN]->GetKey(WorkerKeyId);
+            const int VocId = IndexVoc->GetKey(WorkerKey.Val1).GetWordVocId();
+            const TUInt64V& WordMap = VocWordMapH.GetDat(VocId);
+            const uint64 LocalWordId = WorkerKey.Val2;
+            EAssertR(LocalWordId < (uint64)WordMap.Len(), TStr::Fmt(
+                "[TIndex::ReindexMergeOneGix] %s: worker %d references local word id %s outside "
+                "its vocabulary (%d words)", GixNm.CStr(), WorkerN,
+                TUInt64::GetStr(LocalWordId).CStr(), WordMap.Len()));
+            const TQmGixKey FinalKey(WorkerKey.Val1, WordMap[(int)LocalWordId]);
+            int FinalKeyIdx;
+            TInt FinalKeyIdxDat;
+            if (FinalKeyIdxH.IsKeyGetDat(FinalKey, FinalKeyIdxDat)) {
+                FinalKeyIdx = FinalKeyIdxDat;
+            } else {
+                FinalKeyIdx = FinalKeyIdxH.Len();
+                // the flat table is indexed by int - assert before it overflows
+                EAssert(((int64)FinalKeyIdx + 1) * (int64)Workers < (int64)TInt::Mx);
+                FinalKeyIdxH.AddDat(FinalKey, FinalKeyIdx);
+                for (int SlotN = 0; SlotN < Workers; SlotN++) { SrcWordIdV.Add(TUInt64::Mx); }
+            }
+            TUInt64& Slot = SrcWordIdV[FinalKeyIdx * Workers + WorkerN];
+            EAssertR(Slot == TUInt64::Mx, TStr::Fmt(
+                "[TIndex::ReindexMergeOneGix] %s: worker %d maps two local keys onto one final key",
+                GixNm.CStr(), WorkerN));
+            Slot = LocalWordId;
+        }
+    }
+    // sorted write order over the union of final keys IS the defragmentation:
+    // all words of one index key end up contiguous in the destination blob
+    TVec<TQmGixKey> FinalKeyV; FinalKeyIdxH.GetKeyV(FinalKeyV); FinalKeyV.Sort();
+
+    // the worker gixes are throwaway: after a flush their blobs are current, and
+    // the merge re-dirties itemsets only through content-preserving Def() merges,
+    // so storing them back on eviction is wasted time - discard them instead
+    for (int WorkerN = 0; WorkerN < Workers; WorkerN++) {
+        WorkerGixV[WorkerN]->Flush();
+        WorkerGixV[WorkerN]->SetDiscardDirtyOnDrop(true);
+    }
+
+    // parallel merge: MergeThreads reader threads prepare chunks of consecutive
+    // final keys (each key's posting list = concatenation of its worker posting
+    // lists in worker order); ONE writer - this thread - consumes the chunks
+    // strictly in chunk order and appends them to the destination gix, so the
+    // destination is only ever touched by a single thread and keys are written
+    // in sorted order. Each worker gix has its own mutex (reading an itemset
+    // mutates the gix's LRU cache); a reader locks it once per chunk
+    const int ChunkLen = 1024;
+    const int Chunks = (FinalKeyV.Len() + ChunkLen - 1) / ChunkLen;
+    struct TMergeChunk {
+        int ChunkN;
+        // merged item vector per key of the chunk (parallel to the chunk's
+        // slice of FinalKeyV); empty when no worker has postings for the key
+        TVec<TVec<TQmGixItem> > KeyItemVV;
+    };
+    std::atomic<int> NextChunkToPrepare(0);
+    std::atomic<bool> StopP(false);
+    std::mutex QueueMx;
+    std::condition_variable CanPublish, CanConsume;
+    std::map<int, TMergeChunk*> ReadyChunkH; // guarded by QueueMx
+    int NextChunkToWrite = 0;                // guarded by QueueMx
+    // published-but-unconsumed bound; a reader holding the chunk the writer
+    // waits for always satisfies ChunkN < NextChunkToWrite + QueueBound, so the
+    // pipeline cannot deadlock
+    const int QueueBound = MergeThreads * 2 > 4 ? MergeThreads * 2 : 4;
+    std::mutex ExcMx;
+    std::exception_ptr FirstExc = nullptr;
+    std::vector<std::mutex> WorkerMxV(Workers);
+
+    auto ReaderFun = [&]() {
+        try {
+            while (!StopP.load()) {
+                const int ChunkN = NextChunkToPrepare.fetch_add(1);
+                if (ChunkN >= Chunks) { break; }
+                const int KeyOff = ChunkN * ChunkLen;
+                const int KeysInChunk = (KeyOff + ChunkLen <= FinalKeyV.Len()) ?
+                    ChunkLen : (FinalKeyV.Len() - KeyOff);
+                TMergeChunk* Chunk = new TMergeChunk();
+                try {
+                    Chunk->ChunkN = ChunkN;
+                    Chunk->KeyItemVV.Gen(KeysInChunk, KeysInChunk);
+                    // outer loop over workers in ORDER 0..N-1: each key's merged
+                    // vector receives its worker segments in worker order, which
+                    // (contiguous ascending record partitions) is record-id order.
+                    // One lock acquisition per worker per chunk
+                    for (int WorkerN = 0; WorkerN < Workers; WorkerN++) {
+                        std::lock_guard<std::mutex> WorkerLock(WorkerMxV[WorkerN]);
+                        for (int KeyN = 0; KeyN < KeysInChunk; KeyN++) {
+                            const TQmGixKey& FinalKey = FinalKeyV[KeyOff + KeyN];
+                            const int FinalKeyIdx = FinalKeyIdxH.GetDat(FinalKey);
+                            const uint64 LocalWordId = SrcWordIdV[FinalKeyIdx * Workers + WorkerN];
+                            if (LocalWordId == TUInt64::Mx) { continue; }
+                            const TQmGixKey WorkerKey(FinalKey.Val1, LocalWordId);
+                            TVec<TQmGixItem>& MergedItemV = Chunk->KeyItemVV[KeyN];
+                            const int PrevLen = MergedItemV.Len();
+                            {
+                                PQmGixItemSet ItemSet = WorkerGixV[WorkerN]->GetItemSet(WorkerKey);
+                                ItemSet->Def();
+                                TAppendHandler Handler(MergedItemV);
+                                ItemSet->GetItemV(Handler);
+                            }
+                            WorkerGixV[WorkerN]->DropFromCache(WorkerKey);
+                            // worker record partitions are disjoint and ascending, so
+                            // each appended segment must start strictly above the end
+                            // of the previous one - anything else means the posting
+                            // list would not be record-id sorted
+                            if (PrevLen > 0 && MergedItemV.Len() > PrevLen) {
+                                EAssertR(GixItemHandler->IsLt(MergedItemV[PrevLen - 1], MergedItemV[PrevLen]),
+                                    TStr::Fmt("[TIndex::ReindexMergeOneGix] %s: worker %d posting segment "
+                                        "is not above the preceding partitions for a merged key",
+                                        GixNm.CStr(), WorkerN));
+                            }
+                        }
+                    }
+                } catch (...) {
+                    delete Chunk;
+                    throw;
+                }
+                // publish the prepared chunk; bounded, so readers cannot run
+                // arbitrarily far ahead of the writer
+                {
+                    std::unique_lock<std::mutex> QueueLock(QueueMx);
+                    CanPublish.wait(QueueLock, [&] {
+                        return StopP.load() || ChunkN < NextChunkToWrite + QueueBound; });
+                    if (StopP.load()) { delete Chunk; return; }
+                    ReadyChunkH[ChunkN] = Chunk;
+                }
+                CanConsume.notify_all();
+            }
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> ExcLock(ExcMx);
+                if (!FirstExc) { FirstExc = std::current_exception(); }
+            }
+            StopP = true;
+            CanConsume.notify_all();
+            CanPublish.notify_all();
+        }
+    };
+
+    std::vector<std::thread> ReaderThreadV;
+    uint64 RebuiltItems = 0; int RebuiltEmptyKeys = 0; int RebuiltKeys = 0;
+    TVec<TQmGixKey> MergeFailedKeyV;
+    printf("Merging %s: %d final keys from %d partitions, %d reader thread(s)\n",
+        GixNm.CStr(), FinalKeyV.Len(), Workers, MergeThreads);
+    try {
+        for (int ThreadN = 0; ThreadN < MergeThreads; ThreadN++) { ReaderThreadV.emplace_back(ReaderFun); }
+    } catch (...) {
+        // a failed thread spawn: stop and join the readers already running before
+        // unwinding (a std::thread must never be destroyed joinable)
+        StopP = true;
+        CanPublish.notify_all();
+        for (size_t ThreadN = 0; ThreadN < ReaderThreadV.size(); ThreadN++) { ReaderThreadV[ThreadN].join(); }
+        for (std::map<int, TMergeChunk*>::iterator ChunkIt = ReadyChunkH.begin();
+                ChunkIt != ReadyChunkH.end(); ++ChunkIt) { delete ChunkIt->second; }
+        throw;
+    }
+    // writer loop - runs on this thread. Any failure (in a reader or here) sets
+    // StopP; the readers are ALWAYS joined before the exception is rethrown
+    try {
+        TExeTm MergeTm;
+        const double RateWindowSecs = 2.0;
+        uint64 LastItems = 0; double LastSecs = 0.0; double ItemsPerSec = 0.0;
+        int ConsumedChunks = 0;
+        while (ConsumedChunks < Chunks) {
+            TMergeChunk* Chunk = nullptr;
+            {
+                std::unique_lock<std::mutex> QueueLock(QueueMx);
+                CanConsume.wait(QueueLock, [&] {
+                    return StopP.load() || ReadyChunkH.count(NextChunkToWrite) > 0; });
+                if (StopP.load()) { break; }
+                Chunk = ReadyChunkH[NextChunkToWrite];
+                ReadyChunkH.erase(NextChunkToWrite);
+                // advanced under the lock so waiting publishers see it
+                NextChunkToWrite++;
+            }
+            CanPublish.notify_all();
+            const int KeyOff = Chunk->ChunkN * ChunkLen;
+            for (int KeyN = 0; KeyN < Chunk->KeyItemVV.Len(); KeyN++) {
+                const TQmGixKey& FinalKey = FinalKeyV[KeyOff + KeyN];
+                const TVec<TQmGixItem>& MergedItemV = Chunk->KeyItemVV[KeyN];
+                if (MergedItemV.Empty()) {
+                    // fully deleted posting list - the key is not created in the
+                    // destination (same as CopyTo)
+                    RebuiltEmptyKeys++;
+                    continue;
+                }
+                DestGix->AddItemV(FinalKey, MergedItemV);
+                // validate that the destination received all the items: the merged
+                // vector length is the sum of the worker item counts for this key
+                const int DestItems = DestGix->GetItemSet(FinalKey)->GetItems();
+                if (DestItems != MergedItemV.Len()) {
+                    MergeFailedKeyV.Add(FinalKey);
+                    printf("\nTIndex::ReindexMergeOneGix: item count mismatch for merged key "
+                        "(%d, %s): %d expected, %d in destination\n",
+                        FinalKey.Val1.Val, TUInt64::GetStr(FinalKey.Val2).CStr(),
+                        MergedItemV.Len(), DestItems);
+                }
+                // the destination itemset is finished (keys are written in sorted
+                // order and never revisited) - flush it and evict it, as in CopyTo
+                DestGix->StoreAndDropFromCache(FinalKey);
+                RebuiltItems += (uint64)MergedItemV.Len();
+                RebuiltKeys++;
+            }
+            delete Chunk;
+            ConsumedChunks++;
+            const double NowSecs = MergeTm.GetSecs();
+            const double DSecs = NowSecs - LastSecs;
+            if (DSecs >= RateWindowSecs) {
+                ItemsPerSec = (double)(RebuiltItems - LastItems) / DSecs;
+                LastItems = RebuiltItems; LastSecs = NowSecs;
+            }
+            printf("%s / %s keys (%.1f%%), %s items merged, %s items/s          \r",
+                TStrUtil::GetStr(ConsumedChunks < Chunks ? ConsumedChunks * ChunkLen : FinalKeyV.Len()).CStr(),
+                TStrUtil::GetStr(FinalKeyV.Len()).CStr(),
+                Chunks > 0 ? 100.0 * ConsumedChunks / Chunks : 100.0,
+                TStrUtil::GetStr(RebuiltItems).CStr(), TStrUtil::GetStr((uint64)ItemsPerSec).CStr());
+        }
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> ExcLock(ExcMx);
+            if (!FirstExc) { FirstExc = std::current_exception(); }
+        }
+        StopP = true;
+    }
+    // shut the pipeline down: wake every waiting reader, join them all (a
+    // std::thread must never be destroyed joinable), release leftover chunks
+    CanPublish.notify_all();
+    CanConsume.notify_all();
+    for (size_t ThreadN = 0; ThreadN < ReaderThreadV.size(); ThreadN++) { ReaderThreadV[ThreadN].join(); }
+    for (std::map<int, TMergeChunk*>::iterator ChunkIt = ReadyChunkH.begin();
+            ChunkIt != ReadyChunkH.end(); ++ChunkIt) { delete ChunkIt->second; }
+    ReadyChunkH.clear();
+    if (FirstExc) { std::rethrow_exception(FirstExc); }
+    printf("%s / %s keys (100.0%%), %s items merged, %s empty keys skipped\n",
+        TStrUtil::GetStr(FinalKeyV.Len()).CStr(), TStrUtil::GetStr(FinalKeyV.Len()).CStr(),
+        TStrUtil::GetStr(RebuiltItems).CStr(), TStrUtil::GetStr(RebuiltEmptyKeys).CStr());
+    QmAssertR(MergeFailedKeyV.Empty(), TStr::Fmt(
+        "[TIndex::ReindexMergeOneGix] %s: %d merged key(s) failed the item-count check "
+        "(see the listing above) - the rebuilt gix is incomplete and must not be swapped in",
+        GixNm.CStr(), MergeFailedKeyV.Len()));
+
+    // before/after accounting, as in the reindex copy: only fully-deleted
+    // posting lists may be missing from the destination
+    const int DestKeys = DestGix->GetKeys();
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "[Reindex] %s: %s items in %s keys kept from the live index, %s items in %s keys merged from %d partitions",
+        GixNm.CStr(), TStrUtil::GetStr(LiveItems).CStr(), TStrUtil::GetStr(KeysAfterLiveCopy).CStr(),
+        TStrUtil::GetStr(RebuiltItems).CStr(), TStrUtil::GetStr(DestKeys - KeysAfterLiveCopy).CStr(), Workers));
+    if (DestKeys - KeysAfterLiveCopy != FinalKeyV.Len() - RebuiltEmptyKeys) {
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "[Reindex] WARNING: %s rebuilt key count %d does not match the %d non-empty final keys - "
+            "index entries were lost or duplicated by the rebuild, do not swap this index in!",
+            GixNm.CStr(), DestKeys - KeysAfterLiveCopy, FinalKeyV.Len() - RebuiltEmptyKeys));
+    }
+    EAssert(RebuiltKeys == FinalKeyV.Len() - RebuiltEmptyKeys);
+
+    if (VerifySampleKeys > 0) {
+        // deep-compare a sample of the kept keys against the live index
+        QmAssertR(LiveGix->VerifySample(*DestGix, VerifySampleKeys, &KeepOtherF),
+            "[TIndex::ReindexMergeOneGix] Verification of " + GixNm +
+            " failed - the kept keys do not match the live index");
+        // deep-verify a sample of the merged keys: re-read every worker's source
+        // posting list, concatenate them in worker order and compare item by item
+        // with the destination. (The generic VerifySample compares same-key gixes,
+        // which does not fit the translated worker keys.) Runs on this thread
+        // only, after all readers were joined - no locks needed
+        if (!FinalKeyV.Empty()) {
+            const int SampleStep = FinalKeyV.Len() > VerifySampleKeys ? FinalKeyV.Len() / VerifySampleKeys : 1;
+            int CheckedKeys = 0, FailedKeys = 0;
+            for (int KeyN = 0; KeyN < FinalKeyV.Len(); KeyN += SampleStep) {
+                const TQmGixKey& FinalKey = FinalKeyV[KeyN];
+                const int FinalKeyIdx = FinalKeyIdxH.GetDat(FinalKey);
+                TVec<TQmGixItem> SrcItemV;
+                for (int WorkerN = 0; WorkerN < Workers; WorkerN++) {
+                    const uint64 LocalWordId = SrcWordIdV[FinalKeyIdx * Workers + WorkerN];
+                    if (LocalWordId == TUInt64::Mx) { continue; }
+                    const TQmGixKey WorkerKey(FinalKey.Val1, LocalWordId);
+                    {
+                        PQmGixItemSet ItemSet = WorkerGixV[WorkerN]->GetItemSet(WorkerKey);
+                        ItemSet->Def();
+                        TAppendHandler Handler(SrcItemV);
+                        ItemSet->GetItemV(Handler);
+                    }
+                    WorkerGixV[WorkerN]->DropFromCache(WorkerKey);
+                }
+                TVec<TQmGixItem> DestItemV;
+                if (DestGix->IsKey(FinalKey)) {
+                    DestGix->GetItemV(FinalKey, DestItemV);
+                    DestGix->DropFromCache(FinalKey);
+                }
+                if (!(SrcItemV == DestItemV)) {
+                    printf("ReindexMergeOneGix VerifySample: data mismatch for merged key %d of %d\n",
+                        KeyN, FinalKeyV.Len());
+                    FailedKeys++;
+                }
+                CheckedKeys++;
+            }
+            printf("ReindexMergeOneGix VerifySample: %d merged keys checked, %d mismatches\n",
+                CheckedKeys, FailedKeys);
+            QmAssertR(FailedKeys == 0, "[TIndex::ReindexMergeOneGix] Verification of " + GixNm +
+                " failed - the merged keys do not match the reindexed partitions");
+        }
+    }
+    // releasing the destination gix flushes it and saves its key dictionary
+    DestGix.Clr();
+    TEnv::Logger->OnStatus("Rebuilding " + GixNm + " done");
+}
+
+void TIndex::ReindexMergePartitionsGix(const TVec<PIndex>& WorkerIndexV,
+        const TVec<PIndexVoc>& WorkerVocV, const PIndexVoc& FinalVoc,
+        const TIntSet& RebuiltKeyIdSet, const TStr& DestFPath,
+        const int64& CacheSize, const int& VerifySampleKeys,
+        const int& MergeThreads, TStrV& RebuiltGixNmV) const {
+
+    RebuiltGixNmV.Clr();
+    QmAssertR(!RebuiltKeyIdSet.Empty(), "[TIndex::ReindexMergePartitionsGix] the rebuilt key set is empty");
+    const int Workers = WorkerIndexV.Len();
+    QmAssertR(Workers >= 1, "[TIndex::ReindexMergePartitionsGix] no worker indexes given");
+    QmAssertR(WorkerVocV.Len() == Workers,
+        "[TIndex::ReindexMergePartitionsGix] worker vocabulary count does not match the worker index count");
+    QmAssertR(MergeThreads >= 1, "[TIndex::ReindexMergePartitionsGix] MergeThreads must be >= 1");
+    // determine which gixes store postings of the rebuilt keys (same rules as
+    // ReindexCopyGix)
+    bool FullP = false, SmallP = false, TinyP = false, PosP = false;
+    int KeyIdSetN = RebuiltKeyIdSet.FFirstKeyId();
+    while (RebuiltKeyIdSet.FNextKeyId(KeyIdSetN)) {
+        const int KeyId = RebuiltKeyIdSet.GetKey(KeyIdSetN);
+        const TIndexKey& Key = IndexVoc->GetKey(KeyId);
+        QmAssertR(Key.IsText() || Key.IsTextPos(),
+            "[TIndex::ReindexMergePartitionsGix] key " + Key.GetKeyNm() + " is not a text key");
+        // a combined text+textpos key is indexed only as text by the record
+        // indexer, so rebuilding it here would be ambiguous
+        QmAssertR(!(Key.IsText() && Key.IsTextPos()),
+            "[TIndex::ReindexMergePartitionsGix] key " + Key.GetKeyNm() + " combines text and text-position indexing");
+        if (Key.IsTextPos()) {
+            PosP = true;
+        } else {
+            switch (Key.GetGixType()) {
+                case oikgtFull: FullP = true; break;
+                case oikgtSmall: SmallP = true; break;
+                case oikgtTiny: TinyP = true; break;
+                default: throw TQmExcept::New(
+                    "[TIndex::ReindexMergePartitionsGix] unsupported gix type for text key " + Key.GetKeyNm());
+            }
+        }
+    }
+
+    // unify the worker word vocabularies of the rebuilt keys into FinalVoc:
+    // walk each worker's words in worker order, add them to FinalVoc with their
+    // accumulated frequency (final frequency = sum of worker frequencies - they
+    // feed autocomplete) and record the local-to-final word id translation.
+    // Word vocabularies can be shared by several keys, so the walk (and the
+    // translation table) is per word VOCABULARY, deduplicated by its id -
+    // otherwise a shared vocabulary would be added (and its frequencies summed)
+    // once per key that uses it
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "Unifying the word vocabularies of %d reindex partitions ...", Workers));
+    TTmStopWatch VocStopWatch(true);
+    TVec<THash<TInt, TUInt64V> > WorkerVocWordMapV(Workers, Workers);
+    TIntSet DoneVocIdSet;
+    KeyIdSetN = RebuiltKeyIdSet.FFirstKeyId();
+    while (RebuiltKeyIdSet.FNextKeyId(KeyIdSetN)) {
+        const int KeyId = RebuiltKeyIdSet.GetKey(KeyIdSetN);
+        const int VocId = IndexVoc->GetKey(KeyId).GetWordVocId();
+        if (DoneVocIdSet.IsKey(VocId)) { continue; }
+        DoneVocIdSet.AddKey(VocId);
+        for (int WorkerN = 0; WorkerN < Workers; WorkerN++) {
+            const PIndexVoc& WorkerVoc = WorkerVocV[WorkerN];
+            const uint64 Words = WorkerVoc->GetWords(KeyId);
+            EAssert(Words <= (uint64)TInt::Mx);
+            TUInt64V& WordMap = WorkerVocWordMapV[WorkerN].AddDat(VocId);
+            WordMap.Gen((int)Words);
+            for (uint64 WordId = 0; WordId < Words; WordId++) {
+                // local word ids are handed out densely by the vocabulary hash
+                // (words are never deleted) - the translation table relies on it
+                EAssert(WorkerVoc->IsWordId(KeyId, WordId));
+                WordMap[(int)WordId] = FinalVoc->AddWordStrFq(KeyId,
+                    WorkerVoc->GetWordStr(KeyId, WordId), WorkerVoc->GetWordFq(KeyId, WordId));
+            }
+        }
+        TEnv::Logger->OnStatus(TStr::Fmt(
+            "  word voc %d: %s unified words", VocId,
+            TStrUtil::GetStr(FinalVoc->GetWords(KeyId)).CStr()));
+    }
+    TEnv::Logger->OnStatus(TStr::Fmt(
+        "Vocabulary unification done in %.1f s", VocStopWatch.GetSec()));
+
+    TDir::GenDir(DestFPath);
+    if (FullP) {
+        TVec<TPt<TGix<TQmGixKey, TQmGixItemFull> > > WorkerGixV;
+        for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixFull); }
+        ReindexMergeOneGix<TQmGixItemFull>(GixFull, WorkerGixV, "Index.GixFull", DestFPath,
+            SumItemHandlerFull, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
+        RebuiltGixNmV.Add("Index.GixFull");
+    }
+    if (SmallP) {
+        TVec<TPt<TGix<TQmGixKey, TQmGixItemSmall> > > WorkerGixV;
+        for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixSmall); }
+        ReindexMergeOneGix<TQmGixItemSmall>(GixSmall, WorkerGixV, "Index.GixSmall", DestFPath,
+            SumItemHandlerSmall, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
+        RebuiltGixNmV.Add("Index.GixSmall");
+    }
+    if (TinyP) {
+        TVec<TPt<TGix<TQmGixKey, TQmGixItemTiny> > > WorkerGixV;
+        for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixTiny); }
+        ReindexMergeOneGix<TQmGixItemTiny>(GixTiny, WorkerGixV, "Index.GixTiny", DestFPath,
+            ItemHandlerTiny, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
+        RebuiltGixNmV.Add("Index.GixTiny");
+    }
+    if (PosP) {
+        TVec<TPt<TGix<TQmGixKey, TQmGixItemPos> > > WorkerGixV;
+        for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixPos); }
+        ReindexMergeOneGix<TQmGixItemPos>(GixPos, WorkerGixV, "Index.GixPos", DestFPath,
+            ItemHandlerPos, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
         RebuiltGixNmV.Add("Index.GixPos");
     }
 }
