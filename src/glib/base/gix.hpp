@@ -1296,6 +1296,13 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
     printf("Copying %s: %d keys\n", GixFNm.GetFMid().CStr(), KeyV.Len());
     uint64 TotalItems = 0;
     int EmptyKeys = 0;
+    // progress timing: report item throughput (items/second) alongside the counter.
+    // the rate refreshes at most once per RateWindowSecs, computed over that whole
+    // window, so it stays stable instead of oscillating when many keys copy in well
+    // under a second; the final line reports the overall average
+    TExeTm CopyTm;
+    const double RateWindowSecs = 5.0;
+    uint64 LastItems = 0; double LastSecs = 0.0; double ItemsPerSec = 0.0;
     for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
         const TKey& Key = KeyV[KeyN];
         try {
@@ -1332,12 +1339,25 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
         // release the source itemset so the full scan does not grow the cache without bound
         DropFromCache(Key);
         if (KeyN % 1000 == 0) {
-            printf("%s / %s keys (%.1f%%), %s items copied\r", TStrUtil::GetStr(KeyN).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(),
-                KeyV.Len() > 0 ? 100.0 * KeyN / KeyV.Len() : 100.0, TStrUtil::GetStr(TotalItems).CStr());
+            const double NowSecs = CopyTm.GetSecs();
+            const double DSecs = NowSecs - LastSecs;
+            // refresh the throughput reading only once the measurement window has
+            // elapsed, so the number does not jump around between frequent updates
+            if (DSecs >= RateWindowSecs) {
+                ItemsPerSec = (double)(TotalItems - LastItems) / DSecs;
+                LastItems = TotalItems; LastSecs = NowSecs;
+            }
+            printf("%s / %s keys (%.1f%%), %s items copied, %s items/s          \r",
+                TStrUtil::GetStr(KeyN).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(),
+                KeyV.Len() > 0 ? 100.0 * KeyN / KeyV.Len() : 100.0,
+                TStrUtil::GetStr(TotalItems).CStr(), TStrUtil::GetStr((uint64)ItemsPerSec).CStr());
         }
     }
-    printf("%s / %s keys (100.0%%), %s items copied, %s empty keys skipped\n",
-        TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(TotalItems).CStr(), TStrUtil::GetStr(EmptyKeys).CStr());
+    const double TotSecs = CopyTm.GetSecs();
+    const uint64 AvgItemsPerSec = TotSecs > 0 ? (uint64)((double)TotalItems / TotSecs) : (uint64)0;
+    printf("%s / %s keys (100.0%%), %s items copied, %s empty keys skipped, avg %s items/s\n",
+        TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(TotalItems).CStr(),
+        TStrUtil::GetStr(EmptyKeys).CStr(), TStrUtil::GetStr(AvgItemsPerSec).CStr());
     if (FailedKeyV != NULL && !FailedKeyV->Empty()) {
         printf("TGix::CopyTo: %d key(s) FAILED - the destination is incomplete and must not be used\n", FailedKeyV->Len());
     }
