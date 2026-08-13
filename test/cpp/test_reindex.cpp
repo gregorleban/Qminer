@@ -310,3 +310,185 @@ TEST(ReindexTests, CloneWithFreshWordVocsGuardsSharedVoc) { try {
 
     TDir::DelNonEmptyDir(FPath);
 } catch (PExcept E) { FAIL() << E->GetMsgStr().CStr(); } }
+
+// Document-partitioned parallel rebuild (the -reindexShards path): N workers each
+// reindex a CONTIGUOUS record-id slice into their own stage index + vocabulary;
+// TIndex::ReindexMergePartitionsGix unifies the worker vocabularies into the final
+// one (word frequency = sum over workers, exercising AddWordStrFq) and merges the
+// translated worker postings key-sorted into the build folder. The output contract
+// is identical to the single-stage ReindexCopyGix path, so this test mirrors
+// ReindexTextKeysAndSwap and must end in exactly the same verified state.
+TEST(ReindexTests, ShardedReindexMatchesSingleStage) { try {
+    const TStr FPath = "./test/cpp/data/reindex_shard_base/";
+    const TStr BuildFPath = "./test/cpp/data/reindex_shard_build/";
+    const TStr StageFPathBase = "./test/cpp/data/reindex_shard_stage";
+    const TStr BackupFPath = "./test/cpp/data/reindex_shard_backup/";
+    const int Shards = 3;
+    if (TDir::Exists(FPath)) { TDir::DelNonEmptyDir(FPath); }
+    if (TDir::Exists(BuildFPath)) { TDir::DelNonEmptyDir(BuildFPath); }
+    if (TDir::Exists(BackupFPath)) { TDir::DelNonEmptyDir(BackupFPath); }
+    for (int ShardN = 0; ShardN < Shards; ShardN++) {
+        const TStr ShardPath = StageFPathBase + TStr::Fmt("%d/", ShardN);
+        if (TDir::Exists(ShardPath)) { TDir::DelNonEmptyDir(ShardPath); }
+        TDir::GenDir(ShardPath);
+    }
+    TDir::GenDir(FPath);
+    TDir::GenDir(BuildFPath);
+    TDir::GenDir(BackupFPath);
+
+    RxInitEnv();
+
+    const int Articles = 200;
+    const int Concepts = 4;
+    const int Langs = 2;
+
+    // --- Phase 1: identical base to ReindexTextKeysAndSwap --------------------
+    {
+        PBase Base = NewBase(FPath, TJsonVal::GetValFromStr(ReindexSchemaStr),
+            RxIndexCacheSize, RxStoreCacheSize, true);
+        TWPt<TStore> ArticleStore = Base->GetStoreByStoreNm("Article");
+        TWPt<TStore> ConceptStore = Base->GetStoreByStoreNm("Concept");
+        for (int ConceptN = 0; ConceptN < Concepts; ConceptN++) {
+            PJsonVal ConceptVal = TJsonVal::NewObj();
+            ConceptVal->AddToObj("URI", TStr::Fmt("concept_%d", ConceptN));
+            ConceptVal->AddToObj("Label", TStr::Fmt("Concept %d", ConceptN));
+            ConceptStore->AddRec(ConceptVal);
+        }
+        for (int ArtN = 0; ArtN < Articles; ArtN++) {
+            const char* Phrase = (ArtN % 2 == 0) ? "phraseone phrasetwo" : "phrasetwo phraseone";
+            PJsonVal ArtVal = TJsonVal::NewObj();
+            ArtVal->AddToObj("URI", TStr::Fmt("article_%d", ArtN));
+            ArtVal->AddToObj("Title", TStr::Fmt("title uniqueword%d junkword common words", ArtN));
+            ArtVal->AddToObj("Body", TStr::Fmt("body uniquebody%d junkword %s longer text of the article", ArtN, Phrase));
+            ArtVal->AddToObj("Language", (ArtN % Langs == 0) ? "eng" : "deu");
+            const uint64 ArtId = ArticleStore->AddRec(ArtVal);
+            ArticleStore->AddJoin("hasConcept", ArtId, (uint64)(ArtN % Concepts));
+        }
+        SaveBase(Base);
+    }
+
+    // --- Phase 2: reopen read-only, rebuild the text keys in 3 contiguous
+    // partitions, merge the partitions into the build folder -------------------
+    TStrV RebuiltGixNmV;
+    {
+        PBase Base = LoadBase(FPath, faRdOnly, RxIndexCacheSize, RxStoreCacheSize);
+        TWPt<TStore> ArticleStore = Base->GetStoreByStoreNm("Article");
+        const PIndexVoc IndexVoc = Base->GetIndexVoc();
+        const int TitleKeyId = IndexVoc->GetKeyId(ArticleStore->GetStoreId(), "Title");
+        const int BodyKeyId = IndexVoc->GetKeyId(ArticleStore->GetStoreId(), "Body");
+
+        // same "tokenizer change" as the single-stage test: junkword -> stopword
+        const PTokenizer NewTokenizer = TTokenizers::THtmlUnicode::New(TSwSet::NewFromWords("JUNKWORD"));
+        IndexVoc->PutTokenizer(TitleKeyId, NewTokenizer);
+        IndexVoc->PutTokenizer(BodyKeyId, NewTokenizer);
+
+        TIntSet TextKeyIdSet;
+        TextKeyIdSet.AddKey(TitleKeyId);
+        TextKeyIdSet.AddKey(BodyKeyId);
+
+        // contiguous record-id partitions: collect ids in ascending id order
+        TUInt64V RecIdV;
+        { PStoreIter Iter = ArticleStore->GetIter(); while (Iter->Next()) { RecIdV.Add(Iter->GetRecId()); } }
+        RecIdV.Sort();
+        const int SliceLen = (RecIdV.Len() + Shards - 1) / Shards;
+
+        // every worker builds its own stage index into its own fresh vocabulary
+        const int TitleFieldId = ArticleStore->GetFieldId("Title");
+        const int BodyFieldId = ArticleStore->GetFieldId("Body");
+        TVec<PIndexVoc> WorkerVocV;
+        TVec<PIndex> WorkerIndexV;
+        for (int ShardN = 0; ShardN < Shards; ShardN++) {
+            PIndexVoc WorkerVoc = IndexVoc->CloneWithFreshWordVocs(TextKeyIdSet);
+            PIndex WorkerIndex = TIndex::New(StageFPathBase + TStr::Fmt("%d/", ShardN), faCreate,
+                WorkerVoc, 10 * TInt::Mega, 10 * TInt::Mega, 10 * TInt::Mega, 10 * TInt::Mega,
+                Base->GetIndex()->GetSplitLen());
+            const int RecFrom = ShardN * SliceLen;
+            const int RecTo = TInt::GetMn(RecFrom + SliceLen, RecIdV.Len());
+            for (int RecN = RecFrom; RecN < RecTo; RecN++) {
+                const uint64 RecId = RecIdV[RecN];
+                WorkerIndex->IndexText(TitleKeyId, ArticleStore->GetFieldStr(RecId, TitleFieldId), RecId);
+                WorkerIndex->IndexTextPos(BodyKeyId, ArticleStore->GetFieldStr(RecId, BodyFieldId), RecId);
+            }
+            // the shared word "common" is present in every worker vocabulary,
+            // with the frequency it accumulated in that partition alone
+            EXPECT_TRUE(WorkerVoc->IsWordStr(TitleKeyId, "common"));
+            EXPECT_FALSE(WorkerVoc->IsWordStr(TitleKeyId, "junkword"));
+            WorkerVocV.Add(WorkerVoc);
+            WorkerIndexV.Add(WorkerIndex);
+        }
+
+        // unify the worker vocabularies into the final one and merge the postings
+        PIndexVoc FinalVoc = IndexVoc->CloneWithFreshWordVocs(TextKeyIdSet);
+        Base->GetIndex()->ReindexMergePartitionsGix(WorkerIndexV, WorkerVocV, FinalVoc,
+            TextKeyIdSet, BuildFPath, 10 * TInt::Mega, 1000, Shards, RebuiltGixNmV);
+        ASSERT_EQ(RebuiltGixNmV.Len(), 2);
+        EXPECT_EQ(RebuiltGixNmV[0], "Index.GixSmall");
+        EXPECT_EQ(RebuiltGixNmV[1], "Index.GixPos");
+
+        // vocabulary unification: one final word id per word, frequency = sum of
+        // the worker frequencies (AddWordStrFq) - "common" appears once per article
+        EXPECT_TRUE(FinalVoc->IsWordStr(TitleKeyId, "common"));
+        EXPECT_EQ((int) FinalVoc->GetWordFq(TitleKeyId,
+            FinalVoc->GetWordId(TitleKeyId, "common")), Articles);
+        EXPECT_FALSE(FinalVoc->IsWordStr(TitleKeyId, "junkword"));
+
+        // write the matching vocabulary next to the rebuilt gix files
+        TFOut VocFOut(TPath::Combine(BuildFPath, "IndexVoc.dat"));
+        FinalVoc->Save(VocFOut);
+    }
+
+    // --- Phase 3: swap the rebuilt files in -----------------------------------
+    for (int GixNmN = 0; GixNmN < RebuiltGixNmV.Len(); GixNmN++) {
+        TStrV OldFNmV; RxGetGixFileNames(FPath, RebuiltGixNmV[GixNmN], OldFNmV);
+        EXPECT_GE(OldFNmV.Len(), 2);
+        RxMoveFiles(FPath, BackupFPath, OldFNmV);
+        TStrV NewFNmV; RxGetGixFileNames(BuildFPath, RebuiltGixNmV[GixNmN], NewFNmV);
+        EXPECT_GE(NewFNmV.Len(), 2);
+        RxMoveFiles(BuildFPath, FPath, NewFNmV);
+    }
+    TFile::Move(TPath::Combine(FPath, "IndexVoc.dat"), TPath::Combine(BackupFPath, "IndexVoc.dat"));
+    TFile::Move(TPath::Combine(BuildFPath, "IndexVoc.dat"), TPath::Combine(FPath, "IndexVoc.dat"));
+
+    // --- Phase 4: reload and verify - identical expectations to the
+    // single-stage ReindexTextKeysAndSwap --------------------------------------
+    {
+        PBase Base = LoadBase(FPath, faRdOnly, RxIndexCacheSize, RxStoreCacheSize);
+        TWPt<TStore> ArticleStore = Base->GetStoreByStoreNm("Article");
+        TWPt<TStore> ConceptStore = Base->GetStoreByStoreNm("Concept");
+
+        EXPECT_EQ(RxSearchWord(Base, ArticleStore, "Title", "junkword"), 0);
+        EXPECT_EQ(RxSearchPos1(Base, ArticleStore, "Body", "junkword"), 0);
+        const int TitleKeyId = Base->GetIndexVoc()->GetKeyId(ArticleStore->GetStoreId(), "Title");
+        EXPECT_FALSE(Base->GetIndexVoc()->IsWordStr(TitleKeyId, "junkword"));
+
+        // per-record words: exactly one hit each, regardless of which partition
+        // indexed the record
+        for (int ArtN = 0; ArtN < Articles; ArtN++) {
+            ASSERT_EQ(RxSearchWord(Base, ArticleStore, "Title", TStr::Fmt("uniqueword%d", ArtN)), 1);
+            ASSERT_EQ(RxSearchPos1(Base, ArticleStore, "Body", TStr::Fmt("uniquebody%d", ArtN)), 1);
+        }
+        // cross-partition words: the merged posting list covers all partitions
+        EXPECT_EQ(RxSearchWord(Base, ArticleStore, "Title", "common"), Articles);
+        EXPECT_EQ((int) Base->GetIndexVoc()->GetWordFq(TitleKeyId,
+            Base->GetIndexVoc()->GetWordId(TitleKeyId, "common")), Articles);
+
+        // positions survived the merge: adjacency matches only the even articles
+        TStrV PhraseV; PhraseV.Add("phraseone"); PhraseV.Add("phrasetwo");
+        EXPECT_EQ(RxSearchPos(Base, ArticleStore, "Body", PhraseV), Articles / 2);
+
+        // untouched keys are intact (Language value key, join postings)
+        EXPECT_EQ(RxSearchWord(Base, ArticleStore, "Language", "eng"), Articles / Langs);
+        EXPECT_EQ(RxSearchWord(Base, ArticleStore, "Language", "deu"), Articles / Langs);
+        for (int ConceptN = 0; ConceptN < Concepts; ConceptN++) {
+            EXPECT_EQ(RxConceptArticles(Base, ConceptStore, (uint64) ConceptN), Articles / Concepts);
+        }
+    }
+
+    TDir::DelNonEmptyDir(FPath);
+    TDir::DelNonEmptyDir(BuildFPath);
+    for (int ShardN = 0; ShardN < Shards; ShardN++) {
+        const TStr ShardPath = StageFPathBase + TStr::Fmt("%d/", ShardN);
+        if (TDir::Exists(ShardPath)) { TDir::DelNonEmptyDir(ShardPath); }
+    }
+    TDir::DelNonEmptyDir(BackupFPath);
+} catch (PExcept E) { FAIL() << E->GetMsgStr().CStr(); } }
