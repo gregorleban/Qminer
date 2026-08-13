@@ -1284,13 +1284,22 @@ public:
     // The conditional mappings are hardcoded into GetCaseConverted().
     TIntIntVH specialCasingLower, specialCasingUpper, specialCasingTitle, specialUnknown;
     int scriptUnknown; // = scripts.GetKey("Unknown")
+    // Direct codepoint -> keyId-into-'h' lookup for the BMP (U+0000..U+FFFF), built
+    // in InitAfterLoad; -1 marks an absent codepoint. Replaces the per-character hash
+    // probe that dominated tokenization CPU. Astral-plane codepoints fall back to 'h'.
+    // When empty (e.g. before Load) GetChInfoKeyId transparently uses 'h', so the
+    // fallback keeps correctness even if the table was never built.
+    TIntV ChInfoKeyIdV;
+    // Fast codepoint -> keyId into 'h'; see ChInfoKeyIdV.
+    inline int GetChInfoKeyId(const int cp) const {
+        return uint(cp) < uint(ChInfoKeyIdV.Len()) ? ChInfoKeyIdV[cp].Val : h.GetKeyId(cp); }
 
     TUniChDb() : scriptUnknown(-1) { }
     explicit TUniChDb(TSIn& SIn) { Load(SIn); }
     void Clr() {
         h.Clr(); charNames.Clr(); decompositions.Clr(); inverseDec.Clr(); caseFolding.Clr();
         specialCasingLower.Clr(); specialCasingUpper.Clr(); specialCasingTitle.Clr();
-        scripts.Clr(); }
+        scripts.Clr(); ChInfoKeyIdV.Clr(); }
     void Save(TSOut& SOut) const {
         h.Save(SOut); charNames.Save(SOut); decompositions.Save(SOut);
         inverseDec.Save(SOut); caseFolding.Save(SOut); scripts.Save(SOut);
@@ -1335,14 +1344,14 @@ public:
     const TStr& GetScriptName(const int scriptId) const { return scripts.GetKey(scriptId); }
     int GetScriptByName(const TStr& scriptName) const { return scripts.GetKeyId(scriptName); }
     int GetScript(const TUniChInfo& ci) const { int s = ci.script; if (s < 0) s = scriptUnknown; return s; }
-    int GetScript(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return scriptUnknown; else return GetScript(h[i]); }
+    int GetScript(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return scriptUnknown; else return GetScript(h[i]); }
 
     //-------------------------------------------------------------------------
     // Character namesnames
     //-------------------------------------------------------------------------
 
     // GetCharName returns 0 if the name is unknown; GetCharNameS returns a string of the form "U+1234".
-    const char *GetCharName(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return 0; int ofs = h[i].nameOffset; return ofs < 0 ? 0 : charNames.GetCStr(ofs); }
+    const char *GetCharName(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return 0; int ofs = h[i].nameOffset; return ofs < 0 ? 0 : charNames.GetCStr(ofs); }
     TStr GetCharNameS(const int cp) const {
         // ToDo: Add special processing for precomposed Hangul syllables (UAX #15, sec. 16).
         const char *p = GetCharName(cp); if (p) return p;
@@ -1362,17 +1371,17 @@ public:
     // available in TUniChInfo.
 
     bool IsGetChInfo(const int cp, TUniChInfo& ChInfo) {
-        int i = h.GetKeyId(cp);
+        int i = GetChInfoKeyId(cp);
         if (i < 0) return false; else { ChInfo=h[i]; return true; }}
-    TUniChCategory GetCat(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return ucOther; else return h[i].cat; }
-    TUniChSubCategory GetSubCat(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return ucOtherNotAssigned; else return h[i].subCat; }
+    TUniChCategory GetCat(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return ucOther; else return h[i].cat; }
+    TUniChSubCategory GetSubCat(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return ucOtherNotAssigned; else return h[i].subCat; }
 
-    bool IsWbFlag(const int cp, const TUniChFlags flag) const { int i = h.GetKeyId(cp); if (i < 0) return false; else return h[i].IsWbFlag(flag); }
-    int GetWbFlags(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return 0; else return h[i].GetWbFlags(); }
-    bool IsSbFlag(const int cp, const TUniChFlags flag) const { int i = h.GetKeyId(cp); if (i < 0) return false; else return h[i].IsSbFlag(flag); }
-    int GetSbFlags(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return 0; else return h[i].GetSbFlags(); }
+    bool IsWbFlag(const int cp, const TUniChFlags flag) const { int i = GetChInfoKeyId(cp); if (i < 0) return false; else return h[i].IsWbFlag(flag); }
+    int GetWbFlags(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return 0; else return h[i].GetWbFlags(); }
+    bool IsSbFlag(const int cp, const TUniChFlags flag) const { int i = GetChInfoKeyId(cp); if (i < 0) return false; else return h[i].IsSbFlag(flag); }
+    int GetSbFlags(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return 0; else return h[i].GetSbFlags(); }
 
-#define ___UniFwd1(name) bool name(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return false; else return h[i].name(); }
+#define ___UniFwd1(name) bool name(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return false; else return h[i].name(); }
 #define ___UniFwd2(name1, name2) ___UniFwd1(name1) ___UniFwd1(name2)
 #define ___UniFwd3(name1, name2, name3) ___UniFwd2(name1, name2) ___UniFwd1(name3)
 #define ___UniFwd4(name1, name2, name3, name4) ___UniFwd3(name1, name2, name3) ___UniFwd1(name4)
@@ -1395,7 +1404,7 @@ public:
 #undef ___UniFwd1
 
     bool IsPrivateUse(const int cp) const {
-        int i = h.GetKeyId(cp); if (i >= 0) return h[i].IsPrivateUse();
+        int i = GetChInfoKeyId(cp); if (i >= 0) return h[i].IsPrivateUse();
         return (0xe000 <= cp && cp <= 0xf8ff) ||  // plane 0 private-use area
             // Planes 15 and 16 are entirely for private use.
             (0xf0000 <= cp && cp <= 0xffffd) || (0x100000 <= cp && cp <= 0x10fffd); }
@@ -1404,13 +1413,13 @@ public:
     // will refer to a private-use codepoint, but IsPrivateUse nevertheless returns false
     // for db80..dbff.  This is consistent with the category codes assigned in UnicodeData.txt.
     bool IsSurrogate(const int cp) const {
-        int i = h.GetKeyId(cp); if (i >= 0) return h[i].IsSurrogate();
+        int i = GetChInfoKeyId(cp); if (i >= 0) return h[i].IsSurrogate();
         return 0xd800 <= cp && cp <= 0xdcff; }
 
     // Note: in particular, all Hangul characters (HangulLBase..HangulLBase + HangulLCount - 1
     // and HangulSBase..HangulSBase + HangulSCount - 1) should be treated as starters
     // for composition to work correctly.
-    int GetCombiningClass(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return TUniChInfo::ccStarter; else return h[i].combClass; }
+    int GetCombiningClass(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return TUniChInfo::ccStarter; else return h[i].combClass; }
 
     //-------------------------------------------------------------------------
     // Hangul constants
@@ -1431,7 +1440,7 @@ protected:
     // UAX #29, rule WB3: ignore Format and Extend characters.
     // [Note: rule SB5 for sentence boundaries is identical, and thus these methods will also be used for sentence-boundary detection.]
     static bool IsWbIgnored(const TUniChInfo& ci) { return ci.IsGbExtend() || ci.IsWbFormat(); }
-    bool IsWbIgnored(const int cp) const { int i = h.GetKeyId(cp); if (i < 0) return false; else return IsWbIgnored(h[i]); }
+    bool IsWbIgnored(const int cp) const { int i = GetChInfoKeyId(cp); if (i < 0) return false; else return IsWbIgnored(h[i]); }
     // Sets 'position' to the smallest index from 'position..srcEnd-1' that contains a non-ignored character.
     template<typename TSrcVec> void WbFindCurOrNextNonIgnored(const TSrcVec& src, size_t& position, const size_t srcEnd) const {
         while (position < srcEnd && IsWbIgnored(src[TVecIdx(position)])) position++; }
@@ -3040,7 +3049,7 @@ void TUniChDb::GetCaseConverted(const TSrcVec& src, size_t srcIdx, const size_t 
         int i = specHere.GetKeyId(cp);
         if (i >= 0) { TUniCaseFolding::AppendVector(specHere[i], dest); continue; }
         // Try to use the simple (one-character) mappings.
-        i = h.GetKeyId(cp);
+        i = GetChInfoKeyId(cp);
         if (i >= 0) {
             const TUniChInfo &ci = h[i];
             int cpNew = (
@@ -3063,7 +3072,7 @@ void TUniChDb::GetSimpleCaseConverted(const TSrcVec& src, size_t srcIdx, const s
     for (const size_t origSrcIdx = srcIdx, srcEnd = srcIdx + srcCount; srcIdx < srcEnd; )
     {
         const int cp = src[TVecIdx(srcIdx)]; srcIdx++;
-        int i = h.GetKeyId(cp); if (i < 0) { dest.Add(cp); continue; }
+        int i = GetChInfoKeyId(cp); if (i < 0) { dest.Add(cp); continue; }
         const TUniChInfo &ci = h[i];
         // With titlecasing, the first cased character of each word must be put into titlecase,
         // all others into lowercase.  This is what the howHere variable is for.
@@ -3091,7 +3100,7 @@ void TUniChDb::ToSimpleCaseConverted(TSrcVec& src, size_t srcIdx, const size_t s
     for (const size_t origSrcIdx = srcIdx, srcEnd = srcIdx + srcCount; srcIdx < srcEnd; srcIdx++)
     {
         const int cp = src[TVecIdx(srcIdx)];
-        int i = h.GetKeyId(cp); if (i < 0) continue;
+        int i = GetChInfoKeyId(cp); if (i < 0) continue;
         const TUniChInfo &ci = h[i];
         // With titlecasing, the first cased character of each word must be put into titlecase,
         // all others into lowercase.  This is what the howHere variable is for.
@@ -3129,7 +3138,7 @@ void TUniChDb::AddDecomposition(const int codePoint, TVec<TDestCh>& dest, const 
         if (T != HangulTBase) dest.Add(T);
         return;
     }
-    int i = h.GetKeyId(codePoint); if (i < 0) { dest.Add(codePoint); return; }
+    int i = GetChInfoKeyId(codePoint); if (i < 0) { dest.Add(codePoint); return; }
     const TUniChInfo &ci = h[i];
     int ofs = ci.decompOffset; if (ofs < 0) { dest.Add(codePoint); return; }
     if ((! compatibility) && ci.IsCompatibilityDecomposition()) { dest.Add(codePoint); return; }

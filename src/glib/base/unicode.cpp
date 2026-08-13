@@ -1375,6 +1375,12 @@ void TUniChDb::SaveBin(const TStr& fnBinUcd)
 void TUniChDb::InitAfterLoad()
 {
     scriptUnknown = GetScriptByName(GetScriptNameUnknown()); IAssert(scriptUnknown >= 0);
+    // Build the direct BMP codepoint -> keyId lookup so tokenization avoids a hash
+    // probe per character (this was ~8% of reindex CPU). Astral-plane codepoints
+    // (>= U+10000, rare in practice) still go through the hash via GetChInfoKeyId.
+    const int BmpLen = 0x10000;
+    ChInfoKeyIdV.Gen(BmpLen);
+    for (int cp = 0; cp < BmpLen; cp++) { ChInfoKeyIdV[cp] = h.GetKeyId(cp); }
 }
 
 //-----------------------------------------------------------------------------
