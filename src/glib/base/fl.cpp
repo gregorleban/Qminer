@@ -1111,7 +1111,7 @@ void TFRnd::RefreshFPos()
 
 TFRnd::TFRnd(const TStr& _FNm, const TFAccess& FAccess, const bool& CreateIfNo, const int& _HdLen,
              const int& _RecLen)
-    : FileId(NULL), FNm(_FNm.CStr()), RecAct(false), HdLen(_HdLen), RecLen(_RecLen)
+    : FileId(NULL), FNm(_FNm.CStr()), RecAct(false), HdLen(_HdLen), RecLen(_RecLen), LastDir(ldNone)
 {
     RecAct = (HdLen >= 0) && (RecLen > 0);
     switch (FAccess) {
@@ -1152,11 +1152,13 @@ TStr TFRnd::GetFNm() const
 void TFRnd::SetFPos(const int& FPos)
 {
     EAssertR(fseek(FileId, FPos, SEEK_SET) == 0, "Error seeking into file '" + TStr(FNm) + "'.");
+    LastDir = ldNone; // an explicit seek satisfies the read/write switch
 }
 
 void TFRnd::MoveFPos(const int& DFPos)
 {
     EAssertR(fseek(FileId, DFPos, SEEK_CUR) == 0, "Error seeking into file '" + TStr(FNm) + "'.");
+    LastDir = ldNone; // an explicit seek satisfies the read/write switch
 }
 
 int TFRnd::GetFPos()
@@ -1199,14 +1201,21 @@ int TFRnd::GetRecs()
 
 void TFRnd::GetBf(void* Bf, const TSize& BfL)
 {
-    RefreshFPos();
+    // a seek is only needed when switching from writing to reading (C stdio rule);
+    // consecutive reads keep the FILE* buffer and issue no extra fseek syscall
+    if (LastDir == ldWrite) { RefreshFPos(); }
     EAssertR(fread(Bf, 1, BfL, FileId) == BfL, "Error reading file '" + TStr(FNm) + "'.");
+    LastDir = ldRead;
 }
 
 void TFRnd::PutBf(const void* Bf, const TSize& BfL)
 {
-    RefreshFPos();
+    // a seek is only needed when switching from reading to writing; consecutive
+    // writes keep buffering in the FILE* (flushed on the next read/seek or Flush)
+    // instead of forcing every small write out to the OS
+    if (LastDir == ldRead) { RefreshFPos(); }
     EAssertR(fwrite(Bf, 1, BfL, FileId) == BfL, "Error writting to the file '" + TStr(FNm) + "'.");
+    LastDir = ldWrite;
 }
 
 void TFRnd::Flush()

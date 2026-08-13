@@ -523,6 +523,14 @@ private:
   TSStr FNm;
   bool RecAct;
   int HdLen, RecLen;
+  // Direction of the last GetBf/PutBf. C stdio requires a seek between a read and a
+  // write on an update stream (and vice versa), but ONLY then; tracking the last
+  // direction lets consecutive same-direction ops skip RefreshFPos(), which both
+  // costs a syscall (fseek -> NtSetInformationFile) and discards the FILE* buffer.
+  // Every explicit seek resets it to ldNone (the seek itself satisfies the switch,
+  // so the next read or write needs no extra RefreshFPos()).
+  enum TLastDir { ldNone, ldRead, ldWrite };
+  TLastDir LastDir;
 private:
   void RefreshFPos();
 private:
