@@ -2487,6 +2487,11 @@ public:
     void IncRecs() { Recs++; }
     /// Add new word to the vocabulary (if existing, it increases its count)
     uint64 AddWordStr(const TStr& WordStr);
+    /// Add new word to the vocabulary and increase its count by Fq (instead of
+    /// by 1). Used when merging word vocabularies (e.g. the parallel reindex
+    /// partitions), where each inserted word carries the frequency it
+    /// accumulated in the source vocabulary
+    uint64 AddWordStrFq(const TStr& WordStr, const uint64& Fq);
 
     /// Check if vocabulary has a name assigned (used for easier referencing in schemas)
     bool IsWordVocNm() const { return !WordVocNm.Empty(); }
@@ -2610,6 +2615,9 @@ public:
     void GetWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& WordIdV) const;
     /// For parsing strings (adds new words)
     uint64 AddWordStr(const int& KeyId, const TStr& WordStr);
+    /// Add word to the vocabulary of a key, increasing its count by Fq instead
+    /// of by 1 - see TIndexWordVoc::AddWordStrFq
+    uint64 AddWordStrFq(const int& KeyId, const TStr& WordStr, const uint64& Fq);
     /// Get word ids from a key for a given text (adds new words)
     void AddWordIdV(const int& KeyId, const TStr& TextStr, TUInt64V& WordIdV);
     /// Get word ids from a key for a given texts (adds new words)
@@ -3470,6 +3478,26 @@ private:
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize, const int& VerifySampleKeys) const;
 
+    /// Rebuild one gix into DestFPath by combining the live gix (all keys NOT in
+    /// RebuiltKeyIdSet) with N worker gixes that each hold the freshly rebuilt
+    /// postings of a contiguous record-id partition, expressed in the worker's
+    /// own (local) word ids. Worker keys are translated to final word ids
+    /// through WorkerVocWordMapV (per worker: word voc id -> local word id ->
+    /// final word id, produced by the vocabulary unification), the union of
+    /// final keys is written in sorted key order (contiguous on disk = no
+    /// separate defrag needed) and each final key's posting list is the
+    /// concatenation of its worker posting lists in worker order (contiguous
+    /// record partitions keep it record-id ascending). MergeThreads reader
+    /// threads prepare ordered chunks of merged posting lists; a single writer
+    /// (the calling thread) appends them to the destination in key order.
+    /// Used by ReindexMergePartitionsGix
+    template <class TQmGixItem>
+    void ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+        const TVec<TPt<TGix<TQmGixKey, TQmGixItem> > >& WorkerGixV, const TStr& GixNm,
+        const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
+        const TIntSet& RebuiltKeyIdSet, const TVec<THash<TInt, TUInt64V> >& WorkerVocWordMapV,
+        const int64& CacheSize, const int& VerifySampleKeys, const int& MergeThreads) const;
+
     /// Scan one gix and aggregate its posting-list lengths per index key into
     /// KeyStatsH, keyed by (index key id, gix id) - used by GetPostingLenStats
     template <class TQmGixItem>
@@ -3708,6 +3736,31 @@ public:
     void ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
         const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const;
+
+    /// Parallel-partition variant of ReindexCopyGix: combine this (live) index
+    /// with N worker stage indexes that each hold the freshly rebuilt postings
+    /// of a CONTIGUOUS record-id partition of the stores, built into the
+    /// worker's own vocabulary (WorkerVocV[k], each produced by
+    /// TIndexVoc::CloneWithFreshWordVocs). First the worker word vocabularies
+    /// of the rebuilt keys are unified into FinalVoc (also produced by
+    /// CloneWithFreshWordVocs, from the live vocabulary): every worker word is
+    /// added to FinalVoc with its accumulated frequency (final frequency = sum
+    /// of worker frequencies) and a per-worker word-id translation table is
+    /// recorded. Then, per gix: keys NOT in RebuiltKeyIdSet are copied from
+    /// the live gix (as in ReindexCopyGix) and the rebuilt keys are merged
+    /// from the worker gixes with MergeThreads reader threads and one writer,
+    /// in sorted final-key order - the output contract (key-sorted =
+    /// defragmented files in DestFPath, RebuiltGixNmV) is identical to
+    /// ReindexCopyGix. Item counts are verified for every merged key; when
+    /// VerifySampleKeys > 0, samples of both the kept and the merged keys are
+    /// additionally compared in depth against the destination. Each worker
+    /// index must contain ONLY keys from RebuiltKeyIdSet. FinalVoc is what
+    /// must be saved as the rebuilt index's IndexVoc.dat
+    void ReindexMergePartitionsGix(const TVec<PIndex>& WorkerIndexV,
+        const TVec<PIndexVoc>& WorkerVocV, const PIndexVoc& FinalVoc,
+        const TIntSet& RebuiltKeyIdSet, const TStr& DestFPath,
+        const int64& CacheSize, const int& VerifySampleKeys,
+        const int& MergeThreads, TStrV& RebuiltGixNmV) const;
 
     /// Diagnostic: open the gix file set of GixNm ("full", "small", "tiny" or
     /// "pos") in FPath read-only and try to fully read every itemset (header
