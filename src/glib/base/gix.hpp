@@ -1205,12 +1205,7 @@ template <class TKey, class TItem>
 void TGix<TKey, TItem>::RefreshMemUsed() const {
     // check if we have to drop anything from the cache
     if (NewCacheSizeInc > CacheResetThreshold) {
-        // start with \r and pad the line: the console may hold an in-place (\r) progress line -
-        // e.g. the batch delete progress - which this overwrites cleanly (the pad erases any
-        // longer leftover text). a bare leading \n would instead print a blank line whenever the
-        // cursor already sits on an empty line
-        printf("\r%-120s\n", TStr::Fmt("Gix cache clean-up start [accumulated growth: %s]",
-            TUInt64::GetMegaStr(NewCacheSizeInc).CStr()).CStr());
+        const uint64 GrowthBeforeCleanup = NewCacheSizeInc;
         TExeTm ExeTm;
         // pack all the item sets
         TBlobPt BlobPt;
@@ -1222,10 +1217,17 @@ void TGix<TKey, TItem>::RefreshMemUsed() const {
         // clean-up cache
         CacheFullP = ItemSetCache.RefreshMemUsed();
         NewCacheSizeInc = 0;
-        // GetCurMemUsed reuses the size just computed by RefreshMemUsed - calling
-        // GetMemUsed here would re-walk the whole cache a second time
-        printf("Gix cache clean-up done [new size: %s, took %s]\n",
-            TUInt64::GetMegaStr(uint64(ItemSetCache.GetCurMemUsed())).CStr(), ExeTm.GetTmStr());
+        // routine clean-ups are silent - on a pinned-at-limit cache they fire every few
+        // seconds and drown the console. A slow pass is the anomaly worth reporting.
+        // start with \r and pad the line: the console may hold an in-place (\r) progress
+        // line - e.g. the batch delete progress - which this overwrites cleanly
+        if (ExeTm.GetSecs() >= 10.0) {
+            // GetCurMemUsed reuses the size just computed by RefreshMemUsed - calling
+            // GetMemUsed here would re-walk the whole cache a second time
+            printf("\r%-120s\n", TStr::Fmt("Gix cache clean-up was slow [growth: %s, new size: %s, took %s]",
+                TUInt64::GetMegaStr(GrowthBeforeCleanup).CStr(),
+                TUInt64::GetMegaStr(uint64(ItemSetCache.GetCurMemUsed())).CStr(), ExeTm.GetTmStr()).CStr());
+        }
     }
 }
 
