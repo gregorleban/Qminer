@@ -7434,7 +7434,9 @@ void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix
         StopP = true;
         CanPublish.notify_all();
         for (size_t ThreadN = 0; ThreadN < ReaderThreadV.size(); ThreadN++) { ReaderThreadV[ThreadN].join(); }
-        for (std::map<int, TMergeChunk*>::iterator ChunkIt = ReadyChunkH.begin();
+        // auto: TMergeChunk is local to this template function, so the map's
+        // iterator is a dependent type - gcc rejects the bare iterator spelling
+        for (auto ChunkIt = ReadyChunkH.begin();
                 ChunkIt != ReadyChunkH.end(); ++ChunkIt) { delete ChunkIt->second; }
         throw;
     }
@@ -7511,7 +7513,7 @@ void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix
     CanPublish.notify_all();
     CanConsume.notify_all();
     for (size_t ThreadN = 0; ThreadN < ReaderThreadV.size(); ThreadN++) { ReaderThreadV[ThreadN].join(); }
-    for (std::map<int, TMergeChunk*>::iterator ChunkIt = ReadyChunkH.begin();
+    for (auto ChunkIt = ReadyChunkH.begin();
             ChunkIt != ReadyChunkH.end(); ++ChunkIt) { delete ChunkIt->second; }
     ReadyChunkH.clear();
     if (FirstExc) { std::rethrow_exception(FirstExc); }
