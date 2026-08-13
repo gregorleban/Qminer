@@ -6110,12 +6110,6 @@ void TIndex::IndexGix(const int& KeyId, const uint64& WordId, const uint64& RecI
     }
 }
 
-void TIndex::AddGixItemPos(const int& KeyId, const uint64& WordId, const TQmGixItemPos& Item) {
-    Assert(KeyId != -1);
-    QmAssertR(!IsReadOnly(), "Cannot edit read-only index!");
-    GixPos->AddItem(TKeyWord(KeyId, WordId), Item);
-}
-
 void TIndex::DeleteValue(const int& KeyId, const TStr& WordStr, const uint64& RecId) {
     const uint64 WordId = IndexVoc->AddWordStr(KeyId, WordStr);
     DeleteGix(KeyId, WordId, RecId, 1);
@@ -7065,26 +7059,24 @@ void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& 
 
 template <class TQmGixItem>
 void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
-        const TVec<TPt<TGix<TQmGixKey, TQmGixItem> > >& StageGixV, const TStr& GixNm,
+        const TPt<TGix<TQmGixKey, TQmGixItem> >& StageGix, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize, const int& VerifySampleKeys) const {
 
     TEnv::Logger->OnStatus("Rebuilding " + GixNm + " from the live and reindexed data ...");
     // the stage gix is only ever fed through the rebuilt keys - anything else in
-    // it means the caller reindexed a key it did not declare. With sharding the
-    // rebuilt keys are partitioned across StageGixV by hash, so each shard holds a
-    // disjoint subset and every shard must stay within the rebuilt key set.
+    // it means the caller reindexed a key it did not declare
     TQmGixKeyIdSetFilter KeepRebuiltF(RebuiltKeyIdSet, false);
     TQmGixKeyIdSetFilter KeepOtherF(RebuiltKeyIdSet, true);
-    for (int ShardN = 0; ShardN < StageGixV.Len(); ShardN++) {
+    {
         int StrayKeys = 0;
-        int StageKeyId = StageGixV[ShardN]->FFirstKeyId();
-        while (StageGixV[ShardN]->FNextKeyId(StageKeyId)) {
-            if (!KeepRebuiltF.KeepKeyP(StageGixV[ShardN]->GetKey(StageKeyId))) { StrayKeys++; }
+        int StageKeyId = StageGix->FFirstKeyId();
+        while (StageGix->FNextKeyId(StageKeyId)) {
+            if (!KeepRebuiltF.KeepKeyP(StageGix->GetKey(StageKeyId))) { StrayKeys++; }
         }
         EAssertR(StrayKeys == 0, TStr::Fmt(
-            "[TIndex::ReindexCopyOneGix] %s shard %d: the stage gix contains %d key(s) outside the rebuilt key set",
-            GixNm.CStr(), ShardN, StrayKeys));
+            "[TIndex::ReindexCopyOneGix] %s: the stage gix contains %d key(s) outside the rebuilt key set",
+            GixNm.CStr(), StrayKeys));
     }
     // create the destination gix. it shares the live split length provider, so
     // per-key split lengths (e.g. from the store definition) are applied to all
@@ -7102,20 +7094,21 @@ void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
     uint64 LiveItems = 0; int LiveEmptyKeys = 0;
     LiveGix->CopyTo(*DestGix, &LiveItems, &LiveEmptyKeys, &KeepOtherF, &FailedKeyV);
     const int KeysAfterLiveCopy = DestGix->GetKeys();
-    // copy the rebuilt keys from each stage shard (their keys are disjoint, so the
-    // order across shards does not matter). Each stage shard is throwaway: after a
-    // flush its blobs are current, and the copy re-dirties itemsets only through
-    // content-preserving Def() merges, so storing them back on eviction is wasted
-    // time - discard them instead.
-    uint64 StageItems = 0; int StageEmptyKeys = 0; int StageKeysTotal = 0;
-    for (int ShardN = 0; ShardN < StageGixV.Len(); ShardN++) {
-        StageGixV[ShardN]->Flush();
-        StageGixV[ShardN]->SetDiscardDirtyOnDrop(true);
-        uint64 ShardItems = 0; int ShardEmptyKeys = 0;
-        StageGixV[ShardN]->CopyTo(*DestGix, &ShardItems, &ShardEmptyKeys, &KeepRebuiltF, &FailedKeyV);
-        StageItems += ShardItems; StageEmptyKeys += ShardEmptyKeys;
-        StageKeysTotal += StageGixV[ShardN]->GetKeys();
-    }
+    // the stage gix is throwaway: after a flush its blobs are current, and the
+    // copy re-dirties itemsets only through content-preserving Def() merges, so
+    // storing them back on eviction is wasted time - discard them instead. Also
+    // lets DropFromCache release Def()-dirtied itemsets promptly on a read-only
+    // (resume-mode) stage, where they otherwise linger until the LRU purge
+    StageGix->Flush();
+    StageGix->SetDiscardDirtyOnDrop(true);
+    // copy the rebuilt keys from the stage gix. Note for a sorted key
+    // dictionary: these keys interleave in key space with the ones copied
+    // above, so in a MIXED gix they land in the dictionary's overlay hash -
+    // still correct, just not compact until the next defrag. In the ER bases
+    // the rebuilt (pos) gix holds only text keys, so the first copy is empty
+    // and this pass builds the compact arrays directly
+    uint64 StageItems = 0; int StageEmptyKeys = 0;
+    StageGix->CopyTo(*DestGix, &StageItems, &StageEmptyKeys, &KeepRebuiltF, &FailedKeyV);
     QmAssertR(FailedKeyV.Empty(), TStr::Fmt(
         "[TIndex::ReindexCopyOneGix] %s: %d key(s) could not be copied (unreadable source "
         "itemsets, see the listing above) - the rebuilt gix is incomplete and must not be swapped in",
@@ -7127,32 +7120,27 @@ void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
         TStrUtil::GetStr(StageItems).CStr(), TStrUtil::GetStr(DestKeys - KeysAfterLiveCopy).CStr()));
     // before/after accounting, as in the defrag rebuild: only fully-deleted
     // posting lists may be missing from the destination
-    if (DestKeys - KeysAfterLiveCopy != StageKeysTotal - StageEmptyKeys) {
+    if (DestKeys - KeysAfterLiveCopy != StageGix->GetKeys() - StageEmptyKeys) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Reindex] WARNING: %s rebuilt key count %d does not match the %d non-empty stage keys - "
             "index entries were lost or duplicated by the rebuild, do not swap this index in!",
-            GixNm.CStr(), DestKeys - KeysAfterLiveCopy, StageKeysTotal - StageEmptyKeys));
+            GixNm.CStr(), DestKeys - KeysAfterLiveCopy, StageGix->GetKeys() - StageEmptyKeys));
     }
     // deep-compare samples of both sources against the destination
     if (VerifySampleKeys > 0) {
         QmAssertR(LiveGix->VerifySample(*DestGix, VerifySampleKeys, &KeepOtherF),
             "[TIndex::ReindexCopyGix] Verification of " + GixNm + " failed - the kept keys do not match the live index");
-        for (int ShardN = 0; ShardN < StageGixV.Len(); ShardN++) {
-            QmAssertR(StageGixV[ShardN]->VerifySample(*DestGix, VerifySampleKeys, &KeepRebuiltF),
-                TStr::Fmt("[TIndex::ReindexCopyGix] Verification of %s shard %d failed - the rebuilt keys do not match the reindexed data",
-                    GixNm.CStr(), ShardN));
-        }
+        QmAssertR(StageGix->VerifySample(*DestGix, VerifySampleKeys, &KeepRebuiltF),
+            "[TIndex::ReindexCopyGix] Verification of " + GixNm + " failed - the rebuilt keys do not match the reindexed data");
     }
     // releasing the destination gix flushes it and saves its key hash table
     DestGix.Clr();
     TEnv::Logger->OnStatus("Rebuilding " + GixNm + " done");
 }
 
-void TIndex::ReindexCopyGix(const TVec<PIndex>& StageIndexV, const TStr& DestFPath,
+void TIndex::ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
         const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const {
-
-    QmAssertR(!StageIndexV.Empty(), "[TIndex::ReindexCopyGix] no stage index provided");
 
     RebuiltGixNmV.Clr();
     QmAssertR(!RebuiltKeyIdSet.Empty(), "[TIndex::ReindexCopyGix] the rebuilt key set is empty");
@@ -7182,30 +7170,22 @@ void TIndex::ReindexCopyGix(const TVec<PIndex>& StageIndexV, const TStr& DestFPa
     }
     TDir::GenDir(DestFPath);
     if (FullP) {
-        TVec<TPt<TGix<TQmGixKey, TQmGixItemFull> > > StageV;
-        for (int i = 0; i < StageIndexV.Len(); i++) { StageV.Add(StageIndexV[i]->GixFull); }
-        ReindexCopyOneGix<TQmGixItemFull>(GixFull, StageV, "Index.GixFull",
+        ReindexCopyOneGix<TQmGixItemFull>(GixFull, StageIndex->GixFull, "Index.GixFull",
             DestFPath, SumItemHandlerFull, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
         RebuiltGixNmV.Add("Index.GixFull");
     }
     if (SmallP) {
-        TVec<TPt<TGix<TQmGixKey, TQmGixItemSmall> > > StageV;
-        for (int i = 0; i < StageIndexV.Len(); i++) { StageV.Add(StageIndexV[i]->GixSmall); }
-        ReindexCopyOneGix<TQmGixItemSmall>(GixSmall, StageV, "Index.GixSmall",
+        ReindexCopyOneGix<TQmGixItemSmall>(GixSmall, StageIndex->GixSmall, "Index.GixSmall",
             DestFPath, SumItemHandlerSmall, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
         RebuiltGixNmV.Add("Index.GixSmall");
     }
     if (TinyP) {
-        TVec<TPt<TGix<TQmGixKey, TQmGixItemTiny> > > StageV;
-        for (int i = 0; i < StageIndexV.Len(); i++) { StageV.Add(StageIndexV[i]->GixTiny); }
-        ReindexCopyOneGix<TQmGixItemTiny>(GixTiny, StageV, "Index.GixTiny",
+        ReindexCopyOneGix<TQmGixItemTiny>(GixTiny, StageIndex->GixTiny, "Index.GixTiny",
             DestFPath, ItemHandlerTiny, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
         RebuiltGixNmV.Add("Index.GixTiny");
     }
     if (PosP) {
-        TVec<TPt<TGix<TQmGixKey, TQmGixItemPos> > > StageV;
-        for (int i = 0; i < StageIndexV.Len(); i++) { StageV.Add(StageIndexV[i]->GixPos); }
-        ReindexCopyOneGix<TQmGixItemPos>(GixPos, StageV, "Index.GixPos",
+        ReindexCopyOneGix<TQmGixItemPos>(GixPos, StageIndex->GixPos, "Index.GixPos",
             DestFPath, ItemHandlerPos, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
         RebuiltGixNmV.Add("Index.GixPos");
     }

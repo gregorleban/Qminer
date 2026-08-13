@@ -3466,7 +3466,7 @@ private:
     /// destination - a separate defrag pass is not needed. Used by ReindexCopyGix
     template <class TQmGixItem>
     void ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
-        const TVec<TPt<TGix<TQmGixKey, TQmGixItem> > >& StageGixV, const TStr& GixNm,
+        const TPt<TGix<TQmGixKey, TQmGixItem> >& StageGix, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize, const int& VerifySampleKeys) const;
 
@@ -3493,6 +3493,9 @@ private:
 
     /// Execute Position query. Result is vector of record ids and frequency of phrase occurences.
     void DoQueryPos(const int& KeyId, const TUInt64V& WordIdV, const TIntV& MaxDiffV, TUInt64IntKdV& RecIdFqV) const;
+
+    /// method that computes the GixItemPos items for the provided list of words
+    void ComputeWordItemPos(const int& KeyId, const TUInt64V& WordIdV, const uint64& RecId, TVec<TPair<TUInt64, TQmGixItemPos>>& WordIdPosPrV);
 
     /// Constructor
     TIndex(const TStr& _IndexFPath, const TFAccess& _Access, const PIndexVoc& IndexVoc,
@@ -3534,15 +3537,6 @@ public:
         const uint64& RecId, const uint64& JoinRecId, const int& JoinFq = 1);
     /// Add to inverted index (RecId, RecFq) under key (KeyId, WordId).
     void IndexGix(const int& KeyId, const uint64& WordId, const uint64& RecId, const int& RecFq);
-    /// Append a precomputed positional item directly under key (KeyId, WordId).
-    /// Used by the sharded reindex: the router assigns word ids and computes the
-    /// positional items serially, and each worker only appends to its own shard's
-    /// positional gix (word ids are pre-assigned, so the vocabulary is untouched).
-    void AddGixItemPos(const int& KeyId, const uint64& WordId, const TQmGixItemPos& Item);
-    /// Compute the positional gix items for a record's word-id list. Pure - depends
-    /// only on WordIdV and RecId (no member/gix access), so the sharded reindex
-    /// router can build the items serially while the shard workers run.
-    void ComputeWordItemPos(const int& KeyId, const TUInt64V& WordIdV, const uint64& RecId, TVec<TPair<TUInt64, TQmGixItemPos> >& WordIdPosPrV);
 
     /// Delete index for RecId under (Key, Word). WordStr is sent through index vocabulary.
     void DeleteValue(const int& KeyId, const TStr& WordStr, const uint64& RecId);
@@ -3711,11 +3705,7 @@ public:
     /// compared in depth against the destination. The stage index must contain
     /// ONLY keys from RebuiltKeyIdSet. Used by the ReindexIndex console action,
     /// together with a vocabulary produced by TIndexVoc::CloneWithFreshWordVocs
-    /// StageIndexV holds one or more stage indexes whose rebuilt keys are disjoint
-    /// (the sharded reindex routes every (key,word) to exactly one shard by hash);
-    /// their postings are all copied into the destination. A single-element vector
-    /// is the non-sharded case.
-    void ReindexCopyGix(const TVec<PIndex>& StageIndexV, const TStr& DestFPath,
+    void ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
         const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const;
 
