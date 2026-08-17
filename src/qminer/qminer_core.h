@@ -4344,4 +4344,14 @@ PJsonVal GixStatsToJson(const TGixStats& stats);
 
 } // namespace
 
+// TQmGixItemPos::Save writes RecId (4 bytes) and the position bitset (4 bytes,
+// via TBitsetConverter) in declaration order - byte-identical to the in-memory
+// layout - so vectors of it may use TVec's bulk flat-serialization path. The
+// other gix item types (TKeyDat pairs, TUInt) are covered by the generic
+// specializations; without this one the pos index serialized item-by-item,
+// which dominated ServerArticles ingest CPU (profiled 2026-08-17).
+static_assert(sizeof(TQm::TIndex::TQmGixItemPos) == 8,
+    "TQmGixItemPos must stay 8 bytes and padding-free for flat serialization");
+template <> struct TIsFlatSerializable<TQm::TIndex::TQmGixItemPos> { enum { Val = 1 }; };
+
 #endif
