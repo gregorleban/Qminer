@@ -190,6 +190,10 @@ public:
 
     virtual const TBlobBsStats& GetStats()=0;
     virtual void ResetStats() = 0;
+    /// true when the base holds released (deleted) blocks available for reuse -
+    /// a freshly rebuilt (defragmented) base has none. Reads only the in-memory
+    /// free-list heads, so it is O(block size classes)
+    virtual bool HasFreeBlobs() const = 0;
 };
 
 /////////////////////////////////////////////////
@@ -247,6 +251,12 @@ public:
 
     const TBlobBsStats& GetStats() { return Stats; }
     void ResetStats() { Stats.Reset(); }
+    bool HasFreeBlobs() const {
+        for (int BlockN = 0; BlockN < FFreeBlobPtV.Len(); BlockN++) {
+            if (!FFreeBlobPtV[BlockN].Empty()) { return true; }
+        }
+        return false;
+    }
 
     void ComputeUsageStats(TBlobBsUsageStats& UsageStats);
 };
@@ -298,4 +308,10 @@ public:
 
     const TBlobBsStats& GetStats();
     void ResetStats();
+    bool HasFreeBlobs() const {
+        for (int SegN = 0; SegN < SegV.Len(); SegN++) {
+            if (SegV[SegN]->HasFreeBlobs()) { return true; }
+        }
+        return false;
+    }
 };

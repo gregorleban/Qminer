@@ -7763,6 +7763,70 @@ void TIndex::SaveGixKeyDictAsType(const TStr& GixNm, const TStr& FNm,
     throw TQmExcept::New("[TIndex::SaveGixKeyDictAsType] unknown gix name " + GixNm);
 }
 
+// implementation of TIndex::GetGixLayoutInfo for one gix type: stride-sample
+// up to MxSampleKeys itemsets and report their layout (work buffer and child
+// vector lengths - metadata only, children are never loaded) together with the
+// effective per-key split lengths the gix would apply today
+template <class TQmGixItem>
+static PJsonVal GetGixLayoutInfoT(const TPt<TGix<TPair<TInt, TUInt64>, TQmGixItem> >& Gix,
+        const int& MxSampleKeys) {
+    PJsonVal ResVal = TJsonVal::NewObj();
+    const int Keys = Gix->GetKeys();
+    ResVal->AddToObj("keys", Keys);
+    ResVal->AddToObj("keyDict", Gix->GetKeyDictType() == gkdtHash ? "hash" : "sorted");
+    ResVal->AddToObj("hasFreeBlobs", Gix->HasFreeBlobs());
+    PJsonVal SampledVal = TJsonVal::NewArr();
+    if (Keys > 0 && MxSampleKeys > 0) {
+        const int Stride = Keys > MxSampleKeys ? Keys / MxSampleKeys : 1;
+        int KeyN = 0;
+        int KeyId = Gix->FFirstKeyId();
+        while (Gix->FNextKeyId(KeyId)) {
+            if ((KeyN++ % Stride) != 0) { continue; }
+            const TPair<TInt, TUInt64> Key = Gix->GetKey(KeyId);
+            TPt<TGixItemSet<TPair<TInt, TUInt64>, TQmGixItem> > ItemSet = Gix->GetItemSet(Key);
+            PJsonVal KeyVal = TJsonVal::NewObj();
+            KeyVal->AddToObj("keyId", Key.Val1.Val);
+            KeyVal->AddToObj("splitLen", Gix->GetSplitLen(Key));
+            KeyVal->AddToObj("splitLenMin", Gix->GetSplitLenMin(Key));
+            KeyVal->AddToObj("splitLenMax", Gix->GetSplitLenMax(Key));
+            KeyVal->AddToObj("items", ItemSet->GetItems());
+            KeyVal->AddToObj("workBufLen", ItemSet->GetWorkBufLen());
+            const int Children = ItemSet->GetChildInfoCount();
+            KeyVal->AddToObj("children", Children);
+            int MnChildLen = 0, MxChildLen = 0;
+            for (int ChildN = 0; ChildN < Children; ChildN++) {
+                const int ChildLen = ItemSet->GetChildInfoLen(ChildN);
+                if (ChildN == 0 || ChildLen < MnChildLen) { MnChildLen = ChildLen; }
+                if (ChildLen > MxChildLen) { MxChildLen = ChildLen; }
+            }
+            KeyVal->AddToObj("minChildLen", MnChildLen);
+            KeyVal->AddToObj("maxChildLen", MxChildLen);
+            // children after the first that are below the per-key minimum, or any
+            // child above the maximum - i.e. a layout the current split lengths
+            // would not produce (the first child may legally be of any size)
+            int OffLayoutChildren = 0;
+            for (int ChildN = 0; ChildN < Children; ChildN++) {
+                const int ChildLen = ItemSet->GetChildInfoLen(ChildN);
+                if (ChildLen > Gix->GetSplitLenMax(Key)) { OffLayoutChildren++; }
+                else if (ChildN > 0 && ChildLen < Gix->GetSplitLenMin(Key)) { OffLayoutChildren++; }
+            }
+            KeyVal->AddToObj("offLayoutChildren", OffLayoutChildren);
+            SampledVal->AddToArr(KeyVal);
+        }
+    }
+    ResVal->AddToObj("sampled", SampledVal);
+    return ResVal;
+}
+
+PJsonVal TIndex::GetGixLayoutInfo(const TStr& GixNm, const int& MxSampleKeys) const {
+    const TStr LcGixNm = GixNm.GetLc();
+    if (LcGixNm == "full") { return GetGixLayoutInfoT(GixFull, MxSampleKeys); }
+    if (LcGixNm == "small") { return GetGixLayoutInfoT(GixSmall, MxSampleKeys); }
+    if (LcGixNm == "tiny") { return GetGixLayoutInfoT(GixTiny, MxSampleKeys); }
+    if (LcGixNm == "pos") { return GetGixLayoutInfoT(GixPos, MxSampleKeys); }
+    throw TQmExcept::New("[TIndex::GetGixLayoutInfo] unknown gix name " + GixNm);
+}
+
 // out-of-class definitions - the constants are passed by const reference (an
 // ODR-use), so in-class initialization alone links only when the compiler
 // happens to fold the references away

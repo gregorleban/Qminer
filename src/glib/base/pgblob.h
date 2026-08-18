@@ -222,6 +222,8 @@ public:
     }
     /// Get element at given position
     const TPgBlobPgPt& GetVal(int RecN) const { return MaxFSpace.GetPtOf(RecN); }
+    /// Free space (bytes) of the page at given position
+    int GetFreeSpaceAt(int RecN) const { return MaxFSpace.GetVal(RecN); }
 };
 
 ///////////////////////////////////////////////////////////////////////
@@ -474,6 +476,15 @@ public:
     void PartialFlush(int WndInMsec = 500);
     /// Retrieve statistics for this object
     PJsonVal GetStats();
+    /// Pages tracked by the free-space map and their total free bytes - a
+    /// compact (freshly rebuilt) blob has a near-zero free ratio. Reads only
+    /// the in-memory free-space map, no page loads
+    void GetFsmFillStats(int& Pages, uint64& FreeBytes) const {
+        Pages = Fsm.Len(); FreeBytes = 0;
+        for (int PageN = 0; PageN < Pages; PageN++) {
+            FreeBytes += (uint64)Fsm.GetFreeSpaceAt(PageN);
+        }
+    }
 
     static void PrintHeaderInfo(char* Pg);
     // return the number of items in header as well as the number of empty items

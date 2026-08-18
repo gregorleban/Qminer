@@ -3788,6 +3788,14 @@ public:
     void SaveGixKeyDictAsType(const TStr& GixNm, const TStr& FNm,
         const TGixKeyDictType& TargetType) const;
 
+    /// Read-only layout report of the given gix ("full", "small", "tiny" or
+    /// "pos"): key-dictionary type, whether the posting blob holds released
+    /// (deleted) blocks, and a stride sample of up to MxSampleKeys itemset
+    /// layouts - per sampled key the effective split lengths and the actual
+    /// work-buffer/child-vector lengths (child metadata only, no child loads).
+    /// Used by data-state checking tools
+    PJsonVal GetGixLayoutInfo(const TStr& GixNm, const int& MxSampleKeys) const;
+
     /// Gix ids used in the (index key id, gix id) result pairs of GetPostingLenStats
     static const int PostingStatsGixFull = 1;
     static const int PostingStatsGixSmall = 2;

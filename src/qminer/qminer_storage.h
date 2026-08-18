@@ -592,6 +592,13 @@ public:
     bool IsEmpty() const { return FieldSerialDescV.Empty(); }
     /// Check if field is in fixed part
     bool IsInFixedPart(const int& FieldId) const { return GetFieldSerialDesc(FieldId).FixedPartP; }
+    /// Codec flags of the given field's serialized form (schema introspection)
+    void GetFieldCodecFlags(const int& FieldId, bool& CodebookP, bool& SmallStringP,
+            bool& CompressedP) const {
+        const TFieldSerialDesc& SerialDesc = GetFieldSerialDesc(FieldId);
+        CodebookP = SerialDesc.CodebookP; SmallStringP = SerialDesc.SmallStringP;
+        CompressedP = SerialDesc.CompressedP;
+    }
 
     /// Field getter
     bool IsFieldNull(const uint64& RecId, const int& FieldId) const;
@@ -1257,6 +1264,13 @@ public:
     /// Write a "<prefix>PgBlobStore" state file with the record maps converted to the
     /// representation of TargetStoreTypeNm (see TStorePbBlobT)
     virtual uint64 ConvertStoreTypeTo(const TStr& DestStoreFNm, const TStr& TargetStoreTypeNm) = 0;
+    /// Serializator of the given field's section (schema/layout introspection)
+    virtual const TRecSerializator* GetFieldSerializator(const int& FieldId) const = 0;
+    /// Pages and total free bytes of the paged record blobs (disk and in-memory
+    /// sections, from the free-space maps only - no page loads). A freshly
+    /// rebuilt (defragmented/migrated) store has a near-zero free ratio
+    virtual void GetPgBlobFillStats(int& CachePages, uint64& CacheFreeBytes,
+        int& MemPages, uint64& MemFreeBytes) const = 0;
 };
 
 ///////////////////////////////////////////////////////////////////////////////////
@@ -1667,6 +1681,14 @@ public:
 
     /// True when records have names (default is false)
     bool HasRecNm() const { return RecNmFieldP; }
+    /// Pages and total free bytes of the record page blobs, from the free-space
+    /// maps only (see TStorePbBlobBase)
+    void GetPgBlobFillStats(int& CachePages, uint64& CacheFreeBytes,
+            int& MemPages, uint64& MemFreeBytes) const {
+        CachePages = 0; CacheFreeBytes = 0; MemPages = 0; MemFreeBytes = 0;
+        if (DataBlobP) { DataBlob->GetFsmFillStats(CachePages, CacheFreeBytes); }
+        if (DataMemP) { DataMem->GetFsmFillStats(MemPages, MemFreeBytes); }
+    }
     /// Check if given ID is valid
     bool IsRecId(const uint64& RecId) const;
     /// Check if record with given name exists

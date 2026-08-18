@@ -566,6 +566,12 @@ public:
     bool Empty() const { return GetItems() == 0; }
     /// Get number of items (including child itemsets)
     int GetItems() const { return TotalCnt; }
+    /// Number of items currently in the work buffer (layout introspection)
+    int GetWorkBufLen() const { return ItemV.Len(); }
+    /// Number of child vectors (layout introspection, no child loads)
+    int GetChildInfoCount() const { return ChildInfoV.Len(); }
+    /// Stored length of the given child vector (layout introspection, no child loads)
+    int GetChildInfoLen(const int& ChildN) const { return ChildInfoV[ChildN].Len; }
     /// Get item at given index (including child itemsets)
     const TItem& GetItem(const int& ItemN) const;
     /// Get items into vector
@@ -999,6 +1005,9 @@ public:
     void PrintStats();
     /// get blob stats
     const TBlobBsStats& GetBlobStats() { return ItemSetBlobBs->GetStats(); }
+    /// true when the posting blob holds released (deleted) blocks - a freshly
+    /// rebuilt (defragmented) gix has none
+    bool HasFreeBlobs() const { return ItemSetBlobBs->HasFreeBlobs(); }
     /// get gix stats
     const TGixStats& GetGixStats(const bool& RefreshP = true) const {
         if (RefreshP) { RefreshStats(); } return Stats; }
