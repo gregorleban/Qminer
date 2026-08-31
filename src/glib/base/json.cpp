@@ -232,61 +232,71 @@ PJsonVal TJsonVal::GetObjKey(const char *Key) const
 bool TJsonVal::GetObjBool(const TStr &Key, const bool &DefBool) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetBool() : DefBool;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefBool : KeyValH[KeyId]->GetBool();
 }
 
 bool TJsonVal::GetObjBool(const char *Key, const bool &DefBool) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetBool() : DefBool;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefBool : KeyValH[KeyId]->GetBool();
 }
 
 double TJsonVal::GetObjNum(const TStr &Key, const double &DefNum) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetNum() : DefNum;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefNum : KeyValH[KeyId]->GetNum();
 }
 
 double TJsonVal::GetObjNum(const char *Key, const double &DefNum) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetNum() : DefNum;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefNum : KeyValH[KeyId]->GetNum();
 }
 
 int TJsonVal::GetObjInt(const TStr &Key, const int &DefInt) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetInt() : DefInt;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefInt : KeyValH[KeyId]->GetInt();
 }
 
 int TJsonVal::GetObjInt(const char *Key, const int &DefInt) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetInt() : DefInt;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefInt : KeyValH[KeyId]->GetInt();
 }
 
 int64 TJsonVal::GetObjInt64(const TStr &Key, const int64 &DefInt) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetInt64() : DefInt;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefInt : KeyValH[KeyId]->GetInt64();
 }
 
 int64 TJsonVal::GetObjInt64(const char *Key, const int64 &DefInt) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetInt64() : DefInt;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefInt : KeyValH[KeyId]->GetInt64();
 }
 
 uint64 TJsonVal::GetObjUInt64(const TStr &Key, const uint64 &DefInt) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetUInt64() : DefInt;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefInt : KeyValH[KeyId]->GetUInt64();
 }
 
 uint64 TJsonVal::GetObjUInt64(const char *Key, const uint64 &DefInt) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetUInt64() : DefInt;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefInt : KeyValH[KeyId]->GetUInt64();
 }
 
 void TJsonVal::GetObjIntV(const TStr &Key, TIntV &IntV) const
@@ -313,13 +323,15 @@ void TJsonVal::GetObjFltV(const TStr &Key, TFltV &FltV) const
 TStr TJsonVal::GetObjStr(const TStr &Key, const TStr &DefStr) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetStr() : DefStr;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefStr : KeyValH[KeyId]->GetStr();
 }
 
 TStr TJsonVal::GetObjStr(const char *Key, const TStr &DefStr) const
 {
     EAssertR(IsObj(), "Cannot get property of non-object!");
-    return (IsObjKey(Key)) ? KeyValH.GetDat(Key)->GetStr() : DefStr;
+    const int KeyId = KeyValH.GetKeyId(Key); /* single probe (was IsObjKey + GetDat) */
+    return (KeyId == -1) ? DefStr : KeyValH[KeyId]->GetStr();
 }
 
 void TJsonVal::GetObjStrV(const TStr &Key, TStrV &StrV) const

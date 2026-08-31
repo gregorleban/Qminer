@@ -190,6 +190,18 @@ public:
         EAssert(KeyN != -1 && !IsSortedTomb(KeyN));
         return GetSortedPt(KeyN);
     }
+    /// Combined existence check + fetch with a SINGLE probe of the underlying
+    /// representation - the per-item write path (AddItem/DelItem) resolves every
+    /// key through this, and separate IsKey + GetDat cost two hash probes or two
+    /// binary searches per item
+    bool IsKeyGetDat(const TKey& Key, TBlobPt& Pt) const {
+        if (Type == gkdtHash) { return KeyBlobPtH.IsKeyGetDat(Key, Pt); }
+        if (OverlayH.IsKeyGetDat(Key, Pt)) { return true; }
+        const int KeyN = GetSortedKeyN(Key);
+        if (KeyN == -1 || IsSortedTomb(KeyN)) { return false; }
+        Pt = GetSortedPt(KeyN);
+        return true;
+    }
     /// Add a key or update an existing key's blob pointer
     void AddDat(const TKey& Key, const TBlobPt& Pt) {
         if (Type == gkdtHash) { KeyBlobPtH.AddDat(Key, Pt); return; }

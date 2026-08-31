@@ -32,6 +32,9 @@ void FreshDir(const TStr& FPath)
 void EnsureQmEnv()
 {
     if (!TQm::TEnv::IsInit()) { TQm::TEnv::Init(); }
+    // the text-key tokenizer needs the unicode tables (path relative to the qminer
+    // repo root, where the suite runs)
+    if (!TUnicodeDef::IsDef()) { TUnicodeDef::Load("./src/glib/bin/UnicodeDef.Bin"); }
 }
 
 // chunked-append reference check for any element type

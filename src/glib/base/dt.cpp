@@ -342,6 +342,12 @@ void TThinMIn::MoveTo(int Offset)
     BfC = Offset;
 }
 
+void TThinMIn::SkipBf(const int& Bytes)
+{
+    IAssertR(Bytes >= 0 && BfC + Bytes <= BfL, "TThinMIn::SkipBf: past the end of the buffer.");
+    BfC += Bytes;
+}
+
 bool TThinMIn::GetNextLnBf(TChA &LnChA)
 {
     return GetNextLn(LnChA);

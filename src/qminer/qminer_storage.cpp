@@ -1255,9 +1255,10 @@ struct TZstdThreadCtx {
     ~TZstdThreadCtx() { ZSTD_freeCCtx(CCtx); ZSTD_freeDCtx(DCtx); }
 };
 static thread_local TZstdThreadCtx ZstdThreadCtx;
-/// Per-thread scratch buffer for decompressed bytes, grown on demand and reused
-/// (TMem::Resize only grows), so LoadCompressedStr does no per-call heap alloc.
-static thread_local TMem ZstdDecompressBf;
+/// Per-thread scratch buffer for compressed bytes, grown on demand and reused
+/// (TMem::Resize only grows), so SaveCompressedStr does no per-call heap alloc -
+/// the decompress side got the same treatment earlier, the compress side did not.
+static thread_local TMem ZstdCompressBf;
 
 /// Serialize a string value of a "compressed" field:
 /// [TInt uncompressed length][TInt compressed length][compressed bytes]
@@ -1268,13 +1269,14 @@ static void SaveCompressedStr(TMOut& SOut, const TStr& Str) {
     if (StrLen == 0) { return; }
     const size_t CompBound = ZSTD_compressBound((size_t)StrLen);
     QmAssertR(CompBound <= (size_t)TInt::Mx, "[SaveCompressedStr] string too long to compress");
-    TMem CompMem((int)CompBound);
-    const size_t CompLen = ZSTD_compressCCtx(ZstdThreadCtx.CCtx, CompMem.GetBf(), CompBound,
+    // reused per-thread scratch (grow-only) instead of a multi-KB new[]/delete[] per value
+    ZstdCompressBf.Reserve((int)CompBound, false);
+    const size_t CompLen = ZSTD_compressCCtx(ZstdThreadCtx.CCtx, ZstdCompressBf.GetBf(), CompBound,
         Str.CStr(), (size_t)StrLen, ZstdCompressionLevel);
     QmAssertR(!ZSTD_isError(CompLen),
         TStr("[SaveCompressedStr] zstd compression failed: ") + TStr(ZSTD_getErrorName(CompLen)));
     TInt((int)CompLen).Save(SOut);
-    SOut.AppendBf(CompMem.GetBf(), (int)CompLen);
+    SOut.AppendBf(ZstdCompressBf.GetBf(), (int)CompLen);
 }
 
 /// Deserialize a string value written by SaveCompressedStr
@@ -1282,20 +1284,25 @@ static TStr LoadCompressedStr(TThinMIn& min) {
     const int UncompLen = TInt(min).Val;
     if (UncompLen == 0) { return TStr(); }
     const int CompLen = TInt(min).Val;
-    QmAssertR(UncompLen > 0 && CompLen > 0, "[LoadCompressedStr] corrupt compressed value lengths");
-    TMem CompMem(CompLen);
-    min.GetBf(CompMem.GetBf(), CompLen);
-    // decompress into the reused per-thread scratch buffer (no per-call new[]/delete[])
-    ZstdDecompressBf.Reserve(UncompLen + 1, false);
-    char* UncompBf = ZstdDecompressBf.GetBf();
+    QmAssertR(UncompLen > 0 && CompLen > 0 && min.Len() >= CompLen,
+        "[LoadCompressedStr] corrupt compressed value lengths");
+    // read the compressed bytes straight out of the page buffer (they are
+    // contiguous there - copying them into a temp TMem first was one alloc plus
+    // one body-sized memcpy per read), and decompress directly into the buffer
+    // the returned TStr takes ownership of (the old path decompressed into a
+    // scratch buffer and then copied the whole body again into the TStr)
+    const char* CompBf = min.GetBfCurAddrChar();
+    min.SkipBf(CompLen);
+    char* UncompBf = new char[UncompLen + 1];
     const size_t Res = ZSTD_decompressDCtx(ZstdThreadCtx.DCtx, UncompBf, (size_t)UncompLen,
-        CompMem.GetBf(), (size_t)CompLen);
+        CompBf, (size_t)CompLen);
     if (ZSTD_isError(Res) || (int)Res != UncompLen) {
+        delete[] UncompBf;
         throw TQmExcept::New(TStr("[LoadCompressedStr] zstd decompression failed: ") +
             TStr(ZSTD_isError(Res) ? ZSTD_getErrorName(Res) : "unexpected decompressed length"));
     }
     UncompBf[UncompLen] = '\0';
-    return TStr(UncompBf);
+    return TStr::WrapCStr(UncompBf);
 }
 
 void TRecSerializator::SetFieldIntV(TMem& RecMem, TMOut& SOut,
@@ -1696,7 +1703,7 @@ void TRecSerializator::Serialize(const PJsonVal& RecVal, TMem& RecMem, const TWP
         const TFieldSerialDesc& FieldSerialDesc = FieldSerialDescV[FieldSerialDescId];
         // get field description
         const TFieldDesc& FieldDesc = Store->GetFieldDesc(FieldSerialDesc.FieldId);
-        TStr FieldName = FieldDesc.GetFieldNm();
+        const TStr& FieldName = FieldDesc.GetFieldNm(); // reference - a copy allocated per field per record
         // parse field value from provided JSon
         PJsonVal FieldVal;
         // figure out value when not provided directly
@@ -1751,7 +1758,7 @@ void TRecSerializator::SerializeUpdateInPlace(const PJsonVal& RecVal,
         const TFieldSerialDesc& FieldSerialDesc = FieldSerialDescV[FieldSerialDescId];
         // get field description
         const TFieldDesc& FieldDesc = Store->GetFieldDesc(FieldSerialDesc.FieldId);
-        TStr FieldName = FieldDesc.GetFieldNm();
+        const TStr& FieldName = FieldDesc.GetFieldNm(); // reference - a copy allocated per field per record
         if (RecVal->IsObjKey(FieldName)) {
             // new value, must update
             int BfL = MIn.Len();
@@ -1787,7 +1794,7 @@ void TRecSerializator::SerializeUpdate(const PJsonVal& RecVal, const TMemBase& I
         const TFieldSerialDesc& FieldSerialDesc = FieldSerialDescV[FieldSerialDescId];
         // get field description
         const TFieldDesc& FieldDesc = Store->GetFieldDesc(FieldSerialDesc.FieldId);
-        TStr FieldName = FieldDesc.GetFieldNm();
+        const TStr& FieldName = FieldDesc.GetFieldNm(); // reference - a copy allocated per field per record
         // figure out value when not provided directly
         if (!RecVal->IsObjKey(FieldName)){
             // copy the variable field when no update to it is provided
@@ -3534,8 +3541,12 @@ uint64 TStoreImpl::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
         return TUInt64::Mx;
     }
 
-    // always add system field that means "inserted_at"
-    RecVal->AddToObj(TStoreWndDesc::SysInsertedAtFieldName, TTm::GetCurUniTm().GetStr());
+    // add the system "inserted_at" field only when the store actually has it
+    // (window-enabled stores) - formatting a timestamp and mutating the caller's
+    // JSON for every record of every other store was pure overhead
+    if (IsFieldNm(TStoreWndDesc::SysInsertedAtFieldName)) {
+        RecVal->AddToObj(TStoreWndDesc::SysInsertedAtFieldName, TTm::GetCurUniTm().GetStr());
+    }
 
     // for storing record id
     uint64 RecId = TUInt64::Mx;
@@ -4379,8 +4390,12 @@ uint64 TStorePbBlobT<TRecPtMap>::AddRec(const PJsonVal& RecVal, const bool& Trig
         return TUInt64::Mx;
     }
 
-    // always add system field that means "inserted_at"
-    RecVal->AddToObj(TStoreWndDesc::SysInsertedAtFieldName, TTm::GetCurUniTm().GetStr());
+    // add the system "inserted_at" field only when the store actually has it
+    // (window-enabled stores) - formatting a timestamp and mutating the caller's
+    // JSON for every record of every other store was pure overhead
+    if (IsFieldNm(TStoreWndDesc::SysInsertedAtFieldName)) {
+        RecVal->AddToObj(TStoreWndDesc::SysInsertedAtFieldName, TTm::GetCurUniTm().GetStr());
+    }
 
     // for storing record id
     TPgBlobPt CacheRecId;
@@ -4412,7 +4427,7 @@ uint64 TStorePbBlobT<TRecPtMap>::AddRec(const PJsonVal& RecVal, const bool& Trig
     }
 
     // remember value-recordId map when primary field available
-    if (IsPrimaryField()) { SetPrimaryField(RecId); }
+    if (IsPrimaryField()) { SetPrimaryFieldFromJson(RecId, RecVal); }
 
     // insert nested join records
     AddJoinRec(RecId, RecVal);
@@ -5304,6 +5319,34 @@ void TStorePbBlobT<TRecPtMap>::SetPrimaryField(const uint64& RecId) {
         PrimaryFltIdH.AddDat(GetFieldFlt(RecId, PrimaryFieldId)) = RecId;
     } else if (PrimaryFieldType == oftTm) {
         PrimaryTmMSecsIdH.AddDat(GetFieldTmMSecs(RecId, PrimaryFieldId)) = RecId;
+    } else {
+        EAssertR(false, "Unsupported primary-field type");
+    }
+}
+
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::SetPrimaryFieldFromJson(const uint64& RecId, const PJsonVal& RecVal) {
+    // the freshly inserted record's primary value is right there in the caller's
+    // JSON - reading it back through the full storage path (record-map probe,
+    // page access, field deserialization, string allocation) only to hash it
+    // again was a per-record tax on ingest. The serialized value is by
+    // construction the same one the serializator just wrote from this JSON.
+    // Tm primaries keep the read-back path: their value goes through a timestamp
+    // parse whose result must match the stored field bit-for-bit
+    const TStr& PrimaryField = GetFieldNm(PrimaryFieldId);
+    if (!RecVal->IsObjKey(PrimaryField) || PrimaryFieldType == oftTm) {
+        SetPrimaryField(RecId);
+        return;
+    }
+    MetaDirtyP = true;
+    if (PrimaryFieldType == oftStr) {
+        PrimaryStrIdH.AddDat(RecVal->GetObjStr(PrimaryField)) = RecId;
+    } else if (PrimaryFieldType == oftInt) {
+        PrimaryIntIdH.AddDat(RecVal->GetObjInt(PrimaryField)) = RecId;
+    } else if (PrimaryFieldType == oftUInt64) {
+        PrimaryUInt64IdH.AddDat(RecVal->GetObjUInt64(PrimaryField)) = RecId;
+    } else if (PrimaryFieldType == oftFlt) {
+        PrimaryFltIdH.AddDat(RecVal->GetObjNum(PrimaryField)) = RecId;
     } else {
         EAssertR(false, "Unsupported primary-field type");
     }

@@ -1628,6 +1628,10 @@ private:
     bool IsPrimaryField() const { return PrimaryFieldId != -1; }
     /// Set primary field map
     void SetPrimaryField(const uint64& RecId);
+    /// Set primary field map from the just-inserted record's JSON - avoids
+    /// reading the value back through the full storage path (record-map probe,
+    /// page access, field deserialization) only to hash it again
+    void SetPrimaryFieldFromJson(const uint64& RecId, const PJsonVal& RecVal);
     /// Set primary field map for a given string value
     void SetPrimaryFieldStr(const uint64& RecId, const TStr& Str);
     /// Set primary field map for a given integer value

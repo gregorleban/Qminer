@@ -722,11 +722,32 @@ void TVec<TVal, TSizeTy>::Reverse(){
 template <class TVal, class TSizeTy>
 void TVec<TVal, TSizeTy>::Merge(){
   AssertR(MxVals!=-1, "This vector was obtained from TVecPool. Such a vector cannot change its size!");
-  TVec<TVal, TSizeTy> SortedVec(*this); SortedVec.Sort();
-  Clr();
-  for (TSizeTy ValN=0; ValN<SortedVec.Len(); ValN++){
-    if ((ValN==0)||(SortedVec[ValN-1]!=SortedVec[ValN])){
-      Add(SortedVec[ValN]);}
+  // In-place sort + two-pointer unique. The old implementation copy-constructed
+  // the whole vector, sorted the copy, freed this one (Clr) and re-added the
+  // survivors one by one through the doubling growth cascade - a full copy, an
+  // extra allocation cycle and a transient 2x memory spike per call. This is the
+  // default gix item handler's merge, paid on every unmerged Def() of the tiny
+  // and pos indexes. An already-sorted buffer (the deletes-only flush case) now
+  // costs one linear scan
+  if (!IsSorted()) { Sort(); }
+  if (Vals > 1) {
+    // local copies of the members: writes through ValT could alias the members
+    // themselves as far as the compiler knows, forcing it to reload ValT/Vals on
+    // every iteration (~10x slower loop; same effect the memmove comment in Del
+    // describes). With locals the loop optimizes properly
+    TVal* Bf = ValT;
+    const TSizeTy Len = Vals;
+    TSizeTy LastN = 0;
+    for (TSizeTy ValN = 1; ValN < Len; ValN++) {
+      if (Bf[LastN] != Bf[ValN]) {
+        LastN++;
+        if (LastN != ValN) { Bf[LastN] = std::move(Bf[ValN]); }
+      }
+    }
+    // reset the dropped tail slots (parity with Del) and shrink the length;
+    // capacity is kept, exactly what the gix work buffers want
+    for (TSizeTy ValN = LastN + 1; ValN < Len; ValN++) { Bf[ValN] = TVal(); }
+    Vals = LastN + 1;
   }
 }
 

@@ -354,8 +354,17 @@ TLxSym TILx::GetSym(const TFSet& Expect){
     if (ChDef.IsAlpha(Ch)){
       if (IsUniStr){Sym=syStr;} else {Sym=syIdStr;}
       Str.Clr(); UcStr.Clr(); QuoteP=false;
-      do {Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch));}
-      while (ChDef.IsAlNum(GetCh()));
+      // the uppercase shadow is only ever read when the lexer is case-INsensitive
+      // (reserved-word lookup below); in case-sensitive mode (e.g. JSON parsing)
+      // maintaining it per character was pure dead work - an extra table load and
+      // append for every character of every token
+      if (IsCsSens){
+        do {Str.AddCh(Ch);}
+        while (ChDef.IsAlNum(GetCh()));
+      } else {
+        do {Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch));}
+        while (ChDef.IsAlNum(GetCh()));
+      }
       if (!RwStrH.Empty()){
         TStr RwStr=Str; if (!IsCsSens){RwStr=UcStr;}
         int SymKeyId=RwStrH.GetKeyId(RwStr);
@@ -371,8 +380,14 @@ TLxSym TILx::GetSym(const TFSet& Expect){
       Str.Clr(); UcStr.Clr(); QuoteP=true; QuoteCh=Ch;
       GetCh();
       forever{
-        while ((Ch!=QuoteCh)&&(Ch!='\\')&&(Ch!=TCh::EofCh)){
-          Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh();}
+        // see the identifier scan above: UcStr is dead work in case-sensitive mode
+        if (IsCsSens){
+          while ((Ch!=QuoteCh)&&(Ch!='\\')&&(Ch!=TCh::EofCh)){
+            Str.AddCh(Ch); GetCh();}
+        } else {
+          while ((Ch!=QuoteCh)&&(Ch!='\\')&&(Ch!=TCh::EofCh)){
+            Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh();}
+        }
         if (Ch==TCh::EofCh){
           Sym=syUndef; break;
         } else if (Ch==QuoteCh){
@@ -380,15 +395,15 @@ TLxSym TILx::GetSym(const TFSet& Expect){
         } else {
           GetCh();
           switch (Ch){
-            case '"': Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case '\\': Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case '\'': Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case '/': Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case 'b': Str.AddCh('\b'); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case 'f': Str.AddCh('\f'); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case 'n': Str.AddCh('\n'); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case 'r': Str.AddCh('\r'); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
-            case 't': Str.AddCh('\t'); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh(); break;
+            case '"': Str.AddCh(Ch); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case '\\': Str.AddCh(Ch); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case '\'': Str.AddCh(Ch); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case '/': Str.AddCh(Ch); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case 'b': Str.AddCh('\b'); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case 'f': Str.AddCh('\f'); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case 'n': Str.AddCh('\n'); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case 'r': Str.AddCh('\r'); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
+            case 't': Str.AddCh('\t'); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
             case 'u': {
               // unicode character, represented using 4 hexadecimal digits
               GetCh(); EAssertR(TCh::IsHex(Ch), "Invalid hexadecimal digit in unicode escape");
@@ -402,11 +417,11 @@ TLxSym TILx::GetSym(const TFSet& Expect){
               // get as UTF8 encoded characters
               if (UChCd == 0) { UChCd = 32; }
               TUnicode::EncodeUtf8(UChCd, Str);
-              TUnicode::EncodeUtf8(UChCd, UcStr); }
+              if (!IsCsSens){TUnicode::EncodeUtf8(UChCd, UcStr);} }
               GetCh(); break;
             default:
               if (IsIgnoreEscape) {
-                Str.AddCh(Ch); UcStr.AddCh(ChDef.GetUc(Ch)); GetCh();
+                Str.AddCh(Ch); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh();
               } else {
                 Sym=syUndef;
               }
@@ -431,7 +446,7 @@ TLxSym TILx::GetSym(const TFSet& Expect){
           while (ChDef.IsNum(Ch)){Str.AddCh(Ch); GetCh();}
         }
       }
-      UcStr=Str;
+      if (!IsCsSens){UcStr=Str;}
       if (IntP&&(Expect.In(syInt))){
         Sym=syInt; Int=atoi(Str.CStr());
       } else {

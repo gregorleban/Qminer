@@ -160,6 +160,11 @@ public:
   void Reset() { Cs = TCs(); BfC = 0; }
   uchar* GetBfAddr() { return Bf; }
   char* GetBfAddrChar() { return (char*)Bf; }
+  /// pointer to the byte at the CURRENT read position - lets zero-copy readers
+  /// (e.g. decompression) consume a range straight out of the underlying buffer
+  const char* GetBfCurAddrChar() const { return (const char*)Bf + BfC; }
+  /// advance the read position by Bytes (pairs with GetBfCurAddrChar)
+  void SkipBf(const int& Bytes);
   void MoveTo(int Offset);
   bool GetNextLnBf(TChA& LnChA);
   TMemBase GetMemBase() { return TMemBase(GetBfAddr(), Len(), false); }
@@ -483,11 +488,14 @@ private:
   /// String
   char* Inner;
 
+public:
   /// Wraps the char pointer with a new string. The char pointer is NOT
-  /// copied and the new string becomes responsible for deleting it.
+  /// copied and the new string becomes responsible for deleting it - the
+  /// buffer MUST come from new char[] and be NUL-terminated. This is the
+  /// zero-copy way to hand an already-built buffer to a TStr (a TStr(CStr)
+  /// constructor would allocate and copy the whole buffer again).
   static TStr WrapCStr(char* CStr);
 
-public:
   /// Empty String Constructor
   TStr(): Inner(nullptr) {}
   /// C-String constructor

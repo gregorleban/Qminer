@@ -448,9 +448,10 @@ void TGixItemSet<TKey, TItem>::ProcessDeletes() {
         // we don't update stats (min & max), because they are still usable.
     }
 
-    ItemV.Clr();
+    // hand the rebuilt buffer over with a pointer swap - Clr() + AddV would free
+    // the old buffer and regrow a new one element by element
+    ItemV.MoveFrom(ItemVNew);
     ItemVDel.Clr();
-    ItemV.AddV(ItemVNew);
     DirtyP = true;
 }
 
@@ -519,15 +520,16 @@ void TGixItemSet<TKey, TItem>::AddItem(const TItem& NewItem, const bool& NotifyC
     }
 
     if (IsFull()) {
-        // if we will do a cleanup of data we need to update the cache size used
+        // if we will do a cleanup of data we need to update the cache size used.
+        // No RecalcTotalCnt here (the TODO that used to sit on it was right): Def()
+        // ends with one when it changed anything, and PushWorkBufferToChildren only
+        // moves items between the buffer and children without changing the count -
+        // the recalc was an O(children) scan per flush for nothing
         const uint64 OldSize = GetMemUsed();
         Def();
         if (IsFull()) {
             PushWorkBufferToChildren();
         }
-        // TODO: why is next RecalcTotalCnt needed? Def() already calls it if anything is changed.
-        // It might be needed only if IsFull() was true.
-        RecalcTotalCnt(); // work buffer might have been merged
         Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed());
     }
 
@@ -645,7 +647,7 @@ void TGixItemSet<TKey, TItem>::DelItem(const TItem& Item) {
         if (IsFull()) {
             PushWorkBufferToChildren();
         }
-        RecalcTotalCnt(); // work buffer might have been merged
+        // no RecalcTotalCnt - see the note in AddItem's flush block
         Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed());
     }
 
@@ -668,7 +670,7 @@ void TGixItemSet<TKey, TItem>::DelItemV(const TVec<TItem>& DelV) {
         if (IsFull()) {
             PushWorkBufferToChildren();
         }
-        RecalcTotalCnt(); // work buffer might have been merged
+        // no RecalcTotalCnt - see the note in AddItem's flush block
         Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed());
     }
 
@@ -912,7 +914,9 @@ TBlobPt TGix<TKey, TItem>::AddKeyId(const TKey& Key) {
 
 template <class TKey, class TItem>
 TBlobPt TGix<TKey, TItem>::GetKeyId(const TKey& Key) const {
-    if (IsKey(Key)) { return KeyIdH.GetDat(Key); }
+    // single dictionary probe (IsKey + GetDat used to pay two)
+    TBlobPt KeyId;
+    if (KeyIdH.IsKeyGetDat(Key, KeyId)) { return KeyId; }
     // we don't have this key, return empty pointer
     return TBlobPt();
 }
@@ -1153,20 +1157,27 @@ TBlobPt TGix<TKey, TItem>::EnlistItemSet(const PGixItemSet& ItemSet) const {
 template <class TKey, class TItem>
 void TGix<TKey, TItem>::AddItem(const TKey& Key, const TItem& Item) {
     AssertReadOnly(); // check if we are allowed to write
-    if (IsKey(Key)) {
-        // get the key handle
-        TBlobPt KeyId = KeyIdH.GetDat(Key);
+    // resolve the key with ONE dictionary lookup (this used to cost four: IsKey,
+    // an unused GetDat, and GetItemSet's own IsKey + GetDat). The refresh must
+    // come first - the purge it can trigger stores dirty itemsets, which may
+    // relocate blob pointers in KeyIdH (see the comment in GetItemSet)
+    RefreshMemUsed();
+    const TBlobPt KeyId = GetKeyId(Key);
+    if (!KeyId.Empty()) {
         // load the current item set
-        PGixItemSet ItemSet = GetItemSet(Key);
+        PGixItemSet ItemSet = GetItemSetNoRefresh(KeyId);
+        EAssertR(ItemSet->GetKey() == Key,
+            "TGix::AddItem: the itemset loaded from blob " + KeyId.GetAddrStr() +
+            " belongs to a different key (stale blob pointer)");
         ItemSet->AddItem(Item);
     } else {
         // we don't have this key, create a new itemset and add new item immidiatelly
         PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, this);
         ItemSet->AddItem(Item, false);
-        TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to a blob
-        KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+        const TBlobPt NewKeyId = EnlistItemSet(ItemSet); // now store this itemset to a blob
+        KeyIdH.AddDat(Key, NewKeyId); // remember the new key and its Id
         KeyIdHDirtyP = true;
-        ItemSetCache.Put(KeyId, ItemSet); // add it to cache
+        ItemSetCache.Put(NewKeyId, ItemSet); // add it to cache
     }
     // check if we have to drop anything from the cache
     RefreshMemUsed();
@@ -1175,11 +1186,15 @@ void TGix<TKey, TItem>::AddItem(const TKey& Key, const TItem& Item) {
 template <class TKey, class TItem>
 void TGix<TKey, TItem>::AddItemV(const TKey& Key, const TVec<TItem>& ItemV) {
     AssertReadOnly(); // check if we are allowed to write
-    if (IsKey(Key)) {
-        // get the key handle
-        TBlobPt KeyId = KeyIdH.GetDat(Key);
+    // single dictionary lookup, refresh first (see AddItem)
+    RefreshMemUsed();
+    const TBlobPt KeyId = GetKeyId(Key);
+    if (!KeyId.Empty()) {
         // load the current item set
-        PGixItemSet ItemSet = GetItemSet(Key);
+        PGixItemSet ItemSet = GetItemSetNoRefresh(KeyId);
+        EAssertR(ItemSet->GetKey() == Key,
+            "TGix::AddItemV: the itemset loaded from blob " + KeyId.GetAddrStr() +
+            " belongs to a different key (stale blob pointer)");
         ItemSet->AddItemV(ItemV);
     } else {
         // we don't have this key, create a new itemset and add new item immidiatelly
@@ -1189,12 +1204,12 @@ void TGix<TKey, TItem>::AddItemV(const TKey& Key, const TVec<TItem>& ItemV) {
         // AddItem's NotifyCacheOnlyDelta = false first add)
         AddToNewCacheSizeInc(ItemSet->GetMemUsed());
         ItemSet->AddItemV(ItemV);
-        TBlobPt KeyId = EnlistItemSet(ItemSet); // now store this itemset to disk
-        KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
+        const TBlobPt NewKeyId = EnlistItemSet(ItemSet); // now store this itemset to disk
+        KeyIdH.AddDat(Key, NewKeyId); // remember the new key and its Id
         KeyIdHDirtyP = true;
         // keep it cached, as AddItem does - the very next AddItemV/GetItemSet for
         // this key would otherwise re-read the itemset from the blob
-        ItemSetCache.Put(KeyId, ItemSet);
+        ItemSetCache.Put(NewKeyId, ItemSet);
     }
     // check if we have to drop anything from the cache
     RefreshMemUsed();
@@ -1203,9 +1218,15 @@ void TGix<TKey, TItem>::AddItemV(const TKey& Key, const TVec<TItem>& ItemV) {
 template <class TKey, class TItem>
 void TGix<TKey, TItem>::DelItem(const TKey& Key, const TItem& Item) {
     AssertReadOnly(); // check if we are allowed to write
-    if (IsKey(Key)) { // check if this key exists
+    // single dictionary lookup, refresh first (see AddItem)
+    RefreshMemUsed();
+    const TBlobPt KeyId = GetKeyId(Key);
+    if (!KeyId.Empty()) { // check if this key exists
         // load the current item set
-        PGixItemSet ItemSet = GetItemSet(Key);
+        PGixItemSet ItemSet = GetItemSetNoRefresh(KeyId);
+        EAssertR(ItemSet->GetKey() == Key,
+            "TGix::DelItem: the itemset loaded from blob " + KeyId.GetAddrStr() +
+            " belongs to a different key (stale blob pointer)");
         // clear the items from the ItemSet
         ItemSet->DelItem(Item);
         if (ItemSet->Empty()) {
@@ -1217,9 +1238,15 @@ void TGix<TKey, TItem>::DelItem(const TKey& Key, const TItem& Item) {
 template <class TKey, class TItem>
 void TGix<TKey, TItem>::DelItemV(const TKey& Key, const TVec<TItem>& DelV) {
     AssertReadOnly(); // check if we are allowed to write
-    if (IsKey(Key)) { // check if this key exists
+    // single dictionary lookup, refresh first (see AddItem)
+    RefreshMemUsed();
+    const TBlobPt KeyId = GetKeyId(Key);
+    if (!KeyId.Empty()) { // check if this key exists
         // load the current item set
-        PGixItemSet ItemSet = GetItemSet(Key);
+        PGixItemSet ItemSet = GetItemSetNoRefresh(KeyId);
+        EAssertR(ItemSet->GetKey() == Key,
+            "TGix::DelItemV: the itemset loaded from blob " + KeyId.GetAddrStr() +
+            " belongs to a different key (stale blob pointer)");
         // enqueue all deletes with a single flush
         ItemSet->DelItemV(DelV);
         if (ItemSet->Empty()) {
@@ -1231,8 +1258,14 @@ void TGix<TKey, TItem>::DelItemV(const TKey& Key, const TVec<TItem>& DelV) {
 template <class TKey, class TItem>
 uint64 TGix<TKey, TItem>::DelItemsBelow(const TKey& Key, const TItem& MinKeepItem) {
     AssertReadOnly(); // check if we are allowed to write
-    if (!IsKey(Key)) { return 0; }
-    PGixItemSet ItemSet = GetItemSet(Key);
+    // single dictionary lookup, refresh first (see AddItem)
+    RefreshMemUsed();
+    const TBlobPt KeyId = GetKeyId(Key);
+    if (KeyId.Empty()) { return 0; }
+    PGixItemSet ItemSet = GetItemSetNoRefresh(KeyId);
+    EAssertR(ItemSet->GetKey() == Key,
+        "TGix::DelItemsBelow: the itemset loaded from blob " + KeyId.GetAddrStr() +
+        " belongs to a different key (stale blob pointer)");
     const uint64 Removed = ItemSet->DelItemsBelow(MinKeepItem);
     if (ItemSet->Empty()) {
         DeleteItemSet(Key);
