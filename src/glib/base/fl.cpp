@@ -717,7 +717,7 @@ TFInOut::TFInOut(const TStr& FNm, const TFAccess& FAccess, const bool& CreateIfN
     case faAppend:
         FileId = fopen(FNm.CStr(), "r+b");
         if (FileId != NULL) {
-            fseek(FileId, SEEK_END, 0);
+            fseek(FileId, 0, SEEK_END); // (offset, origin) - the arguments were swapped, seeking to absolute offset 2
         }
         break;
     case faRdOnly:
@@ -1124,7 +1124,7 @@ TFRnd::TFRnd(const TStr& _FNm, const TFAccess& FAccess, const bool& CreateIfNo, 
     case faAppend:
         FileId = fopen(FNm.CStr(), "r+b");
         if (FileId != NULL) {
-            fseek(FileId, SEEK_END, 0);
+            fseek(FileId, 0, SEEK_END); // (offset, origin) - the arguments were swapped, seeking to absolute offset 2
         }
         break;
     case faRdOnly:

@@ -4052,7 +4052,7 @@ void TRecSet::Merge(const PRecSet& RecSet) {
 }
 
 void TRecSet::Merge(const TVec<PRecSet>& RecSetV) {
-    for (int RsIdx = 0; RecSetV.Len(); RsIdx++) {
+    for (int RsIdx = 0; RsIdx < RecSetV.Len(); RsIdx++) {
         Merge(RecSetV[RsIdx]);
     }
 }
@@ -5707,7 +5707,7 @@ TIndex::TQmGixItemPos TIndex::TQmGixItemPos::Intersect(const TQmGixItemPos& Item
             // check for special case when Pos2 is after the break (% 0xFF).
             // in such case Pos2 is near 0 and we just offset it for 0xFF
             if ((MaxDiff > 0 && Pos1 < (Pos2 + Modulo) && (Pos2 + Modulo) <= (Pos1 + MaxDiff)) ||
-                (MaxDiff < 0 && Modulo - abs(Pos1 - Pos1) <= -MaxDiff))
+                (MaxDiff < 0 && Modulo - abs(Pos1 - Pos2) <= -MaxDiff))
             {
                 TotalMatchingDiff += (Pos2 + Modulo) - Pos1;
                 // if we have the case where Pos2 goes over the modulo we likely have a case
@@ -6138,16 +6138,21 @@ void TIndex::IndexGix(const int& KeyId, const uint64& WordId, const uint64& RecI
 }
 
 void TIndex::DeleteValue(const int& KeyId, const TStr& WordStr, const uint64& RecId) {
-    const uint64 WordId = IndexVoc->AddWordStr(KeyId, WordStr);
+    // a word that is not in the vocabulary was never indexed - nothing to delete.
+    // resolving instead of adding keeps deletes from growing the vocabulary,
+    // inflating word frequencies and dirtying the (multi-GB) vocabulary file
+    if (!IndexVoc->IsWordStr(KeyId, WordStr)) { return; }
+    const uint64 WordId = IndexVoc->GetWordId(KeyId, WordStr);
     DeleteGix(KeyId, WordId, RecId, 1);
 }
 
 void TIndex::DeleteValue(const int& KeyId, const TStrV& WordStrV, const uint64& RecId) {
-    // load word-counts
+    // load word-counts; skip words that were never indexed (see DeleteValue above)
     TUInt64H WordIdH;
     for (int WordN = 0; WordN < WordStrV.Len(); WordN++) {
         const TStr WordStr = WordStrV[WordN]; //.GetLc();
-        WordIdH.AddDat(IndexVoc->AddWordStr(KeyId, WordStr))++;
+        if (!IndexVoc->IsWordStr(KeyId, WordStr)) { continue; }
+        WordIdH.AddDat(IndexVoc->GetWordId(KeyId, WordStr))++;
     }
     // delete words from index
     int WordKeyId = WordIdH.FFirstKeyId();
@@ -6159,11 +6164,13 @@ void TIndex::DeleteValue(const int& KeyId, const TStrV& WordStrV, const uint64& 
 }
 
 void TIndex::DeleteText(const int& KeyId, const TStr& TextStr, const uint64& RecId) {
-    // tokenize string
-    TUInt64V WordIdV; IndexVoc->AddWordIdV(KeyId, TextStr, WordIdV);
-    // aggregate by word
+    // tokenize string WITHOUT adding to the vocabulary (like DeleteTextPos):
+    // unknown words come back as TUInt64::Mx and were never indexed anyway
+    TUInt64V WordIdV; IndexVoc->GetWordIdV(KeyId, TextStr, WordIdV);
+    // aggregate by word, skipping unknown words
     TUInt64H WordIdFqH;
     for (int WordIdN = 0; WordIdN < WordIdV.Len(); WordIdN++) {
+        if (WordIdV[WordIdN] == TUInt64::Mx) { continue; }
         WordIdFqH.AddDat(WordIdV[WordIdN])++;
     }
     // index words

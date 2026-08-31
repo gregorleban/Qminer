@@ -1762,8 +1762,10 @@ void TRecSerializator::SerializeUpdateInPlace(const PJsonVal& RecVal,
                 QmAssertR(FieldDesc.IsNullable(), "Non-nullable field " + FieldName + " set to null");
                 SetFieldNull(Bf, BfL, FieldSerialDesc.FieldId, true);
             } else {
-                // remove null flag
-                SetFieldNull(Bf, BfL, FieldSerialDesc.FieldId, true);
+                // remove null flag. This runs against the LIVE page buffer, so the flag must be
+                // cleared (false), not set: with true, a SetFixedJsonVal that throws (mistyped
+                // update) would leave the field flagged null with its old bytes in place
+                SetFieldNull(Bf, BfL, FieldSerialDesc.FieldId, false);
                 // serialize the field
                 QmAssert(FieldSerialDesc.FixedPartP);
                 SetFixedJsonVal((char*)Bf, BfL, FieldSerialDesc, FieldDesc, JsonVal);
@@ -5428,15 +5430,17 @@ void TStorePbBlobT<TRecPtMap>::RunVerification() {
 /// Run verification for single record
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::RunVerificationForRecord(const uint64& RecId) {
-    // do nothing for now
-    {
+    // verify each section only when the store has it, and read the mem-section
+    // record from the MEM blob (it used to be read from DataBlob - a mem-section
+    // pointer dereferenced against the disk blob verifies garbage bytes)
+    if (DataBlobP) {
         const TPgBlobPt PgPt = RecIdBlobPtH.GetDat(RecId);
         TThinMIn min = DataBlob->Get(PgPt);
         SerializatorCache->Verify(min.GetBfAddrChar(), min.Len());
     }
-    {
+    if (DataMemP) {
         const TPgBlobPt PgPt = RecIdBlobPtHMem.GetDat(RecId);
-        TThinMIn min = DataBlob->Get(PgPt);
+        TThinMIn min = DataMem->Get(PgPt);
         SerializatorMem->Verify(min.GetBfAddrChar(), min.Len());
     }
 }

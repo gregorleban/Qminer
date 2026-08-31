@@ -852,9 +852,13 @@ TChA &TChA::operator=(const char *CStr)
 
 TChA &TChA::operator+=(const TMem &Mem)
 {
+    // TMem is raw, unterminated memory that may contain NUL bytes - copy exactly
+    // Mem.Len() bytes (strcpy would overread the source past its end and could
+    // overflow the destination, and an embedded NUL would silently truncate)
     Resize(BfL + Mem.Len());
-    strcpy(Bf + BfL, Mem.GetBf());
+    memcpy(Bf + BfL, Mem.GetBf(), Mem.Len());
     BfL += Mem.Len();
+    Bf[BfL] = 0;
     return *this;
 }
 

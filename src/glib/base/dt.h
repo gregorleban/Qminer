@@ -378,8 +378,10 @@ public:
   void AddChTo(const char& Ch, const int& ToChN){
     while (Len()<ToChN){AddCh(Ch);}}
   void AddBf(char *NewBf, const int& BfS){
+    // memcpy, not strncpy: the source is a raw buffer that may hold NUL bytes
+    // (strncpy would stop copying at the first NUL and zero-pad the rest)
     if ((BfL+BfS+1)>MxBfL){Resize(BfL+BfS+1);}
-    strncpy(Bf+BfL,NewBf,BfS); BfL+=BfS; Bf[BfL]=0;}
+    memcpy(Bf+BfL,NewBf,BfS); BfL+=BfS; Bf[BfL]=0;}
   void PutCh(const int& ChN, const char& Ch){
     Assert((0<=ChN)&&(ChN<BfL)); Bf[ChN]=Ch;}
   char GetCh(const int& ChN) const {return operator[](ChN);}
