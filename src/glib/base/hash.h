@@ -118,6 +118,18 @@ class TStrHashF_DJB;
 class TStrHashF_Murmur3;
 
 /////////////////////////////////////////////////
+// Prim==Sec hash-function trait.
+// For hash functions whose secondary hash is the SAME function as the primary
+// (TStrHashF_DJB, and TStr's own GetPrim/SecHashCd which both forward to DJB),
+// THash/TStrHash probes can reuse the primary value instead of hashing the key a
+// second time. The reused value is bit-identical to what GetSecHashCd returns, so
+// HashCd values stored in serialized hash tables are unchanged.
+template <class THashFunc>
+struct THashFuncPrimEqSec { enum { Val = 0 }; };
+template <> struct THashFuncPrimEqSec<TStrHashF_DJB> { enum { Val = 1 }; };
+template <> struct THashFuncPrimEqSec<TDefaultHashFunc<TStr> > { enum { Val = 1 }; };
+
+/////////////////////////////////////////////////
 // Hash-Table
 template<class TKey, class TDat, class THashFunc = TDefaultHashFunc<TKey> >
 class THash{
@@ -380,8 +392,11 @@ void THash<TKey, TDat, THashFunc>::Clr(const bool& DoDel, const int& NoDelLim, c
 template<class TKey, class TDat, class THashFunc>
 int THash<TKey, TDat, THashFunc>::AddKey(const TKey& Key){
     if ((KeyDatV.Len()>2*PortV.Len())||PortV.Empty()){Resize();}
-    const int PortN=abs(THashFunc::GetPrimHashCd(Key)%PortV.Len());
-    const int HashCd=abs(THashFunc::GetSecHashCd(Key));
+    const int PrimHashCd=THashFunc::GetPrimHashCd(Key);
+    const int PortN=abs(PrimHashCd%PortV.Len());
+    // when prim==sec (see THashFuncPrimEqSec) reuse the primary hash - identical
+    // value, one pass over the key instead of two
+    const int HashCd=THashFuncPrimEqSec<THashFunc>::Val ? abs(PrimHashCd) : abs(THashFunc::GetSecHashCd(Key));
     int PrevKeyId=-1;
     int KeyId=PortV[PortN];
     while ((KeyId!=-1) &&
@@ -411,8 +426,11 @@ int THash<TKey, TDat, THashFunc>::AddKey(const TKey& Key){
 template<class TKey, class TDat, class THashFunc>
 void THash<TKey, TDat, THashFunc>::DelKey(const TKey& Key){
     IAssert(!PortV.Empty());
-    const int PortN=abs(THashFunc::GetPrimHashCd(Key)%PortV.Len());
-    const int HashCd=abs(THashFunc::GetSecHashCd(Key));
+    const int PrimHashCd=THashFunc::GetPrimHashCd(Key);
+    const int PortN=abs(PrimHashCd%PortV.Len());
+    // when prim==sec (see THashFuncPrimEqSec) reuse the primary hash - identical
+    // value, one pass over the key instead of two
+    const int HashCd=THashFuncPrimEqSec<THashFunc>::Val ? abs(PrimHashCd) : abs(THashFunc::GetSecHashCd(Key));
     int PrevKeyId=-1;
     int KeyId=PortV[PortN];
 
@@ -434,8 +452,11 @@ template<class TKey, class TDat, class THashFunc>
 void THash<TKey, TDat, THashFunc>::MarkDelKey(const TKey& Key){
     // MarkDelKey is same as Delkey except last two lines
     IAssert(!PortV.Empty());
-    const int PortN=abs(THashFunc::GetPrimHashCd(Key)%PortV.Len());
-    const int HashCd=abs(THashFunc::GetSecHashCd(Key));
+    const int PrimHashCd=THashFunc::GetPrimHashCd(Key);
+    const int PortN=abs(PrimHashCd%PortV.Len());
+    // when prim==sec (see THashFuncPrimEqSec) reuse the primary hash - identical
+    // value, one pass over the key instead of two
+    const int HashCd=THashFuncPrimEqSec<THashFunc>::Val ? abs(PrimHashCd) : abs(THashFunc::GetSecHashCd(Key));
     int PrevKeyId=-1;
     int KeyId=PortV[PortN];
     while ((KeyId!=-1) &&
@@ -473,8 +494,11 @@ int THash<TKey, TDat, THashFunc>::GetRndKeyId(TRnd& Rnd, const double& EmptyFrac
 template<class TKey, class TDat, class THashFunc>
 int THash<TKey, TDat, THashFunc>::GetKeyId(const TKey& Key) const {
     if (PortV.Empty()){return -1;}
-    const int PortN=abs(THashFunc::GetPrimHashCd(Key)%PortV.Len());
-    const int HashCd=abs(THashFunc::GetSecHashCd(Key));
+    const int PrimHashCd=THashFunc::GetPrimHashCd(Key);
+    const int PortN=abs(PrimHashCd%PortV.Len());
+    // when prim==sec (see THashFuncPrimEqSec) reuse the primary hash - identical
+    // value, one pass over the key instead of two
+    const int HashCd=THashFuncPrimEqSec<THashFunc>::Val ? abs(PrimHashCd) : abs(THashFunc::GetSecHashCd(Key));
     int KeyId=PortV[PortN];
     while ((KeyId!=-1) &&
      !((KeyDatV[KeyId].HashCd==HashCd) && (KeyDatV[KeyId].Key==Key))){
@@ -949,8 +973,9 @@ template <class TDat, class TStringPool, class THashFunc>
 int TStrHash<TDat, TStringPool, THashFunc>::AddKey(const char *Key) {
     if (Pool.Empty()) Pool = TStringPool::New();
     if ((AutoSizeP && KeyDatV.Len() > PortV.Len()) || PortV.Empty()) Resize();
-    const int PortN = abs(THashFunc::GetPrimHashCd(Key) % PortV.Len());
-    const int HashCd = abs(THashFunc::GetSecHashCd(Key));
+    const int PrimHashCd = THashFunc::GetPrimHashCd(Key);
+    const int PortN = abs(PrimHashCd % PortV.Len());
+    const int HashCd = THashFuncPrimEqSec<THashFunc>::Val ? abs(PrimHashCd) : abs(THashFunc::GetSecHashCd(Key));
     int PrevKeyId = -1;
     int KeyId = PortV[PortN];
     while (KeyId != -1 && ! (KeyDatV[KeyId].HashCd == HashCd && Pool->Cmp(KeyDatV[KeyId].Key, Key) == 0)) {
@@ -974,8 +999,9 @@ int TStrHash<TDat, TStringPool, THashFunc>::AddKey(const char *Key) {
 template <class TDat, class TStringPool, class THashFunc>
 int TStrHash<TDat, TStringPool, THashFunc>::GetKeyId(const char *Key) const {
     if (PortV.Empty()) return -1;
-    const int PortN = abs(THashFunc::GetPrimHashCd(Key) % PortV.Len());
-    const int Hc = abs(THashFunc::GetSecHashCd(Key));
+    const int PrimHashCd = THashFunc::GetPrimHashCd(Key);
+    const int PortN = abs(PrimHashCd % PortV.Len());
+    const int Hc = THashFuncPrimEqSec<THashFunc>::Val ? abs(PrimHashCd) : abs(THashFunc::GetSecHashCd(Key));
     int KeyId = PortV[PortN];
     while (KeyId != -1 && ! (KeyDatV[KeyId].HashCd == Hc && Pool->Cmp(KeyDatV[KeyId].Key, Key) == 0))
         KeyId = KeyDatV[KeyId].Next;
@@ -1581,14 +1607,18 @@ private:
         return hash;
     }
 public:
+    // single pass: DJB does not need the length, so the strlen prepass the old
+    // implementation did (a full extra scan of the key per hash) is fused into the
+    // hash loop. Produces bit-identical values, so serialized HashCds stay valid.
+    // GetSecHashCd is the same function by (historical) design - THash probes reuse
+    // the primary value through THashFuncPrimEqSec instead of hashing twice
     inline static int GetPrimHashCd(const char *p) {
-        const char *r = p;    while (*r) { r++; }
-        return (int) DJBHash((const char *) p, r - p) & 0x7fffffff; }
-    inline static int GetSecHashCd(const char *p) {
-        const char *r = p;    while (*r) { r++; }
-        return (int) DJBHash((const char *) p, r - p) & 0x7fffffff; }
+        unsigned int hash = 5381;
+        while (*p) { hash = ((hash << 5) + hash) + (*p++); }
+        return (int) hash & 0x7fffffff; }
+    inline static int GetSecHashCd(const char *p) { return GetPrimHashCd(p); }
     inline static int GetPrimHashCd(const TStr& s) { return GetPrimHashCd(s.CStr()); }
-    inline static int GetSecHashCd(const TStr& s) { return GetSecHashCd(s.CStr()); }
+    inline static int GetSecHashCd(const TStr& s) { return GetPrimHashCd(s.CStr()); }
 };
 
 // Murmur3-Hash-Function - 32bit version. Original by Austin Appleby

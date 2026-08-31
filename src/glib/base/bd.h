@@ -717,12 +717,14 @@ namespace gtraits {
 class TBool;
 class TCh;
 class TUCh;
+class TSInt;
 class TUSInt;
 
 template <class Base>                                class TNum;
 template <class TVal, class TSizeTy>                 class TVec;
 template <class TKey, class TDat, class THashFunc>   class THash;
 template <class TVal1, class TVal2>                  class TPair;
+template <class TKey, class TDat>                    class TKeyDat;
 
 namespace gtraits {
   /// cpp type traits, helper to check if type is a container
@@ -754,6 +756,7 @@ namespace gtraits {
   template <> struct is_shallow<TBool> : true_type{};
   template <> struct is_shallow<TCh> : true_type{};
   template <> struct is_shallow<TUCh> : true_type{};
+  template <> struct is_shallow<TSInt> : true_type{};  // short wrapper (the Small gix item dat) - was missing
   template <> struct is_shallow<TUSInt> : true_type{};
 
   // TNum
@@ -761,6 +764,11 @@ namespace gtraits {
   // TPair
   template <class TVal1, class TVal2>
   struct is_shallow<TPair<TVal1,TVal2>> : utils::bool_type<typename utils::TPairHelper<TVal1,TVal2>::shallow_type>{};
+  // TKeyDat - the gix posting item types (TKeyDat<TUInt64,TInt>, TKeyDat<TUInt,TSInt>, ...)
+  // are packed pairs of shallow number wrappers; without this specialization every
+  // deep GetMemUsed on a posting list walked it element by element instead of O(1)
+  template <class TKey, class TDat>
+  struct is_shallow<TKeyDat<TKey,TDat>> : utils::bool_type<typename utils::TPairHelper<TKey,TDat>::shallow_type>{};
 
   // Specializations: is_container
   template <class TVal, class TSizeTy>
