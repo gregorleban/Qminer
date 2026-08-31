@@ -117,8 +117,14 @@ void TVec<TVal, TSizeTy>::Resize(const TSizeTy& _MxVals){
       FailR(TStr::Fmt("TVec::Resize: %s, Length:%s, Capacity:%s, New capacity:%s, Type:%s [Program failed to allocate more memory. Solution: Get a bigger machine and a 64-bit compiler.]",
         Ex.what(), TInt::GetStr(Vals).CStr(), TInt::GetStr(MxVals).CStr(), TInt::GetStr(_MxVals).CStr(), GetTypeNm(*this).CStr()).CStr());}
     IAssert(NewValT!=NULL);
-    for (TSizeTy ValN=0; ValN<Vals; ValN++){NewValT[ValN]=std::move(ValT[ValN]);} //C++11
-    //for (TSizeTy ValN=0; ValN<Vals; ValN++){NewValT[ValN]=ValT[ValN];} // C++98
+    // a bitwise-movable element (TIsBitwiseMovable, ds.h) is carried over with one
+    // memcpy; such elements have trivial destructors, so delete[] on the old buffer
+    // after the byte copy is safe (same contract the memmove in Del relies on)
+    if (TIsBitwiseMovable<TVal>::Val) {
+      if (Vals > 0) { memcpy((void*)NewValT, (const void*)ValT, sizeof(TVal)*(size_t)Vals); }
+    } else {
+      for (TSizeTy ValN=0; ValN<Vals; ValN++){NewValT[ValN]=std::move(ValT[ValN]);} //C++11
+    }
     delete[] ValT; ValT=NewValT;
   }
 }
@@ -136,7 +142,13 @@ template <class TVal, class TSizeTy>
 TVec<TVal, TSizeTy>::TVec(const TVec<TVal, TSizeTy>& Vec){
   MxVals=Vec.MxVals; Vals=Vec.Vals;
   if (MxVals==0){ValT=NULL;} else {ValT=new TVal[MxVals];}
-  for (TSizeTy ValN=0; ValN<Vec.Vals; ValN++){ValT[ValN]=Vec.ValT[ValN];}
+  // one memcpy instead of an element loop for bitwise-movable types (the compiler
+  // cannot prove the two heap buffers don't alias, so the loop stays scalar)
+  if (TIsBitwiseMovable<TVal>::Val) {
+    if (Vec.Vals > 0) { memcpy((void*)ValT, (const void*)Vec.ValT, sizeof(TVal)*(size_t)Vec.Vals); }
+  } else {
+    for (TSizeTy ValN=0; ValN<Vec.Vals; ValN++){ValT[ValN]=Vec.ValT[ValN];}
+  }
 }
 
 #ifdef GLib_CPP11
@@ -195,8 +207,12 @@ TVec<TVal, TSizeTy>& TVec<TVal, TSizeTy>::operator=(const TVec<TVal, TSizeTy>& V
       // create the buffer if we have any values
       if (MxVals == 0) { ValT = NULL; } else { ValT = new TVal[MxVals]; }
     }
-    // copy values
-    for (TSizeTy ValN = 0; ValN < Vec.Vals; ValN++) { ValT[ValN] = Vec.ValT[ValN]; }
+    // copy values - one memcpy for bitwise-movable types (see the copy constructor)
+    if (TIsBitwiseMovable<TVal>::Val) {
+      if (Vec.Vals > 0) { memcpy((void*)ValT, (const void*)Vec.ValT, sizeof(TVal)*(size_t)Vec.Vals); }
+    } else {
+      for (TSizeTy ValN = 0; ValN < Vec.Vals; ValN++) { ValT[ValN] = Vec.ValT[ValN]; }
+    }
   }
   return *this;
 }
@@ -337,7 +353,28 @@ void TVec<TVal, TSizeTy>::Swap(TVec<TVal, TSizeTy>& Vec){
 template <class TVal, class TSizeTy>
 TSizeTy TVec<TVal, TSizeTy>::AddV(const TVec<TVal, TSizeTy>& ValV){
   AssertR(MxVals!=-1, "This vector was obtained from TVecPool. Such a vector cannot change its size!");
-  for (TSizeTy ValN=0; ValN<ValV.Vals; ValN++){Add(ValV[ValN]);}
+  // bitwise-movable elements are appended with one grow + one memcpy instead of a
+  // per-element Add loop (capacity check + bounds-checked store per item). This is
+  // the posting-list materialization path: TGixItemSet::GetItemV appends every
+  // child vector and the work buffer through AddV
+  if (TIsBitwiseMovable<TVal>::Val) {
+    if (ValV.Vals > 0) {
+      const TSizeTy Needed = Vals + ValV.Vals;
+      if (Needed > MxVals) {
+        // grow geometrically like repeated Add would - Resize alone grows to the
+        // exact requested size, which would make a loop of chunked appends
+        // quadratic. (MxVals > Needed - MxVals) is the overflow-free form of
+        // (2*MxVals > Needed); near the size-type limit fall back to the exact size
+        const TSizeTy HalfMax = (TSizeTy)1 << (sizeof(TSizeTy) * 8 - 2);
+        const bool DoubleP = (MxVals > Needed - MxVals) && (MxVals < HalfMax);
+        Resize(DoubleP ? MxVals + MxVals : Needed);
+      }
+      memcpy((void*)(ValT + Vals), (const void*)ValV.ValT, sizeof(TVal)*(size_t)ValV.Vals);
+      Vals = Needed;
+    }
+  } else {
+    for (TSizeTy ValN=0; ValN<ValV.Vals; ValN++){Add(ValV[ValN]);}
+  }
   return Len();
 }
 

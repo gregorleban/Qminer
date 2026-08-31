@@ -2073,6 +2073,10 @@ private:
     /// Special access for TIndex and TBase to create weighted record sets
     /// @param FqP true when RecIdFqV contains valid weights
     static PRecSet New(const TWPt<TStore>& Store, const TUInt64IntKdV& RecIdFqV, const bool& FqP);
+    /// Like New(Store, RecIdFqV, FqP), but MOVES the vector into the record set
+    /// (RecIdFqV is left empty afterwards) - avoids one full O(result) copy per
+    /// search-result boundary. For callers whose vector dies right after the call
+    static PRecSet NewByMove(const TWPt<TStore>& Store, TUInt64IntKdV& RecIdFqV, const bool& FqP);
     friend class TIndex;
     friend class TBase;
 public:

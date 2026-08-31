@@ -601,6 +601,15 @@ void TGixItemSet<TKey, TItem>::GetItemVInRange(const TItem& MinItem, const TItem
     // collect items only from child vectors whose stored [MinItem, MaxItem] range overlaps the
     // half-open query range [MinItem, MaxItem). Children fully outside the range are not loaded.
     if (ChildInfoV.Len() > 0) {
+        // reserve for the overlapping children + the work buffer up front, so the
+        // appends below never reallocate
+        int ReserveLen = _ItemV.Len() + ItemV.Len();
+        for (int i = 0; i < ChildInfoV.Len(); i++) {
+            if (ChildInfoV[i].MaxItem < MinItem) { continue; }
+            if (!(ChildInfoV[i].MinItem < MaxItem)) { continue; }
+            ReserveLen += ChildInfoV[i].Len;
+        }
+        _ItemV.Reserve(ReserveLen);
         for (int i = 0; i < ChildInfoV.Len(); i++) {
             // skip children that lie entirely below the range (their largest item is < MinItem)
             if (ChildInfoV[i].MaxItem < MinItem) { continue; }
@@ -1714,13 +1723,19 @@ bool TGixExpItem<TKey, TItem, TResItem>::Eval(const TPt<TGix<TKey, TItem> >& Gix
             } else {
                 Merger->Minus(RightItemV, ResItemV, MinusItemV);
             }
-            ResItemV = MinusItemV;
+            ResItemV.MoveFrom(MinusItemV);
         }
         return (NotLeft || NotRight);
     } else if (ExpType == getAnd) {
         EAssert(!LeftExpItem.Empty() && !RightExpItem.Empty());
         TVec<TResItem> RightItemV;
         const bool NotLeft = LeftExpItem->Eval(Gix, ResItemV, Merger);
+        // short-circuit: a non-negated empty left operand decides the AND - the
+        // result is empty whatever the right subtree holds (Intrs(empty, x) and
+        // Minus(empty, x) are both empty), so skip evaluating the right subtree
+        // entirely. This is what makes "rare AND huge" queries cheap: the huge
+        // posting list is never loaded when the rare side already came back empty
+        if (!NotLeft && ResItemV.Empty()) { return false; }
         const bool NotRight = RightExpItem->Eval(Gix, RightItemV, Merger);
         if (NotLeft && NotRight) {
             Merger->Union(ResItemV, RightItemV);
@@ -1733,7 +1748,7 @@ bool TGixExpItem<TKey, TItem, TResItem>::Eval(const TPt<TGix<TKey, TItem> >& Gix
             } else {
                 Merger->Minus(ResItemV, RightItemV, MinusItemV);
             }
-            ResItemV = MinusItemV;
+            ResItemV.MoveFrom(MinusItemV);
         }
         return (NotLeft && NotRight);
     } else if (ExpType == getKey) {

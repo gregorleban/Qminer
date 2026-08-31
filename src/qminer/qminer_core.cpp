@@ -3651,6 +3651,14 @@ PRecSet TRecSet::New(const TWPt<TStore>& Store, const TUInt64IntKdV& RecIdFqV,
     return new TRecSet(Store, RecIdFqV, FqP);
 }
 
+PRecSet TRecSet::NewByMove(const TWPt<TStore>& Store, TUInt64IntKdV& RecIdFqV,
+        const bool& FqP) {
+
+    PRecSet RecSet = new TRecSet(Store, TUInt64IntKdV(), FqP);
+    RecSet->RecIdFqV.MoveFrom(RecIdFqV);
+    return RecSet;
+}
+
 PRecSet TRecSet::New(const TWPt<TStore>& Store) {
     return new TRecSet(Store, TUInt64V());
 }
@@ -5768,7 +5776,7 @@ void TIndex::DoJoinQueryFull(const int& KeyId, const TUInt64V& RecIdV, TUInt64In
     // temporary story for joined records
     THash<TUInt64, TInt> RecIdFqH;
     // lambda that goes over child vectors and updates the hash table with counts
-    auto Handler = [&RecIdFqH](TVec<TQmGixItemFull> ItemV) {
+    auto Handler = [&RecIdFqH](const TVec<TQmGixItemFull>& ItemV) {
         for (const TQmGixItemFull& RecIdFq : ItemV) {
             RecIdFqH.AddDat(RecIdFq.Key) += RecIdFq.Dat;
         }
@@ -5786,7 +5794,7 @@ void TIndex::DoJoinQuerySmall(const int& KeyId, const TUInt64V& RecIdV, TUInt64I
     // temporary story for joined records
     THash<TUInt64, TInt> RecIdFqH;
     // lambda that goes over child vectors and updates the hash table with counts
-    auto Handler = [&RecIdFqH](TVec<TQmGixItemSmall> ItemV) {
+    auto Handler = [&RecIdFqH](const TVec<TQmGixItemSmall>& ItemV) {
         for (const TQmGixItemSmall& RecIdFq : ItemV) {
             RecIdFqH.AddDat((uint64)RecIdFq.Key) += (int)RecIdFq.Dat;
         }
@@ -5804,7 +5812,7 @@ void TIndex::DoJoinQueryTiny(const int& KeyId, const TUInt64V& RecIdV, TUInt64In
     // temporary story for joined records
     THash<TUInt64, TInt> RecIdFqH;
     // lambda that goes over child vectors and updates the hash table with counts
-    auto Handler = [&RecIdFqH](TVec<TQmGixItemTiny> ItemV) {
+    auto Handler = [&RecIdFqH](const TVec<TQmGixItemTiny>& ItemV) {
         for (const TQmGixItemTiny& RecId : ItemV) {
             RecIdFqH.AddDat((uint64)RecId) += 1;
         }
@@ -6749,19 +6757,42 @@ PRecSet TIndex::SearchGix(const TWPt<TBase>& Base, const int& KeyId, const uint6
     }
     // create result set and return it
     const uint StoreId = IndexVoc->GetKey(KeyId).GetStoreId();
-    return TRecSet::New(Base->GetStoreByStoreId(StoreId), RecIdFqV);
+    return TRecSet::NewByMove(Base->GetStoreByStoreId(StoreId), RecIdFqV, true);
 }
 
 PRecSet TIndex::SearchGixAnd(const TWPt<TBase>& Base, const int& KeyId, const TUInt64V& WordIdV) const {
+    // check which Gix to use
+    const TIndexKeyGixType GixType = GetGixType(KeyId);
     // prepare Gix keys
     TKeyWordV KeyWordV(WordIdV.Len(), 0);
     for (const uint64 WordId : WordIdV) {
         KeyWordV.Add(TKeyWord(KeyId, WordId));
     }
+    // evaluate the smallest posting lists first: the AND short-circuit in
+    // TGixExpItem::Eval then skips loading the large lists whenever a small or
+    // empty prefix already decides the intersection. The counts come from the
+    // itemset headers alone (GetItems reads TotalCnt - no child vectors are
+    // loaded), and TKeyDat sorts by Key only, so equal counts keep working
+    if (KeyWordV.Len() > 1) {
+        TVec<TKeyDat<TInt, TKeyWord> > CntKeyWordV(KeyWordV.Len(), 0);
+        for (const TKeyWord& KeyWord : KeyWordV) {
+            int Cnt = 0;
+            switch (GixType) {
+            case oikgtFull: { auto ItemSet = GixFull->GetItemSet(KeyWord); Cnt = ItemSet.Empty() ? 0 : ItemSet->GetItems(); break; }
+            case oikgtSmall: { auto ItemSet = GixSmall->GetItemSet(KeyWord); Cnt = ItemSet.Empty() ? 0 : ItemSet->GetItems(); break; }
+            case oikgtTiny: { auto ItemSet = GixTiny->GetItemSet(KeyWord); Cnt = ItemSet.Empty() ? 0 : ItemSet->GetItems(); break; }
+            default: break;
+            }
+            CntKeyWordV.Add(TKeyDat<TInt, TKeyWord>(Cnt, KeyWord));
+        }
+        CntKeyWordV.Sort();
+        KeyWordV.Clr(false);
+        for (const TKeyDat<TInt, TKeyWord>& CntKeyWord : CntKeyWordV) {
+            KeyWordV.Add(CntKeyWord.Dat);
+        }
+    }
     // prepare placeholder for results
     TVec<TQmGixItemFull> RecIdFqV;
-    // check which Gix to use
-    const TIndexKeyGixType GixType = GetGixType(KeyId);
     // go to appropriate gix and always first check if we have the key at all
     switch (GixType) {
     case oikgtFull:
@@ -6775,7 +6806,7 @@ PRecSet TIndex::SearchGixAnd(const TWPt<TBase>& Base, const int& KeyId, const TU
     }
     // create result set and return it
     const uint StoreId = IndexVoc->GetKey(KeyId).GetStoreId();
-    return TRecSet::New(Base->GetStoreByStoreId(StoreId), RecIdFqV);
+    return TRecSet::NewByMove(Base->GetStoreByStoreId(StoreId), RecIdFqV, true);
 }
 
 PRecSet TIndex::SearchGixOr(const TWPt<TBase>& Base, const int& KeyId, const TUInt64V& WordIdV) const {
@@ -6801,7 +6832,7 @@ PRecSet TIndex::SearchGixOr(const TWPt<TBase>& Base, const int& KeyId, const TUI
     }
     // create result set and return it
     const uint StoreId = IndexVoc->GetKey(KeyId).GetStoreId();
-    return TRecSet::New(Base->GetStoreByStoreId(StoreId), RecIdFqV);
+    return TRecSet::NewByMove(Base->GetStoreByStoreId(StoreId), RecIdFqV, true);
 }
 
 void TIndex::SearchGixJoin(const int& KeyId, const uint64& RecId, TUInt64IntKdV& JoinRecIdFqV) const {
@@ -6848,7 +6879,7 @@ PRecSet TIndex::SearchTextPos(const TWPt<TBase>& Base, const int& KeyId,
     TUInt64IntKdV RecIdFqV; DoQueryPos(KeyId, WordIdV, MaxDiffV, RecIdFqV);
     // wrap as record set and return
     const uint StoreId = IndexVoc->GetKey(KeyId).GetStoreId();
-    return TRecSet::New(Base->GetStoreByStoreId(StoreId), RecIdFqV);
+    return TRecSet::NewByMove(Base->GetStoreByStoreId(StoreId), RecIdFqV, true);
 }
 
 PRecSet TIndex::SearchGeoRange(const TWPt<TBase>& Base, const int& KeyId,
@@ -8306,86 +8337,85 @@ TPair<TBool, PRecSet> TBase::_Search(const TQueryItem& QueryItem) {
     } else {
         // we have an operator, make sure it is so!
         QmAssert(QueryItem.IsAnd() || QueryItem.IsOr() || QueryItem.IsNot());
-        // exeucte all interal query items
-        TBoolV NotV; TRecSetV RecSetV;
-        for (int ItemN = 0; ItemN < QueryItem.GetItems(); ItemN++) {
-            // do subsequent search
-            TPair<TBool, PRecSet> NotRecSet = _Search(QueryItem.GetItem(ItemN));
-            NotV.Add(NotRecSet.Val1); RecSetV.Add(NotRecSet.Val2);
+        if (QueryItem.IsNot()) {
+            // just return the record set but negate the current negation status
+            QmAssert(QueryItem.GetItems() == 1);
+            TPair<TBool, PRecSet> NotRecSet = _Search(QueryItem.GetItem(0));
+            return TPair<TBool, PRecSet>(!NotRecSet.Val1, NotRecSet.Val2);
         }
-        // merge the results according to the operator
-        if (QueryItem.IsAnd()) {
-            // prepare working vectors with the first records set
-            TUInt64IntKdV ResRecIdFqV = RecSetV[0]->GetRecIdFqV();
-            QmAssert(ResRecIdFqV.IsSorted());
-            // current negation status
-            bool NotP = NotV[0];
-            // than handle the rest here
-            for (int ItemN = 1; ItemN < RecSetV.Len(); ItemN++) {
-                // get the vector
-                const TUInt64IntKdV& RecIdFqV = RecSetV[ItemN]->GetRecIdFqV();
-                // decide for the operation based on not status
-                if (!NotP && !NotV[ItemN]) {
+        const bool IsAnd = QueryItem.IsAnd();
+        // Evaluate the children ONE AT A TIME, merging as we go. For AND this
+        // enables short-circuiting: once the running non-negated result is empty,
+        // the remaining operands are skipped WITHOUT being evaluated (intersecting
+        // with or subtracting from an empty set stays empty), so their posting
+        // lists are never loaded. Every operand is also sorted if needed before
+        // merging: gix results always are, but a $recset leaf carries a
+        // user-supplied record set in whatever order the user left it, and the
+        // merge walks silently drop matches on unsorted input
+        TPair<TBool, PRecSet> FirstNotRecSet = _Search(QueryItem.GetItem(0));
+        const TWPt<TStore> ResStore = FirstNotRecSet.Val2->GetStore();
+        bool NotP = FirstNotRecSet.Val1;
+        TUInt64IntKdV ResRecIdFqV = FirstNotRecSet.Val2->GetRecIdFqV();
+        if (!ResRecIdFqV.IsSorted()) { ResRecIdFqV.Sort(); }
+        for (int ItemN = 1; ItemN < QueryItem.GetItems(); ItemN++) {
+            // AND of an empty non-negated result is empty - skip the rest (see above)
+            if (IsAnd && !NotP && ResRecIdFqV.Empty()) { break; }
+            // do the subsequent search
+            TPair<TBool, PRecSet> NotRecSet = _Search(QueryItem.GetItem(ItemN));
+            const bool NotItem = NotRecSet.Val1;
+            // get the vector, sorted (see above)
+            const TUInt64IntKdV* RecIdFqVPt = &NotRecSet.Val2->GetRecIdFqV();
+            TUInt64IntKdV SortedRecIdFqV;
+            if (!RecIdFqVPt->IsSorted()) {
+                SortedRecIdFqV = *RecIdFqVPt; SortedRecIdFqV.Sort();
+                RecIdFqVPt = &SortedRecIdFqV;
+            }
+            const TUInt64IntKdV& RecIdFqV = *RecIdFqVPt;
+            // decide for the operation based on the operator and not status
+            if (IsAnd) {
+                if (!NotP && !NotItem) {
                     // life is easy, just do the intersect
                     Index->GetSumMerger()->Intrs(ResRecIdFqV, RecIdFqV);
-                } else if (NotP && NotV[ItemN]) {
+                } else if (NotP && NotItem) {
                     // all negation, do the union
                     Index->GetSumMerger()->Union(ResRecIdFqV, RecIdFqV);
-                } else if (NotP && !NotV[ItemN]) {
+                } else if (NotP && !NotItem) {
                     // records from RecIdFqV should not be in the main
                     TUInt64IntKdV _ResRecIdFqV;
                     Index->GetSumMerger()->Minus(RecIdFqV, ResRecIdFqV, _ResRecIdFqV);
-                    ResRecIdFqV = _ResRecIdFqV;
+                    ResRecIdFqV.MoveFrom(_ResRecIdFqV);
                     NotP = false;
-                } else if (!NotP && NotV[ItemN]) {
+                } else if (!NotP && NotItem) {
                     // records from main should not be in the RecIdFqV
                     TUInt64IntKdV _ResRecIdFqV;
                     Index->GetSumMerger()->Minus(ResRecIdFqV, RecIdFqV, _ResRecIdFqV);
-                    ResRecIdFqV = _ResRecIdFqV;
+                    ResRecIdFqV.MoveFrom(_ResRecIdFqV);
                     NotP = false;
                 }
-            }
-            // prepare resulting record set
-            PRecSet RecSet = TRecSet::New(RecSetV[0]->GetStore(), ResRecIdFqV, QueryItem.IsFq());
-            return TPair<TBool, PRecSet>(NotP, RecSet);
-        } else if (QueryItem.IsOr()) {
-            // prepare working vectors with the first records set
-            TUInt64IntKdV ResRecIdFqV = RecSetV[0]->GetRecIdFqV();
-            QmAssert(ResRecIdFqV.IsSorted());
-            // current negation status
-            bool NotP = NotV[0];
-            // than handle the rest here
-            for (int ItemN = 1; ItemN < RecSetV.Len(); ItemN++) {
-                // get the vector
-                const TUInt64IntKdV& RecIdFqV = RecSetV[ItemN]->GetRecIdFqV();
-                // decide for the operation based on not status
-                if (!NotP && !NotV[ItemN]) {
+            } else {
+                if (!NotP && !NotItem) {
                     Index->GetSumMerger()->Union(ResRecIdFqV, RecIdFqV);
-                } else if (NotP && NotV[ItemN]) {
+                } else if (NotP && NotItem) {
                     // all negation, do the intersect
                     Index->GetSumMerger()->Intrs(ResRecIdFqV, RecIdFqV);
-                } else if (NotP && !NotV[ItemN]) {
+                } else if (NotP && !NotItem) {
                     // records not from main or from RecIdFqV
                     TUInt64IntKdV _ResRecIdFqV;
                     Index->GetSumMerger()->Minus(ResRecIdFqV, RecIdFqV, _ResRecIdFqV);
-                    ResRecIdFqV = _ResRecIdFqV;
+                    ResRecIdFqV.MoveFrom(_ResRecIdFqV);
                     NotP = true;
-                } else if (!NotP && NotV[ItemN]) {
+                } else if (!NotP && NotItem) {
                     // records from main or not from RecIdFqV
                     TUInt64IntKdV _ResRecIdFqV;
                     Index->GetSumMerger()->Minus(RecIdFqV, ResRecIdFqV, _ResRecIdFqV);
-                    ResRecIdFqV = _ResRecIdFqV;
+                    ResRecIdFqV.MoveFrom(_ResRecIdFqV);
                     NotP = true;
                 }
             }
-            // prepare resulting record set
-            PRecSet RecSet = TRecSet::New(RecSetV[0]->GetStore(), ResRecIdFqV, QueryItem.IsFq());
-            return TPair<TBool, PRecSet>(NotP, RecSet);
-        } else if (QueryItem.IsNot()) {
-            // just return records set but negate the current negation status
-            QmAssert(RecSetV.Len() == 1);
-            return TPair<TBool, PRecSet>(!NotV[0], RecSetV[0]);
         }
+        // prepare resulting record set (moving the merged vector in)
+        PRecSet RecSet = TRecSet::NewByMove(ResStore, ResRecIdFqV, QueryItem.IsFq());
+        return TPair<TBool, PRecSet>(NotP, RecSet);
     }
     // we should never have come to here
     throw TQmExcept::New("Unsupported query item type");

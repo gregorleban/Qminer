@@ -11,8 +11,8 @@ void TRecSet::FilterBy(const TFilter& Filter) {
         // check the filter
         if (Filter.Filter(Rec)) { NewRecIdFqV.Add(RecIdFq); }
     }
-    // overwrite old result vector with filtered list
-    RecIdFqV = NewRecIdFqV;
+    // overwrite old result vector with filtered list (move, not a full copy)
+    RecIdFqV.MoveFrom(NewRecIdFqV);
 }
 
 template <class TSplitter>
@@ -105,7 +105,9 @@ template <class TQmGixItem, class TQmGixResItem>
 void TIndex::TQmGixSumMerger<TQmGixItem, TQmGixResItem>::Union(
         TVec<TQmGixResItem>& MainV, const TVec<TQmGixResItem>& JoinV) const {
 
-    TVec<TQmGixResItem> ResV; int ValN1 = 0; int ValN2 = 0;
+    // reserve the exact upper bound up front (no realloc cascade during the merge)
+    // and hand the result back with a move instead of a full copy
+    TVec<TQmGixResItem> ResV(MainV.Len() + JoinV.Len(), 0); int ValN1 = 0; int ValN2 = 0;
     while ((ValN1 < MainV.Len()) && (ValN2 < JoinV.Len())) {
         const TQmGixResItem& Val1 = MainV.GetVal(ValN1);
         const TQmGixResItem& Val2 = JoinV.GetVal(ValN2);
@@ -119,14 +121,16 @@ void TIndex::TQmGixSumMerger<TQmGixItem, TQmGixResItem>::Union(
     for (int RestValN2 = ValN2; RestValN2 < JoinV.Len(); RestValN2++) {
         ResV.Add(JoinV.GetVal(RestValN2));
     }
-    MainV = ResV;
+    MainV.MoveFrom(ResV);
 }
 
 template <class TQmGixItem, class TQmGixResItem>
 void TIndex::TQmGixSumMerger<TQmGixItem, TQmGixResItem>::Intrs(
         TVec<TQmGixResItem>& MainV, const TVec<TQmGixResItem>& JoinV) const {
 
-    TVec<TQmGixResItem> ResV; int ValN1 = 0; int ValN2 = 0;
+    // reserve the exact upper bound (the smaller input) and move the result back
+    TVec<TQmGixResItem> ResV(MainV.Len() < JoinV.Len() ? MainV.Len() : JoinV.Len(), 0);
+    int ValN1 = 0; int ValN2 = 0;
     while ((ValN1 < MainV.Len()) && (ValN2 < JoinV.Len())) {
         const TQmGixResItem& Val1 = MainV.GetVal(ValN1);
         const TQmGixResItem& Val2 = JoinV.GetVal(ValN2);
@@ -134,7 +138,7 @@ void TIndex::TQmGixSumMerger<TQmGixItem, TQmGixResItem>::Intrs(
         else if (Val1 > Val2) { ValN2++; }
         else { ResV.Add(TQmGixResItem(Val1.Key, Val1.Dat + Val2.Dat)); ValN1++; ValN2++; }
     }
-    MainV = ResV;
+    MainV.MoveFrom(ResV);
 }
 
 template <class TQmGixItem, class TQmGixResItem>
