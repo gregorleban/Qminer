@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <type_traits>
+
 /////////////////////////////////////////////////
 // Address-Pointer
 template <class TRec>
@@ -469,6 +471,24 @@ template <class TKey, class TDat>
 struct TIsFlatSerializable<TKeyDat<TKey, TDat> > { enum { Val =
     TIsFlatSerializable<TKey>::Val && TIsFlatSerializable<TDat>::Val &&
     (sizeof(TKeyDat<TKey, TDat>) == sizeof(TKey) + sizeof(TDat)) }; };
+
+/////////////////////////////////////////////////
+// Bitwise-move trait: may TVec shift elements of TVal around with memmove (TVec::Del)?
+// True for flat-serializable types - their bytes fully define them (no pointers, no
+// ownership; TVec already bulk-copies arrays of them on Load/Save) - and for types the
+// compiler reports as trivially copyable. The second clause alone would NOT cover glib's
+// number wrappers or the gix item types: TNum<T> declares a user-provided operator=, which
+// makes it non-trivially-copyable in the std sense even though it is a plain value, so
+// TInt/TUInt64/TKeyDat<TUInt64,TInt>/TQmGixItemPos/... are picked up via the flat opt-in.
+template <class TVal>
+struct TIsBitwiseMovable { enum { Val =
+    TIsFlatSerializable<TVal>::Val ||
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ < 5)
+    0 // libstdc++ before GCC 5 has no std::is_trivially_copyable
+#else
+    std::is_trivially_copyable<TVal>::value
+#endif
+    }; };
 
 //#//////////////////////////////////////////////
 /// Vector is a sequence \c TVal objects representing an array that can change in size. ##TVec

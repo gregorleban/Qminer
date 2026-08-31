@@ -508,11 +508,17 @@ private:
     /// True if any child vector exceeds SplitLenMax. Only adds can oversize a child, so a
     /// deletes-only flush never sees one.
     bool HasOversizedChild() const;
+    /// Is any child's MinItem below its left neighbour's MaxItem (children out of order or
+    /// overlapping)? Only that state needs the global merge - sizes are fixed locally
+    bool HasOverlappingChildren() const;
     /// Drop empty children and merge adjacent undersized ones. Used by deletes-only flushes in
     /// Def() instead of the global merge: deletes leave the children sorted and disjoint, so the
     /// itemset is already merged and only fragmentation needs fixing. Copy cost is bounded by the
     /// children actually touched, not by the length of the whole posting list.
     void CoalesceUndersizedChildren();
+    /// Cut every child above SplitLenMax into equal pieces in place (local counterpart of
+    /// CoalesceUndersizedChildren)
+    void SplitOversizedChildren();
     /// Work buffer is merged and still full, add new children collections with the data in work buffer
     void PushWorkBufferToChildren();
     /// If work buffer contains data that belongs to child vectors then push that content to them

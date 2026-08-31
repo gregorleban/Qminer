@@ -146,12 +146,89 @@ void TGixItemSet<TKey, TItem>::CoalesceUndersizedChildren() {
 }
 
 template <class TKey, class TItem>
+bool TGixItemSet<TKey, TItem>::HasOverlappingChildren() const {
+    // children must be sorted and mutually disjoint: every child's MinItem lies beyond its left
+    // neighbour's MaxItem. MinItem may be stale-low after deletes, but it was a real item of that
+    // child once and so is still beyond the neighbour's MaxItem (which never grows: injects only
+    // add items at or below it) - so there are no false positives
+    for (int ChildN = 1; ChildN < ChildInfoV.Len(); ChildN++) {
+        if (Gix->GetItemHandler()->IsLt(ChildInfoV[ChildN].MinItem, ChildInfoV[ChildN - 1].MaxItem)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <class TKey, class TItem>
+void TGixItemSet<TKey, TItem>::SplitOversizedChildren() {
+    // Cut every child above SplitLenMax into Parts = ceil(Len / SplitLen) equal pieces, in place.
+    // A piece is Len/Parts long, i.e. within [2/3 SplitLen, SplitLen] - neither over- nor
+    // undersized - and a child is sorted, so cutting it keeps the children sorted and mutually
+    // disjoint. This is the local counterpart of CoalesceUndersizedChildren: it touches only the
+    // oversized children (one read, Parts writes each). The global merge it replaces re-read,
+    // re-sorted and re-wrote everything from the first out-of-shape child to the end of the
+    // posting list - for a single delete marker on a key whose on-disk layout predates the
+    // current split length (children chunked at a larger splitLen) that ran on every Def.
+    // The children arrays are rebuilt in one pass rather than spliced with Ins (an O(children)
+    // shift per new piece).
+    TVec<TChildInfo> NewChildInfoV(ChildInfoV.Len(), 0);
+    TVec<TVec<TItem> > NewChildV(ChildV.Len(), 0);
+    for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
+        if (ChildInfoV[ChildN].Len <= SplitLenMax) {
+            NewChildInfoV.Add(ChildInfoV[ChildN]);
+            NewChildV.Add(TVec<TItem>());
+            NewChildV.Last().Swap(ChildV[ChildN]);
+            continue;
+        }
+        LoadChildVector(ChildN);
+        const TVec<TItem>& Items = ChildV[ChildN];
+        const int Len = Items.Len();
+        const int Parts = (Len + SplitLen - 1) / SplitLen;
+        int From = 0;
+        for (int PartN = 0; PartN < Parts; PartN++) {
+            const int To = (int)(((int64)Len * (PartN + 1)) / Parts) - 1; // inclusive
+            TVec<TItem> PartV; Items.GetSubValV(From, To, PartV);
+            if (PartN == 0) {
+                // the first piece keeps this child's slot and blob pointer (rewritten on store)
+                TChildInfo Info = ChildInfoV[ChildN];
+                Info.Len = PartV.Len();
+                Info.MinItem = PartV[0];
+                Info.MaxItem = PartV.Last();
+                Info.LoadedP = true;
+                Info.DirtyP = true;
+                NewChildInfoV.Add(Info);
+                NewChildV.Add(TVec<TItem>());
+                NewChildV.Last().Swap(PartV);
+            } else {
+                // further pieces become new children right after it, data goes straight to the blob
+                TChildInfo Info(PartV[0], PartV.Last(), PartV.Len(), Gix->EnlistChildVector(PartV));
+                Info.LoadedP = false;
+                Info.DirtyP = false;
+                NewChildInfoV.Add(Info);
+                NewChildV.Add(TVec<TItem>());
+            }
+            From = To + 1;
+        }
+    }
+    ChildInfoV.Swap(NewChildInfoV);
+    ChildV.Swap(NewChildV);
+    DirtyP = true;
+}
+
+template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::PushWorkBufferToChildren() {
-    // push work-buffer into children array
-    while (ItemV.Len() >= SplitLen) {
+    // Push the work-buffer into the children array. The buffer is read through a running offset and
+    // trimmed exactly ONCE at the end. Deleting each chunk in place instead (ItemV.Del(0, SplitLen-1)
+    // inside the loop) shifts the whole remaining tail on every iteration, i.e. O(Len^2 / SplitLen).
+    // That is harmless while the buffer only ever holds a bit more than SplitLen, but
+    // PushMergedDataBackToChildren hands the whole leftover of a globally merged posting list back
+    // here, and with a small (default) splitLen on a mature key that leftover is millions of items -
+    // a per-article delete on a 171M-record instance then spent ~all of its CPU inside TVec::Del.
+    int PushedN = 0;
+    while (ItemV.Len() - PushedN >= SplitLen) {
         // create a vector of SplitLen items
         TVec<TItem> SplitItemV;
-        ItemV.GetSubValV(0, SplitLen - 1, SplitItemV);
+        ItemV.GetSubValV(PushedN, PushedN + SplitLen - 1, SplitItemV);
         // create the child info for the vector and also push the vector to a blob
         TChildInfo ChildInfo(SplitItemV[0], SplitItemV.Last(), SplitLen, Gix->EnlistChildVector(SplitItemV));
         ChildInfo.LoadedP = false;
@@ -159,8 +236,13 @@ void TGixItemSet<TKey, TItem>::PushWorkBufferToChildren() {
         ChildInfoV.Add(ChildInfo);
         // add an empty vector to ChildV - the data for this vector will be loaded from the blob when necessary
         ChildV.Add(TVec<TItem>());
-        ItemV.Del(0, SplitLen - 1);
+        PushedN += SplitLen;
         DirtyP = true;
+    }
+    // drop everything that went into the children in one shift (Del keeps the buffer's capacity,
+    // exactly as the per-chunk Del did before, so the next fill does not reallocate)
+    if (PushedN > 0) {
+        ItemV.Del(0, PushedN - 1);
     }
 }
 
@@ -690,26 +772,29 @@ void TGixItemSet<TKey, TItem>::Def() {
         InjectWorkBufferToChildren(); // inject data into child vectors
 
         int FirstChildToMerge = GetFirstChildToMerge();
-        if (FirstChildToMerge >= 0 && ItemV.Empty() && !HasOversizedChild()) {
-            // deletes-only flush: the work buffer is drained and children only shrank, so they
-            // are still sorted and mutually disjoint - the itemset is already globally merged.
-            // The global merge below would collect and rewrite the ENTIRE posting list from
-            // FirstChildToMerge onward just because deletes left some children undersized; on a
-            // huge key (per-key splitLen 100k, tens of millions of items) that is gigabytes of
-            // memcpy on every work-buffer flush, which is what made batch deletes crawl even
-            // after ProcessDeletes itself was made linear. Fix the fragmentation locally instead.
+        if (FirstChildToMerge >= 0 && !HasOverlappingChildren()) {
+            // Children out of shape but still sorted and mutually disjoint (the normal case:
+            // deletes left some short, injects or an older/larger on-disk splitLen left some
+            // long), and whatever InjectWorkBufferToChildren left in ItemV lies strictly beyond
+            // the last child's MaxItem - so the itemset is already globally merged and both
+            // directions are fixed LOCALLY: oversized children are cut in place, undersized ones
+            // glued to an undersized neighbour or dropped when empty. The global merge below
+            // would instead collect, QSort and rewrite the ENTIRE posting list from
+            // FirstChildToMerge onward; on a huge key that is gigabytes of I/O per Def, and the
+            // 2026-08-31 profiles of a 25k-article delete on a 171M-record yearly instance showed
+            // it running on practically every delete marker: first because the shortcut also
+            // demanded ItemV.Empty() (never true on a live key - the persisted work buffer holds
+            // leftover adds), then because any oversized child anywhere in the list (a layout
+            // chunked at a larger splitLen than the current .def) sent it down this path again.
+            if (HasOversizedChild()) { SplitOversizedChildren(); }
             CoalesceUndersizedChildren();
             FirstChildToMerge = -1;
         }
-        // merge only when children actually need rebalancing. A non-empty work buffer is NOT a
-        // reason: InjectWorkBufferToChildren just moved every item overlapping the children into
-        // its child, so whatever remains in ItemV lies strictly beyond the last child's MaxItem
-        // and the itemset is already globally merged (the same state DefLocal accepts). The old
-        // additional `ItemV.Len() > 0` trigger re-merged the whole work buffer on every Def -
-        // with per-item deletes on a mature key (work buffer sitting just under SplitLen) that
-        // meant O(SplitLen) work for every deleted item, which the profile of a 600k-article
-        // batch delete showed as 88% of all CPU (TQmGixItemPos construction under Def/AddV/Merge
-        // on GixPos word keys).
+        // the global merge is now only the safety net for children that are out of order or
+        // overlap (which no code path is expected to produce); every size problem was handled
+        // locally above. A non-empty work buffer is NOT a reason either: InjectWorkBufferToChildren
+        // just moved every item overlapping the children into its child, so whatever remains in
+        // ItemV lies strictly beyond the last child's MaxItem (the same state DefLocal accepts).
         if (FirstChildToMerge >= 0) {
             // collect all data from subsequent child vectors and work-buffer
             TVec<TItem> MergedItems;
