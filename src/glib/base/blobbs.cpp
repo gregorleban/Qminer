@@ -281,11 +281,17 @@ TGBlobBs::TGBlobBs(const TStr& BlobBsFNm, const TFAccess& _Access, const int& _M
         case faCreate:
             File=TFRnd::New(NrBlobBsFNm, faCreate, true); break;
         case faUpdate:
-        case faRdOnly:
         case faRestore:
             File=TFRnd::New(NrBlobBsFNm, faUpdate, true); break;
+        case faRdOnly:
+            // read-only means read-only: open "rb" and never create a missing
+            // segment file (creating an empty valid-looking segment used to
+            // silently mask a lost/renamed file until a read into it failed)
+            File=TFRnd::New(NrBlobBsFNm, faRdOnly, false); break;
         default: Fail;
     }
+    EAssertR(!(Access==faRdOnly && File->Empty()),
+        "Empty blob base file opened read-only: " + NrBlobBsFNm);
     if (File->Empty()){
         File->SetFPos(0);
         PutVersionStr(File);
@@ -316,7 +322,10 @@ TGBlobBs::TGBlobBs(const TStr& BlobBsFNm, const TFAccess& _Access, const int& _M
         GetFFreeBlobPtV(File, FFreeBlobPtV);
     }
     FirstBlobPt = TBlobPt(File->GetFPos());
-    File->Flush();
+    // the one place the file length is read through the file API; from here on it
+    // is tracked in CachedFLen (fresh-block appends are the only length changes)
+    CachedFLen = File->GetFLen();
+    if (Access != faRdOnly) { File->Flush(); }
 }
 
 TGBlobBs::~TGBlobBs(){
@@ -327,8 +336,8 @@ TGBlobBs::~TGBlobBs(){
         PutMxSegLen(File, MxSegLen);
         PutBlockLenV(File, BlockLenV);
         PutFFreeBlobPtV(File, FFreeBlobPtV);
+        File->Flush();
     }
-    File->Flush();
     File=NULL;
 }
 
@@ -344,8 +353,12 @@ TBlobPt TGBlobBs::PutBlob(const PSIn& SIn){
     // if we don't have any blocks of the appropriate size that were previously deleted
     if (FFreeBlobPtV[FFreeBlobPtN].Empty()){
 	    // allocate new block in BLOB storage
-        const int FLen = File->GetFLen();
-        if (FLen <= MxSegLen){
+        const int FLen = CachedFLen;
+        // the whole block (header + MxBfL + checksum + end tag = OverheadSize + MxBfL)
+        // must stay clear of the 32-bit ftell range: a block that merely STARTED below
+        // MxSegLen used to be allowed to extend past INT_MAX, after which the 32-bit
+        // ftell in TFRnd returns -1 and the segment cannot even be reopened
+        if (FLen <= MxSegLen && (int64)FLen + (int64)MxBfL + OverheadSize <= (int64)TInt::Mx - 1024){
             EAssert(FLen<=MxBlobFLen);
             // create a new block of size MxBfl at the end of the file and populate it with data
             BlobPt=TBlobPt(FLen);
@@ -355,9 +368,15 @@ TBlobPt TGBlobBs::PutBlob(const PSIn& SIn){
             PutBlobState(File, bsActive);
             File->PutInt(BfL);
             File->PutSIn(SIn, Cs);
-            File->PutCh(TCh::NullCh, MxBfL-BfL);
+            // skip over the padding instead of writing MxBfL-BfL zero bytes: the pad
+            // bytes are never read back (GetBlob skips them the same way) and the
+            // checksum covers only the data. On this fresh-append path the file is
+            // extended by the PutCs/PutBlobTag writes below and the OS zero-fills
+            // the gap
+            File->MoveFPos(MxBfL-BfL);
             File->PutCs(Cs);
             PutBlobTag(File, btEnd);
+            CachedFLen = File->GetFPos();
 
 	        Stats.AllocCount++;
 	        Stats.AllocSize += MxBfL;
@@ -383,7 +402,10 @@ TBlobPt TGBlobBs::PutBlob(const PSIn& SIn){
         PutBlobState(File, bsActive);
         File->PutInt(BfL);
         File->PutSIn(SIn, Cs);
-        File->PutCh(TCh::NullCh, MxBfL-BfL);
+        // skip the padding instead of zeroing it - it is never read back. The bytes
+        // already exist in the file here (this is a reused block), so the seek is all
+        // that is needed to land PutCs at the right offset
+        File->MoveFPos(MxBfL-BfL);
         File->PutCs(Cs);
         AssertBlobTag(File, btEnd);
 
@@ -394,8 +416,10 @@ TBlobPt TGBlobBs::PutBlob(const PSIn& SIn){
 	    Stats.ReleasedCount--;
 	    Stats.ReleasedSize -= MxBfL;
     }
-    // TODO: why do we need to flush the file?
-    File->Flush();
+    // no per-op flush: it was fflush (OS-cache only, not FlushFileBuffers), and the
+    // free-list/state header is written only at close - so it bought no crash
+    // durability (a crashed base needs faRestore regardless) while forcing a write
+    // syscall per blob. TFRnd's direction tracking handles write->read switches
     Stats.PutsNew++;
     Stats.AvgPutNewLen += (BfL - Stats.AvgPutNewLen) / Stats.PutsNew;
     return BlobPt;
@@ -426,11 +450,11 @@ TBlobPt TGBlobBs::PutBlob(const TBlobPt& BlobPt, const PSIn& SIn, int& ReleasedS
         TCs Cs;
         File->PutInt(BfL);
         File->PutSIn(SIn, Cs);
-        File->PutCh(TCh::NullCh, MxBfL-BfL);
+        // skip the padding instead of zeroing it (see PutBlob above), and no per-op
+        // flush (see PutBlob above)
+        File->MoveFPos(MxBfL-BfL);
         File->PutCs(Cs);
         PutBlobTag(File, btEnd);
-        // TODO: why do we need to flush?
-        File->Flush();
 	    // update stats
 	    Stats.Puts++;
         Stats.AvgPutLen += (BfL - Stats.AvgPutLen) / Stats.Puts;
@@ -473,10 +497,13 @@ int TGBlobBs::DelBlob(const TBlobPt& BlobPt){
     EAssert(MxBfL == _MxBfL);
     FFreeBlobPtV[FFreeBlobPtN].SaveAddr(File);         // save to the deleted blob the location of next deleted (reusable) blob
     FFreeBlobPtV[FFreeBlobPtN] = BlobPt;               // save into the vector of deleted blobs the location to the now deleted blob
-    File->PutCh(TCh::NullCh, MxBfL+sizeof(TCs));       // erase existing content
+    // skip over the dead content instead of zeroing it: the only thing ever read
+    // from a freed block is the 4-byte next-free pointer written above, so erasing
+    // MxBfL+Cs bytes was pure write amplification (~2x on every relocation). The
+    // seek still lands on the end tag for the assert below. No per-op flush either
+    // (see PutBlob)
+    File->MoveFPos(MxBfL+(int)sizeof(TCs));
     AssertBlobTag(File, btEnd);
-    // TODO : why do we need this flush?
-    File->Flush();                                     // write to disk
 
     // update stats
     Stats.Dels++;

@@ -224,6 +224,10 @@ private:
     TBlobPt FirstBlobPt;
     static TStr GetNrBlobBsFNm(const TStr& BlobBsFNm);
     TBlobBsStats Stats;
+    /// cached file length - this class is the sole writer of the file, so tracking
+    /// the length here avoids a 4-syscall TFRnd::GetFLen (2x fseek + 2x ftell) per
+    /// fresh allocation. Only appends (fresh-block PutBlob) change it
+    int CachedFLen;
 public:
     TGBlobBs(const TStr& BlobBsFNm, const TFAccess& _Access=faRdOnly, const int& _MxSegLen=-1);
     static PBlobBs New(const TStr& BlobBsFNm, const TFAccess& Access=faRdOnly, const int& MxSegLen=-1){
