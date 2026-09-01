@@ -176,7 +176,11 @@ public:
     THash(const THash& Hash):
         PortV(Hash.PortV), KeyDatV(Hash.KeyDatV), AutoSizeP(Hash.AutoSizeP),
         FFreeKeyId(Hash.FFreeKeyId), FreeKeys(Hash.FreeKeys){}
-    explicit THash(const int& ExpectVals, const bool& _AutoSizeP=false);
+    // AutoSizeP defaults to TRUE: with false, a table that outgrows its size
+    // estimate can never regrow its bucket array, so chains lengthen without
+    // bound and every probe degrades toward O(n/ports) - silently. ExpectVals
+    // remains a pre-sizing hint; pass false explicitly for a truly fixed table
+    explicit THash(const int& ExpectVals, const bool& _AutoSizeP=true);
     explicit THash(const TVec<TKeyDat<TKey, TDat> >& KeyDatV);
     explicit THash(TSIn& SIn):
         PortV(SIn), KeyDatV(SIn),
@@ -1375,6 +1379,10 @@ public:
     void Put(const TKey& Key, const TDat& Dat);
     /// get the Dat for Key from cache. return true if successful
     bool Get(const TKey& Key, TDat& Dat);
+    /// Combined Get + LRU refresh with a SINGLE hash lookup - the hit path of
+    /// the gix itemset cache used to pay Get (one lookup) followed by Put (a
+    /// second full lookup) on every access
+    bool GetAndRefresh(const TKey& Key, TDat& Dat);
     /// remove key from the cache
     void Del(const TKey& Key, const bool& DoEventCall = true);
     void ChangeKey(const TKey& OldKey, const TKey& NewKey);
@@ -1480,11 +1488,21 @@ bool TCache<TKey, TDat, THashFunc>::Get(const TKey& Key, TDat& Dat) {
     const int KeyId = KeyDatH.GetKeyId(Key);
     if (KeyId == -1){
         return false;
-    } 
+    }
     else {
         Dat = KeyDatH[KeyId].Val2;
         return true;
     }
+}
+
+template <class TKey, class TDat, class THashFunc>
+bool TCache<TKey, TDat, THashFunc>::GetAndRefresh(const TKey& Key, TDat& Dat) {
+    const int KeyId = KeyDatH.GetKeyId(Key);
+    if (KeyId == -1) { return false; }
+    TKeyLNDatPr& KeyLNDatPr = KeyDatH[KeyId];
+    TimeKeyL.PutFront(KeyLNDatPr.Val1);
+    Dat = KeyLNDatPr.Val2;
+    return true;
 }
 
 template <class TKey, class TDat, class THashFunc>

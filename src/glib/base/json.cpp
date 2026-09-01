@@ -414,7 +414,9 @@ PJsonVal TJsonVal::GetValFromLx(TILx &Lx)
         Lx.GetSym();
     }
     else if (Lx.Sym == syFlt) {
-        Val->PutNum(Lx.Flt);
+        // integer tokens carry an exact int64 sidecar - preserves ids above 2^53
+        if (Lx.FltIsIntP) { Val->PutExactIntNum(Lx.FltInt64); }
+        else { Val->PutNum(Lx.Flt); }
         Lx.GetSym();
     }
     else if (Lx.Sym == syQStr) {
@@ -509,76 +511,68 @@ PJsonVal TJsonVal::GetValFromStr(const TStr &JsonStr)
     return GetValFromSIn(SIn);
 }
 
+namespace {
+// append a \uXXXX escape (lowercase hex, same as the %04x format it replaces)
+inline void AddJsonUEsc(TChA& ChA, const int& UCh)
+{
+    static const char HexTbl[] = "0123456789abcdef";
+    char Bf[6] = { '\\', 'u', HexTbl[(UCh >> 12) & 0xF], HexTbl[(UCh >> 8) & 0xF],
+        HexTbl[(UCh >> 4) & 0xF], HexTbl[UCh & 0xF] };
+    ChA.AddBf(Bf, 6);
+}
+} // namespace
+
 void TJsonVal::AddEscapeChAFromStr(const TStr &Str, TChA &ChA)
 {
-    static TUniCodec UniCodec(uehIgnore, false, TUniCodec::DefaultReplacementChar, false);
-    // parse the UTF8 string
-    TIntV UStr;
-    UniCodec.DecodeUtf8(Str, UStr, false);
-    // escape the string
-    for (int ChN = 0; ChN < UStr.Len(); ChN++) {
-        const int UCh = UStr[ChN];
-        if (UCh < 0x80) {
-            // 7-bit ascii
-            const char Ch = (char)UCh;
-            switch (Ch) {
-            case '"':
-                ChA.AddCh('\\');
-                ChA.AddCh('"');
-                break;
-            case '\\':
-                ChA.AddCh('\\');
-                ChA.AddCh('\\');
-                break;
-            case '/':
-                ChA.AddCh('\\');
-                ChA.AddCh('/');
-                break;
-            case '\b':
-                ChA.AddCh('\\');
-                ChA.AddCh('b');
-                break;
-            case '\f':
-                ChA.AddCh('\\');
-                ChA.AddCh('f');
-                break;
-            case '\n':
-                ChA.AddCh('\\');
-                ChA.AddCh('n');
-                break;
-            case '\r':
-                ChA.AddCh('\\');
-                ChA.AddCh('r');
-                break;
-            case '\t':
-                ChA.AddCh('\\');
-                ChA.AddCh('t');
-                break;
+    // single pass over the UTF-8 bytes. The old implementation first decoded the
+    // WHOLE string into a heap TIntV and then ran a TStr::Fmt (a 10KB-stack
+    // vsnprintf plus a heap TStr) per escaped character. The output is
+    // byte-identical for valid UTF-8; malformed sequences are skipped, matching
+    // the old uehIgnore decoding
+    const uchar* Bf = (const uchar*)Str.CStr();
+    const int BfL = Str.Len();
+    int ChN = 0;
+    while (ChN < BfL) {
+        const uchar Ch = Bf[ChN];
+        if (Ch < 0x80) {
+            switch ((char)Ch) {
+            case '"': ChA.AddCh('\\'); ChA.AddCh('"'); break;
+            case '\\': ChA.AddCh('\\'); ChA.AddCh('\\'); break;
+            case '/': ChA.AddCh('\\'); ChA.AddCh('/'); break;
+            case '\b': ChA.AddCh('\\'); ChA.AddCh('b'); break;
+            case '\f': ChA.AddCh('\\'); ChA.AddCh('f'); break;
+            case '\n': ChA.AddCh('\\'); ChA.AddCh('n'); break;
+            case '\r': ChA.AddCh('\\'); ChA.AddCh('r'); break;
+            case '\t': ChA.AddCh('\\'); ChA.AddCh('t'); break;
             default:
-                if (UCh < 32) {
-                    ChA += "\\u";
-                    ChA += TStr::Fmt("%04x", UCh);
-                }
-                else
-                    ChA.AddCh(Ch);
+                if (Ch < 32) { AddJsonUEsc(ChA, (int)Ch); }
+                else { ChA.AddCh((char)Ch); }
             }
+            ChN++;
+            continue;
         }
-        else {
-            // escape
-            EAssertR(UCh <= 0x10FFFF, "Unable to JSON encode character U+" + TStr(UCh));
-            if (UCh <= 0xFFFF) {
-                ChA += "\\u";
-                ChA += TStr::Fmt("%04x", UCh);
-            }
-            else {
-                // U+10000 .. U+10FFFF
-                int UChH = 0xD800 + ((UCh - 0x010000) >> 10);
-                int UChL = 0xDC00 + ((UCh - 0x010000) & 0x3FF);
-                ChA += "\\u";
-                ChA += TStr::Fmt("%04x", UChH);
-                ChA += "\\u";
-                ChA += TStr::Fmt("%04x", UChL);
-            }
+        // decode one UTF-8 sequence inline
+        int UCh; int Extra;
+        if ((Ch & 0xE0) == 0xC0) { UCh = Ch & 0x1F; Extra = 1; }
+        else if ((Ch & 0xF0) == 0xE0) { UCh = Ch & 0x0F; Extra = 2; }
+        else if ((Ch & 0xF8) == 0xF0) { UCh = Ch & 0x07; Extra = 3; }
+        else { ChN++; continue; } // stray continuation/invalid lead byte
+        if (ChN + Extra >= BfL) { ChN++; continue; } // truncated sequence
+        bool ValidP = true;
+        for (int ExtraN = 1; ExtraN <= Extra; ExtraN++) {
+            const uchar ContCh = Bf[ChN + ExtraN];
+            if ((ContCh & 0xC0) != 0x80) { ValidP = false; break; }
+            UCh = (UCh << 6) | (ContCh & 0x3F);
+        }
+        if (!ValidP) { ChN++; continue; }
+        ChN += Extra + 1;
+        if (UCh <= 0xFFFF) {
+            AddJsonUEsc(ChA, UCh);
+        } else {
+            EAssertR(UCh <= 0x10FFFF, "Unable to JSON encode character U+" + TInt::GetStr(UCh));
+            // U+10000 .. U+10FFFF as a surrogate pair
+            AddJsonUEsc(ChA, 0xD800 + ((UCh - 0x010000) >> 10));
+            AddJsonUEsc(ChA, 0xDC00 + ((UCh - 0x010000) & 0x3FF));
         }
     }
 }
@@ -608,6 +602,10 @@ void TJsonVal::GetChAFromVal(const PJsonVal &Val, TChA &ChA)
     case jvtNum:
         if (TFlt::IsNan(Val->GetNum())) {
             ChA += "null";
+        }
+        else if (Val->IsExactInt()) {
+            // print parsed integers exactly - %.16g would round ids above 2^53
+            ChA += TInt64::GetStr(Val->GetInt64());
         }
         else {
             ChA += TStr::Fmt("%.16g", Val->GetNum());

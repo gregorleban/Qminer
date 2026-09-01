@@ -182,8 +182,10 @@ TStr TLxSymStr::GetSymStr(const TLxSym& Sym){
 }
 
 TLxSym TLxSymStr::GetSSym(const TStr& Str){
-  static TStrIntH StrToLxSymH(100);
-  if (StrToLxSymH.Len()==0){
+  // C++11 magic static with the POPULATION inside the initializer: the old
+  // "if (Len()==0) { AddDat... }" guard let two threads populate concurrently
+  static const TStrIntH StrToLxSymH = [](){
+    TStrIntH StrToLxSymH(100);
     StrToLxSymH.AddDat(PeriodStr, syPeriod);
     StrToLxSymH.AddDat(DPeriodStr, syDPeriod);
     StrToLxSymH.AddDat(CommaStr, syComma);
@@ -212,7 +214,8 @@ TLxSym TLxSymStr::GetSSym(const TStr& Str){
     StrToLxSymH.AddDat(RBracketStr, syRBracket);
     StrToLxSymH.AddDat(LBraceStr, syLBrace);
     StrToLxSymH.AddDat(RBraceStr, syRBrace);
-  }
+    return StrToLxSymH;
+  }();
   int KeyId=StrToLxSymH.GetKeyId(Str);
   if (KeyId==-1){
     return syUndef;
@@ -242,25 +245,27 @@ bool TLxSymStr::IsSep(const TLxSym& PrevSym, const TLxSym& Sym){
 TILxSymSt::TILxSymSt():
   Sym(syUndef),
   Str(), UcStr(), CmtStr(),
-  Bool(false), Int(0), Flt(0),
+  Bool(false), Int(0), Flt(0), FltIsIntP(false), FltInt64(0),
   SymLnN(-1), SymLnChN(-1), SymChN(-1){}
 
 TILxSymSt::TILxSymSt(const TILxSymSt& SymSt):
   Sym(SymSt.Sym),
   Str(SymSt.Str), UcStr(SymSt.UcStr), CmtStr(SymSt.CmtStr),
-  Bool(SymSt.Bool), Int(SymSt.Int), Flt(SymSt.Flt),
+  Bool(SymSt.Bool), Int(SymSt.Int), Flt(SymSt.Flt), FltIsIntP(SymSt.FltIsIntP), FltInt64(SymSt.FltInt64),
   SymLnN(SymSt.SymLnN), SymLnChN(SymSt.SymLnChN), SymChN(SymSt.SymChN){Fail;}
 
 TILxSymSt::TILxSymSt(TILx& Lx):
   Sym(Lx.Sym),
   Str(Lx.Str), UcStr(Lx.UcStr), CmtStr(Lx.CmtStr),
   Bool(Lx.Bool), Int(Lx.Int), Flt(Lx.Flt),
+  FltIsIntP(Lx.FltIsIntP), FltInt64(Lx.FltInt64),
   SymLnN(Lx.SymLnN), SymLnChN(Lx.SymLnChN), SymChN(Lx.SymChN){}
 
 void TILxSymSt::Restore(TILx& Lx){
   Lx.Sym=Sym;
   Lx.Str=Str; Lx.UcStr=UcStr; Lx.CmtStr=CmtStr;
   Lx.Bool=Bool; Lx.Int=Int; Lx.Flt=Flt;
+  Lx.FltIsIntP=FltIsIntP; Lx.FltInt64=FltInt64;
   Lx.SymLnN=SymLnN; Lx.SymLnChN=SymLnChN; Lx.SymChN=SymChN;}
 
 /////////////////////////////////////////////////
@@ -269,13 +274,14 @@ TILx::TILx(const PSIn& _SIn, const TFSet& OptSet, const TLxChDefTy& ChDefTy):
   ChDef(TLxChDef::GetChDef(ChDefTy)),
   SIn(_SIn), RSIn(*SIn),
   PrevCh(' '), Ch(' '), LnN(0), LnChN(0-1), ChN(0-1),
+  LxBfC(0), LxBfL(0),
   PrevSymStStack(), RwStrH(50),
   IsCmtAlw(false), IsRetEoln(false), IsSigNum(false),
   IsUniStr(false), IsCsSens(false), IsExcept(false),
   IsTabSep(false), IsList(false), IsIgnoreEscape(false),
   Sym(syUndef),
   Str(), UcStr(), CmtStr(),
-  Bool(false), Int(0), Flt(0),
+  Bool(false), Int(0), Flt(0), FltIsIntP(false), FltInt64(0),
   SymLnN(-1), SymLnChN(-1), SymChN(-1){
   for (int Opt=0; Opt<iloMx; Opt++){
     if (OptSet.In(Opt)){SetOpt(Opt, true);}}
@@ -308,6 +314,9 @@ TLxSym TILx::AddRw(const TStr& Str){
 PSIn TILx::GetSIn(const char& SepCh){
   IAssert(PrevSymStStack.Empty());
   while ((Ch!=TCh::EofCh)&&(Ch!=SepCh)){GetCh();}
+  // GetCh reads ahead in blocks; handing out the underlying stream with
+  // undrained buffered characters would silently skip them
+  EAssertR(LxBfC==LxBfL, "TILx::GetSIn: undrained lexer read-ahead buffer");
   return SIn;
 }
 
@@ -394,6 +403,7 @@ TLxSym TILx::GetSym(const TFSet& Expect){
           GetCh(); break;
         } else {
           GetCh();
+          ProcessEscape:
           switch (Ch){
             case '"': Str.AddCh(Ch); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
             case '\\': Str.AddCh(Ch); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
@@ -406,14 +416,52 @@ TLxSym TILx::GetSym(const TFSet& Expect){
             case 't': Str.AddCh('\t'); if (!IsCsSens){UcStr.AddCh(ChDef.GetUc(Ch));} GetCh(); break;
             case 'u': {
               // unicode character, represented using 4 hexadecimal digits
-              GetCh(); EAssertR(TCh::IsHex(Ch), "Invalid hexadecimal digit in unicode escape");
-              int UChCd = TCh::GetHex(Ch);
-              GetCh(); EAssertR(TCh::IsHex(Ch), "Invalid hexadecimal digit in unicode escape");
-              UChCd = 16 * UChCd + TCh::GetHex(Ch);
-              GetCh(); EAssertR(TCh::IsHex(Ch), "Invalid hexadecimal digit in unicode escape");
-              UChCd = 16 * UChCd + TCh::GetHex(Ch);
-              GetCh(); EAssertR(TCh::IsHex(Ch), "Invalid hexadecimal digit in unicode escape");
-              UChCd = 16 * UChCd + TCh::GetHex(Ch);
+              int UChCd = 0;
+              for (int HexN = 0; HexN < 4; HexN++) {
+                GetCh(); EAssertR(TCh::IsHex(Ch), "Invalid hexadecimal digit in unicode escape");
+                UChCd = 16 * UChCd + TCh::GetHex(Ch);
+              }
+              // Surrogate pairs: JSON encodes codepoints above U+FFFF as TWO
+              // consecutive \uXXXX escapes. Encoding the halves independently
+              // produced CESU-8 (invalid UTF-8 - every emoji sent the standard
+              // way); unpaired halves now become U+FFFD
+              if (UChCd >= 0xD800 && UChCd <= 0xDBFF) {
+                GetCh();
+                if (Ch == '\\') {
+                  GetCh();
+                  if (Ch == 'u') {
+                    int LoChCd = 0;
+                    for (int HexN = 0; HexN < 4; HexN++) {
+                      GetCh(); EAssertR(TCh::IsHex(Ch), "Invalid hexadecimal digit in unicode escape");
+                      LoChCd = 16 * LoChCd + TCh::GetHex(Ch);
+                    }
+                    if (LoChCd >= 0xDC00 && LoChCd <= 0xDFFF) {
+                      // valid pair - combine into the real codepoint
+                      UChCd = 0x10000 + ((UChCd - 0xD800) << 10) + (LoChCd - 0xDC00);
+                    } else {
+                      // unpaired high surrogate followed by another \u escape
+                      TUnicode::EncodeUtf8(0xFFFD, Str);
+                      if (!IsCsSens){TUnicode::EncodeUtf8(0xFFFD, UcStr);}
+                      UChCd = (LoChCd == 0) ? 32 :
+                          ((LoChCd >= 0xD800 && LoChCd <= 0xDFFF) ? 0xFFFD : LoChCd);
+                    }
+                    TUnicode::EncodeUtf8(UChCd, Str);
+                    if (!IsCsSens){TUnicode::EncodeUtf8(UChCd, UcStr);}
+                    GetCh(); break;
+                  }
+                  // '\' followed by a different escape: emit U+FFFD for the
+                  // unpaired high surrogate and reprocess the pending escape
+                  TUnicode::EncodeUtf8(0xFFFD, Str);
+                  if (!IsCsSens){TUnicode::EncodeUtf8(0xFFFD, UcStr);}
+                  goto ProcessEscape;
+                }
+                // unpaired high surrogate followed by a plain character: emit
+                // U+FFFD and let the outer loop process the current character
+                TUnicode::EncodeUtf8(0xFFFD, Str);
+                if (!IsCsSens){TUnicode::EncodeUtf8(0xFFFD, UcStr);}
+                break;
+              }
+              if (UChCd >= 0xDC00 && UChCd <= 0xDFFF) { UChCd = 0xFFFD; } // lone low surrogate
               // get as UTF8 encoded characters
               if (UChCd == 0) { UChCd = 32; }
               TUnicode::EncodeUtf8(UChCd, Str);
@@ -449,8 +497,20 @@ TLxSym TILx::GetSym(const TFSet& Expect){
       if (!IsCsSens){UcStr=Str;}
       if (IntP&&(Expect.In(syInt))){
         Sym=syInt; Int=atoi(Str.CStr());
+        FltIsIntP=false; FltInt64=0;
       } else {
         Sym=syFlt; Flt=atof(Str.CStr());
+        // exact-integer sidecar (see the member doc in lx.h): up to 18 digits
+        // always fit an int64, so the value survives above 2^53 where the
+        // double starts rounding
+        FltIsIntP=false; FltInt64=0;
+        if (IntP){
+          const char* NumCStr=Str.CStr();
+          const int DigitLen=Str.Len()-((NumCStr[0]=='-'||NumCStr[0]=='+')?1:0);
+          if (DigitLen>0 && DigitLen<=18){
+            FltIsIntP=true; FltInt64=strtoll(NumCStr, NULL, 10);
+          }
+        }
       }
     } else
     if ((Ch==TCh::CrCh)||(Ch==TCh::LfCh)){

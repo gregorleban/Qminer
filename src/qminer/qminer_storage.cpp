@@ -587,7 +587,7 @@ TInMemStorage::TInMemStorage(const TStr& _FNm, const PBlobBs& _BlobStorage, cons
 TInMemStorage::~TInMemStorage() {
     if (Access != faRdOnly) {
         // store dirty vectors
-        for (int i = 0; i < ValV.Len(); i++) {
+        for (int64 i = 0; i < ValV.Len(); i++) { // int64: ValV.Len() is int64
             SaveRec(i);
         }
         // save vector
@@ -731,7 +731,7 @@ int TInMemStorage::PartialFlush(int WndInMsec) {
 }
 
 void TInMemStorage::LoadAll() {
-    for (int i = 0; i < ValV.Len(); i++) {
+    for (int64 i = 0; i < ValV.Len(); i++) { // int64: ValV.Len() is int64
         LoadRec(i);
     }
 }
@@ -798,9 +798,12 @@ TStr TRecSerializator::GetErrorMsg(const char* Bf, const int& BfL, const TFieldS
         FieldSerialDesc.Offset);
 }
 const TRecSerializator::TFieldSerialDesc& TRecSerializator::GetFieldSerialDesc(const int& FieldId) const {
-    QmAssertR(FieldIdToSerialDescIdH.IsKey(FieldId),
-        "Field with ID not found: " + TInt::GetStr(FieldId));
-    return FieldSerialDescV[FieldIdToSerialDescIdH.GetDat(FieldId)];
+    // one bounds-checked array load instead of two hash probes (IsKey + GetDat) -
+    // this sits under every single field get/set
+    const int DescId = (FieldId >= 0 && FieldId < FieldIdToSerialDescIdV.Len()) ?
+        FieldIdToSerialDescIdV[FieldId].Val : -1;
+    QmAssertR(DescId != -1, "Field with ID not found: " + TInt::GetStr(FieldId));
+    return FieldSerialDescV[DescId];
 }
 
 //////////////////////
@@ -1620,6 +1623,24 @@ void TRecSerializator::InitFromFields(const TWPt<TToaster>& _Toaster, const TFie
     }
     // var-index part consists of integers that are offsets for specific field
     VarContentPartOffset = VarIndexPartOffset + VarFieldCount * sizeof(int);
+    BuildFieldIdToSerialDescIdV();
+}
+
+void TRecSerializator::BuildFieldIdToSerialDescIdV() {
+    // dense FieldId -> desc-id lookup (field ids are small and dense): one
+    // bounds-checked array load instead of two hash probes per field access -
+    // GetFieldSerialDesc sits under every GetFieldX/SetFieldX/IsFieldNull.
+    // Rebuilt from the (serialized) hash on construction and load, never saved
+    FieldIdToSerialDescIdV.Clr();
+    int MxFieldId = -1;
+    for (int KeyId = FieldIdToSerialDescIdH.FFirstKeyId(); FieldIdToSerialDescIdH.FNextKeyId(KeyId);) {
+        MxFieldId = MAX(MxFieldId, FieldIdToSerialDescIdH.GetKey(KeyId).Val);
+    }
+    FieldIdToSerialDescIdV.Gen(MxFieldId + 1);
+    FieldIdToSerialDescIdV.PutAll(-1);
+    for (int KeyId = FieldIdToSerialDescIdH.FFirstKeyId(); FieldIdToSerialDescIdH.FNextKeyId(KeyId);) {
+        FieldIdToSerialDescIdV[FieldIdToSerialDescIdH.GetKey(KeyId)] = FieldIdToSerialDescIdH[KeyId];
+    }
 }
 
 bool TRecSerializator::HasCompressedFields() const {
@@ -1658,6 +1679,7 @@ void TRecSerializator::Load(TSIn& SIn) {
         }
     }
     FieldIdToSerialDescIdH.Load(SIn);
+    BuildFieldIdToSerialDescIdV();
     CodebookH.Load(SIn);
     UseToast.Load(SIn);
     MxToastLen.Load(SIn);
@@ -4326,7 +4348,8 @@ void TStoreImpl::RunVerificationForRecord(const uint64& RecId) {
 /// TStorePbBlob
 
 template <class TRecPtMap>
-uint64 TStorePbBlobT<TRecPtMap>::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {// check if we are given reference to existing record
+uint64 TStorePbBlobT<TRecPtMap>::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
+    PgBfWriteVersion++; // invalidate the GetPgBf per-record memo// check if we are given reference to existing record
     try {
         // parse out record id, if referred directly
         {
@@ -4366,9 +4389,11 @@ uint64 TStorePbBlobT<TRecPtMap>::AddRec(const PJsonVal& RecVal, const bool& Trig
                     PrimaryRecId = PrimaryFltIdH.GetDat(FieldVal);
                 }
             } else if (PrimaryFieldType == oftTm) {
-                TStr TmStr = RecVal->GetObjStr(PrimaryField);
-                TTm Tm = TTm::GetTmFromWebLogDateTimeStr(TmStr, '-', ':', '.', 'T');
-                const uint64 FieldVal = TTm::GetMSecsFromTm(Tm);
+                // GetObjTmMSecs accepts both string timestamps and numeric msecs -
+                // the old string-only weblog parse threw on a numeric value, the
+                // throw was caught, and the record was SILENTLY dropped
+                // (TStoreImpl::AddRec has always used GetObjTmMSecs here)
+                const uint64 FieldVal = RecVal->GetObjTmMSecs(PrimaryField);
                 if (PrimaryTmMSecsIdH.IsKey(FieldVal)) {
                     PrimaryRecId = PrimaryTmMSecsIdH.GetDat(FieldVal);
                 }
@@ -4443,6 +4468,7 @@ uint64 TStorePbBlobT<TRecPtMap>::AddRec(const PJsonVal& RecVal, const bool& Trig
 /// Update existing record
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
+    PgBfWriteVersion++; // invalidate the GetPgBf per-record memo
     // figure out which storage fields are affected
     bool CacheP = false, MemP = false, PrimaryP = false;
     bool CacheVarP = false, MemVarP = false, KeyP = false;
@@ -4560,12 +4586,21 @@ void TStorePbBlobT<TRecPtMap>::UpdateRec(const uint64& RecId, const PJsonVal& Re
 /// Load page with with given record and return pointer to it
 template <class TRecPtMap>
 TThinMIn TStorePbBlobT<TRecPtMap>::GetPgBf(const uint64& RecId, const bool& UseMem) const {
+    // per-record memo: reading k fields of one record resolves the (huge) record
+    // map once instead of k times. Any write bumps PgBfWriteVersion, which makes
+    // every memo entry stale
+    const int SecN = UseMem ? 1 : 0;
+    if (LastPgBfVersion[SecN] == PgBfWriteVersion && LastPgBfRecId[SecN] == RecId) {
+        return UseMem ? DataMem->Get(LastPgBfPt[SecN]) : DataBlob->Get(LastPgBfPt[SecN]);
+    }
     if (UseMem) {
         const TPgBlobPt& PgPt = RecIdBlobPtHMem.GetDat(RecId);
+        LastPgBfRecId[SecN] = RecId; LastPgBfPt[SecN] = PgPt; LastPgBfVersion[SecN] = PgBfWriteVersion;
         TThinMIn min = DataMem->Get(PgPt);
         return min;
     } else {
         const TPgBlobPt& PgPt = RecIdBlobPtH.GetDat(RecId);
+        LastPgBfRecId[SecN] = RecId; LastPgBfPt[SecN] = PgPt; LastPgBfVersion[SecN] = PgBfWriteVersion;
         TThinMIn min = DataBlob->Get(PgPt);
         return min;
     }
@@ -4794,6 +4829,7 @@ PJsonVal TStorePbBlobT<TRecPtMap>::GetFieldJsonVal(const uint64& RecId, const in
 
 template <class TRecPtMap>
 TThinMIn TStorePbBlobT<TRecPtMap>::GetEditableField(const uint64& RecId, const int& FieldId) {
+    PgBfWriteVersion++; // invalidate the GetPgBf per-record memo (all setters come through here)
     if (FieldLocV[FieldId] == TStoreLoc::slDisk) {
         TPgBlobPt& PgPt = RecIdBlobPtH.GetDat(RecId);
         DataBlob->SetDirty(PgPt);
@@ -5553,6 +5589,7 @@ void TStorePbBlobT<TRecPtMap>::Defrag() {
 /// Deletes all records
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::DeleteAllRecs() {
+    PgBfWriteVersion++; // invalidate the GetPgBf per-record memo
     // if no records, nothing to do here
     if (Empty()) { return; }
     TEnv::Logger->OnStatusFmt("Deleting all (%d) records in %s", GetRecs(), GetStoreNm().CStr());
@@ -5634,6 +5671,7 @@ void TStorePbBlobT<TRecPtMap>::DeleteFirstRecs(const int& Recs) {
 
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::DeleteRecs(const TUInt64V& DelRecIdV, const int& MxTimeMSecs, const bool& AssertOK) {
+    PgBfWriteVersion++; // invalidate the GetPgBf per-record memo
     if (AssertOK) {
         // assert that DelRecIdV is valid
         TRecPtMap* Ht = (DataMemP ? &RecIdBlobPtHMem : &RecIdBlobPtH);
@@ -5720,6 +5758,7 @@ void TStorePbBlobT<TRecPtMap>::TrimRecIdMaps() {
 
 template <class TRecPtMap>
 void TStorePbBlobT<TRecPtMap>::BatchDeleteRecs(const TUInt64V& DelRecIdV, const TBatchDelProgressCb& OnProgress) {
+    PgBfWriteVersion++; // invalidate the GetPgBf per-record memo
     if (DelRecIdV.Empty()) { return; }
 
     TUInt64H RecIdSet(DelRecIdV.Len());
@@ -6086,8 +6125,8 @@ uint64 TStorePbBlobT<TRecPtMap>::DefragTo(const TStr& DestStoreFNm, const uint64
 
     // --- source-side accounting, so any record-count change after the rebuild
     // can be explained instead of discovered later as a shrunken store ---
-    const int SrcBlobRecs = RecIdBlobPtH.Len();
-    const int SrcMemRecs = RecIdBlobPtHMem.Len();
+    const int64 SrcBlobRecs = RecIdBlobPtH.Len();
+    const int64 SrcMemRecs = RecIdBlobPtHMem.Len();
     int SrcPrimaryRecs = -1;
     if (PrimaryFieldId != -1) {
         if (PrimaryFieldType == oftInt) { SrcPrimaryRecs = PrimaryIntIdH.Len(); }
@@ -6098,7 +6137,7 @@ uint64 TStorePbBlobT<TRecPtMap>::DefragTo(const TStr& DestStoreFNm, const uint64
     }
     TEnv::Logger->OnStatus(TStr::Fmt(
         "[Defrag] store '%s' source counts: GetRecs=%s, blob-hash=%s, mem-hash=%s, primary-hash=%s, RecIdCounter=%s",
-        GetStoreNm().CStr(), TStrUtil::GetStr(GetRecs()).CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr(SrcMemRecs).CStr(),
+        GetStoreNm().CStr(), TStrUtil::GetStr(GetRecs()).CStr(), TStrUtil::GetStr((uint64)SrcBlobRecs).CStr(), TStrUtil::GetStr((uint64)SrcMemRecs).CStr(),
         SrcPrimaryRecs >= 0 ? TStrUtil::GetStr(SrcPrimaryRecs).CStr() : "n/a",
         TStrUtil::GetStr(RecIdCounter).CStr()));
 
@@ -6167,8 +6206,8 @@ uint64 TStorePbBlobT<TRecPtMap>::DefragTo(const TStr& DestStoreFNm, const uint64
     };
     TEnv::Logger->OnStatus(TStr::Fmt(
         "[Defrag] store '%s' rebuilt counts: blob-hash %s -> %s, mem-hash %s -> %s",
-        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtH.Len()).CStr(),
-        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtHMem.Len()).CStr()));
+        GetStoreNm().CStr(), TStrUtil::GetStr((uint64)SrcBlobRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtH.Len()).CStr(),
+        TStrUtil::GetStr((uint64)SrcMemRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtHMem.Len()).CStr()));
     if (DataBlobP && DataMemP && SrcBlobRecs != SrcMemRecs) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Defrag] WARNING: store '%s' disk and in-memory sections disagree: %s records have only a disk part "
@@ -6479,12 +6518,12 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
     TDstMap NewRecIdBlobPtHMem;
 
     // source-side accounting (see DefragTo for the reasoning)
-    const int SrcBlobRecs = RecIdBlobPtH.Len();
-    const int SrcMemRecs = RecIdBlobPtHMem.Len();
+    const int64 SrcBlobRecs = RecIdBlobPtH.Len();
+    const int64 SrcMemRecs = RecIdBlobPtHMem.Len();
     TEnv::Logger->OnStatus(TStr::Fmt(
         "[Migrate] store '%s' source counts: GetRecs=%s, blob-hash=%s, mem-hash=%s, RecIdCounter=%s",
-        GetStoreNm().CStr(), TStrUtil::GetStr(GetRecs()).CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(),
-        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr(RecIdCounter).CStr()));
+        GetStoreNm().CStr(), TStrUtil::GetStr(GetRecs()).CStr(), TStrUtil::GetStr((uint64)SrcBlobRecs).CStr(),
+        TStrUtil::GetStr((uint64)SrcMemRecs).CStr(), TStrUtil::GetStr(RecIdCounter).CStr()));
 
     // collect the union of record ids of both sections in ascending id order
     TUInt64V RecIdV;
@@ -6587,8 +6626,8 @@ uint64 TStorePbBlobT<TRecPtMap>::MigrateSchemaToT(const TStr& DestStoreFNm, cons
     };
     TEnv::Logger->OnStatus(TStr::Fmt(
         "[Migrate] store '%s' rebuilt counts: blob-hash %s -> %s, mem-hash %s -> %s",
-        GetStoreNm().CStr(), TStrUtil::GetStr(SrcBlobRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtH.Len()).CStr(),
-        TStrUtil::GetStr(SrcMemRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtHMem.Len()).CStr()));
+        GetStoreNm().CStr(), TStrUtil::GetStr((uint64)SrcBlobRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtH.Len()).CStr(),
+        TStrUtil::GetStr((uint64)SrcMemRecs).CStr(), TStrUtil::GetStr((uint64)NewRecIdBlobPtHMem.Len()).CStr()));
     if (DroppedRecs > 0) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Migrate] WARNING: store '%s' dropped %s records that have data in only one of the two sections "

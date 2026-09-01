@@ -215,13 +215,16 @@ void TBlobBs::GetFFreeBlobPtV(const PFRnd& File, TBlobPtV& FFreeBlobPtV){
 }
 
 void TBlobBs::GetAllocInfo(const int& BfL, const TIntV& BlockLenV, int& MxBfL, int& FFreeBlobPtN){
-    int BlockLenN = 0;
-    // find the index in BlockLenV where the available space is more than BfL
-    while (BlockLenN < BlockLenV.Len() && BfL > BlockLenV[BlockLenN]) {
-        BlockLenN++;
+    // binary search for the first class >= BfL - this runs on every blob put AND
+    // every delete, and used to scan the ~283-entry table linearly
+    int LoN = 0; int HiN = BlockLenV.Len() - 1; int BlockLenN = BlockLenV.Len();
+    while (LoN <= HiN) {
+        const int MidN = LoN + (HiN - LoN) / 2;
+        if (BlockLenV[MidN] < BfL) { LoN = MidN + 1; }
+        else { BlockLenN = MidN; HiN = MidN - 1; }
     }
     EAssert(BlockLenN<BlockLenV.Len());
-    // se the return info for the available size and index
+    // set the return info for the available size and index
     MxBfL = BlockLenV[BlockLenN];
     FFreeBlobPtN = BlockLenN;
 }
@@ -687,17 +690,17 @@ TBlobPt TMBlobBs::PutBlob(const PSIn& SIn){
     EAssert((Access==faCreate)||(Access==faUpdate)||(Access==faRestore));
     // buffer size that we need to store
     const int BfL = SIn->Len();
-    // segment index from which we will start to check if we can insert data into
-    uint16 DestSegN = 0;
-    int BlockSize = 0;
-    for (int KeyId = BlockSizeToSegH.FFirstKeyId(); BlockSizeToSegH.FNextKeyId(KeyId);) {
-        BlockSize = BlockSizeToSegH.GetKey(KeyId);
-        // if we found a block size that could store the buffer
-        if (BlockSize > BfL) {
-            DestSegN = BlockSizeToSegH[KeyId];
-            break;
-        }
-    }
+    // resolve the size class this blob will land in and look up its segment hint
+    // with one hash probe. The old code walked the whole hint hash looking for
+    // the first class STRICTLY greater than BfL - exact-class blobs matched the
+    // wrong entry and the success below was recorded under that wrong key, so in
+    // practice every fresh allocation scanned the segments from 0 (with a
+    // 4-syscall GetFLen per full segment - hundreds of segments on a yearly
+    // instance, millions of allocations in a rebuild). DelBlob records freed
+    // blocks under the exact class, which now matches this lookup
+    int BlockSize; int FFreeBlobPtN;
+    GetAllocInfo(BfL, BlockLenV, BlockSize, FFreeBlobPtN);
+    uint16 DestSegN = (uint16) BlockSizeToSegH.GetDatOrDef(BlockSize, 0);
     // DestSegN should now be an index of segment from which we will start checking if the segment has place for the given data
     // if not, the index will be increased
     TBlobPt BlobPt;

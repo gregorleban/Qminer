@@ -2994,17 +2994,10 @@ PRecFilter TRecFilterByIndexJoin::New(const TWPt<TBase>& Base, const PJsonVal& P
 }
 
 bool TRecFilterByIndexJoin::Filter(const TRec& Rec) const {
-    // perform join lookup
-    TUInt64IntKdV RecIdFqV; Index->SearchGixJoin(JoinKeyId, Rec.GetRecId(), RecIdFqV);
-    /// filter
-    for (int RecIdFqN = 0; RecIdFqN < RecIdFqV.Len(); RecIdFqN++) {
-        const uint64 RecId = RecIdFqV[RecIdFqN].Key;
-        if ((MinVal <= RecId) && (RecId <= MaxVal)) {
-            return true;
-        }
-    }
-    // if nothing from the range, give up
-    return false;
+    // range-limited join probe: loads only the posting-list children overlapping
+    // [MinVal, MaxVal] instead of materializing and merging the record's whole
+    // join list (which could be millions of items) per filtered record
+    return Index->HasGixJoinInRange(JoinKeyId, Rec.GetRecId(), MinVal, MaxVal);
 }
 
 ///////////////////////////////
@@ -4080,10 +4073,14 @@ PRecSet TRecSet::DoJoin(const TWPt<TBase>& Base, const int& JoinId, const int& S
     // get join info
     AssertR(Store->IsJoinId(JoinId), "Wrong Join ID");
     const TJoinDesc& JoinDesc = Store->GetJoinDesc(JoinId);
-    // prepare joined record sample
-    TUInt64IntKdV SampleRecIdKdV;
+    // prepare joined record sample. SampleSize == -1 means "all records": use the
+    // member vector directly instead of copying the whole (possibly multi-million
+    // entry) record set just to iterate it
+    TUInt64IntKdV SampleRecIdKdMem;
     const bool UseFqP = IgnoreFqP ? false : FqP.Val;
-    GetSampleRecIdV(SampleSize, UseFqP, SampleRecIdKdV);
+    const bool AllRecsP = (SampleSize == -1);
+    if (!AllRecsP) { GetSampleRecIdV(SampleSize, UseFqP, SampleRecIdKdMem); }
+    const TUInt64IntKdV& SampleRecIdKdV = AllRecsP ? RecIdFqV : SampleRecIdKdMem;
     const int SampleRecs = SampleRecIdKdV.Len();
     // do the join
     TUInt64IntKdV JoinRecIdFqV;
@@ -4121,8 +4118,8 @@ PRecSet TRecSet::DoJoin(const TWPt<TBase>& Base, const int& JoinId, const int& S
         // unknown join type
         throw TQmExcept::New("Unsupported join type for join " + JoinDesc.GetJoinNm() + "!");
     }
-    // create new RecSet
-    return new TRecSet(JoinDesc.GetJoinStore(Base), JoinRecIdFqV, true);
+    // create new RecSet (moving the joined vector in instead of copying it)
+    return TRecSet::NewByMove(JoinDesc.GetJoinStore(Base), JoinRecIdFqV, true);
 }
 
 PRecSet TRecSet::DoJoin(const TWPt<TBase>& Base, const TStr& JoinNm, const int& SampleSize, const bool& IgnoreFqP) const {
@@ -5640,7 +5637,8 @@ void TIndex::TQmGixItemPos::Save(TSOut& SOut) const {
 }
 
 void TIndex::TQmGixItemPos::SetRecId(const uint64& _RecId) {
-    Assert(_RecId < TUInt::Mx);
+    // always-on guard (was a debug-only Assert): the cast silently wraps past 2^32
+    EAssertR(_RecId < TUInt::Mx, "[TQmGixItemPos::SetRecId] RecId overflows the 32-bit pos-gix item");
     RecId = (uint)_RecId;
 }
 
@@ -6092,31 +6090,35 @@ void TIndex::IndexValue(const int& KeyId, const TStrV& WordStrV, const uint64& R
 void TIndex::IndexText(const int& KeyId, const TStr& TextStr, const uint64& RecId) {
     // tokenize string
     TUInt64V WordIdV; IndexVoc->AddWordIdV(KeyId, TextStr, WordIdV);
-    // aggregate by word
-    TUInt64H WordIdFqH;
-    for (int WordIdN = 0; WordIdN < WordIdV.Len(); WordIdN++) {
-        WordIdFqH.AddDat(WordIdV[WordIdN])++;
+    // aggregate by word: sort + run-length count over the small per-record token
+    // vector - a fresh THash per (record x key) was millions of short-lived hash
+    // tables per hour on the ingest path
+    WordIdV.Sort();
+    for (int WordIdN = 0; WordIdN < WordIdV.Len(); ) {
+        const uint64 WordId = WordIdV[WordIdN];
+        int WordFq = 1;
+        while (WordIdN + WordFq < WordIdV.Len() && (uint64)WordIdV[WordIdN + WordFq] == WordId) { WordFq++; }
+        IndexGix(KeyId, WordId, RecId, WordFq);
+        WordIdN += WordFq;
     }
-    // index words
-    int WordKeyId = WordIdFqH.FFirstKeyId();
-    while (WordIdFqH.FNextKeyId(WordKeyId)) {
-        IndexGix(KeyId, WordIdFqH.GetKey(WordKeyId), RecId, WordIdFqH[WordKeyId]);
-    }
+
 }
 
 void TIndex::IndexText(const int& KeyId, const TStrV& TokenV, const uint64& RecId) {
     // tokenize string
     TUInt64V WordIdV; IndexVoc->AddWordIdV(KeyId, TokenV, WordIdV);
-    // aggregate by word
-    TUInt64H WordIdFqH;
-    for (int WordIdN = 0; WordIdN < WordIdV.Len(); WordIdN++) {
-        WordIdFqH.AddDat(WordIdV[WordIdN])++;
+    // aggregate by word: sort + run-length count over the small per-record token
+    // vector - a fresh THash per (record x key) was millions of short-lived hash
+    // tables per hour on the ingest path
+    WordIdV.Sort();
+    for (int WordIdN = 0; WordIdN < WordIdV.Len(); ) {
+        const uint64 WordId = WordIdV[WordIdN];
+        int WordFq = 1;
+        while (WordIdN + WordFq < WordIdV.Len() && (uint64)WordIdV[WordIdN + WordFq] == WordId) { WordFq++; }
+        IndexGix(KeyId, WordId, RecId, WordFq);
+        WordIdN += WordFq;
     }
-    // index words
-    int WordKeyId = WordIdFqH.FFirstKeyId();
-    while (WordIdFqH.FNextKeyId(WordKeyId)) {
-        IndexGix(KeyId, WordIdFqH.GetKey(WordKeyId), RecId, WordIdFqH[WordKeyId]);
-    }
+
 }
 
 void TIndex::IndexJoin(const TWPt<TStore>& Store, const int& JoinId,
@@ -6137,8 +6139,12 @@ void TIndex::IndexGix(const int& KeyId, const uint64& WordId, const uint64& RecI
     case oikgtFull:
         GixFull->AddItem(TKeyWord(KeyId, WordId), TQmGixItemFull(RecId, RecFq)); break;
     case oikgtSmall:
+        // always-on guard: the (uint) cast silently WRAPS for RecId >= 2^32 and
+        // would corrupt the postings of an unrelated record
+        QmAssertR(RecId < (uint64)TUInt::Mx, "[TIndex::IndexGix] RecId overflows the 32-bit small-gix item");
         GixSmall->AddItem(TKeyWord(KeyId, WordId), TQmGixItemSmall((uint)RecId, (int16)RecFq)); break;
     case oikgtTiny:
+        QmAssertR(RecId < (uint64)TUInt::Mx, "[TIndex::IndexGix] RecId overflows the 32-bit tiny-gix item");
         GixTiny->AddItem(TKeyWord(KeyId, WordId), TQmGixItemTiny((uint)RecId)); break;
     default:
         throw TQmExcept::New("[TIndex::Index] Unsupported gix type!");
@@ -6175,16 +6181,16 @@ void TIndex::DeleteText(const int& KeyId, const TStr& TextStr, const uint64& Rec
     // tokenize string WITHOUT adding to the vocabulary (like DeleteTextPos):
     // unknown words come back as TUInt64::Mx and were never indexed anyway
     TUInt64V WordIdV; IndexVoc->GetWordIdV(KeyId, TextStr, WordIdV);
-    // aggregate by word, skipping unknown words
-    TUInt64H WordIdFqH;
-    for (int WordIdN = 0; WordIdN < WordIdV.Len(); WordIdN++) {
-        if (WordIdV[WordIdN] == TUInt64::Mx) { continue; }
-        WordIdFqH.AddDat(WordIdV[WordIdN])++;
-    }
-    // index words
-    int WordKeyId = WordIdFqH.FFirstKeyId();
-    while (WordIdFqH.FNextKeyId(WordKeyId)) {
-        DeleteGix(KeyId, WordIdFqH.GetKey(WordKeyId), RecId, WordIdFqH[WordKeyId]);
+    // aggregate by word with sort + run-length count (see IndexText), skipping
+    // unknown words - TUInt64::Mx sorts last, so the loop just stops there
+    WordIdV.Sort();
+    for (int WordIdN = 0; WordIdN < WordIdV.Len(); ) {
+        const uint64 WordId = WordIdV[WordIdN];
+        if (WordId == TUInt64::Mx) { break; }
+        int WordFq = 1;
+        while (WordIdN + WordFq < WordIdV.Len() && (uint64)WordIdV[WordIdN + WordFq] == WordId) { WordFq++; }
+        DeleteGix(KeyId, WordId, RecId, WordFq);
+        WordIdN += WordFq;
     }
 }
 
@@ -6201,6 +6207,9 @@ void TIndex::DeleteGix(const int& KeyId, const uint64& WordId, const uint64& Rec
     QmAssertR(!IsReadOnly(), "Cannot edit read-only index!");
     // check which Gix to use
     const TIndexKeyGixType GixType = GetGixType(KeyId);
+    // always-on guard for the 32-bit item types (the (uint) casts below silently wrap)
+    QmAssertR(GixType == oikgtFull || RecId < (uint64)TUInt::Mx,
+        "[TIndex::DeleteGix] RecId overflows the 32-bit gix item");
     // are we deleting all items or just few occurences?
     if (RecFq == TInt::Mx) {
         // full delete from index
@@ -6853,6 +6862,46 @@ void TIndex::SearchGixJoin(const int& KeyId, const uint64& RecId, TUInt64IntKdV&
         break;
     default:
         throw TQmExcept::New("[TIndex::SearchGixJoin] Unsupported gix type!");
+    }
+}
+
+bool TIndex::HasGixJoinInRange(const int& KeyId, const uint64& RecId, const uint64& MinRecId, const uint64& MaxRecId) const {
+    const TKeyWord KeyWord(KeyId, RecId);
+    const TIndexKeyGixType GixType = GetGixType(KeyId);
+    switch (GixType) {
+    case oikgtFull: {
+        TVec<TQmGixItemFull> ItemV;
+        const TQmGixItemFull MnItem(MinRecId, 0);
+        const TQmGixItemFull MxItem((MaxRecId == TUInt64::Mx) ? TUInt64::Mx : MaxRecId + 1, 0);
+        GixFull->GetItemVInRange(KeyWord, MnItem, MxItem, ItemV);
+        for (const TQmGixItemFull& Item : ItemV) {
+            if (MinRecId <= Item.Key && Item.Key <= MaxRecId) { return true; }
+        }
+        return false; }
+    case oikgtSmall: {
+        TVec<TQmGixItemSmall> ItemV;
+        const uint MnRecId32 = (uint)MIN(MinRecId, (uint64)TUInt::Mx);
+        const uint64 MxRecIdP1 = (MaxRecId >= (uint64)TUInt::Mx) ? (uint64)TUInt::Mx : MaxRecId + 1;
+        const TQmGixItemSmall MnItem(MnRecId32, 0);
+        const TQmGixItemSmall MxItem((uint)MxRecIdP1, 0);
+        GixSmall->GetItemVInRange(KeyWord, MnItem, MxItem, ItemV);
+        for (const TQmGixItemSmall& Item : ItemV) {
+            const uint64 ItemRecId = (uint64)(uint)Item.Key;
+            if (MinRecId <= ItemRecId && ItemRecId <= MaxRecId) { return true; }
+        }
+        return false; }
+    case oikgtTiny: {
+        TVec<TQmGixItemTiny> ItemV;
+        const uint MnRecId32 = (uint)MIN(MinRecId, (uint64)TUInt::Mx);
+        const uint64 MxRecIdP1 = (MaxRecId >= (uint64)TUInt::Mx) ? (uint64)TUInt::Mx : MaxRecId + 1;
+        GixTiny->GetItemVInRange(KeyWord, TQmGixItemTiny(MnRecId32), TQmGixItemTiny((uint)MxRecIdP1), ItemV);
+        for (const TQmGixItemTiny& Item : ItemV) {
+            const uint64 ItemRecId = (uint64)(uint)Item.Val;
+            if (MinRecId <= ItemRecId && ItemRecId <= MaxRecId) { return true; }
+        }
+        return false; }
+    default:
+        throw TQmExcept::New("[TIndex::HasGixJoinInRange] Unsupported gix type!");
     }
 }
 

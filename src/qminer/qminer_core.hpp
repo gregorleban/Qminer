@@ -70,8 +70,11 @@ template <class TQmGixItem>
 void TIndex::TQmGixSumItemHandler<TQmGixItem>::Merge(TVec<TQmGixItem>& ItemV, const bool& IsLocal) const {
     if (ItemV.Empty()) { return; } // nothing to do in this case
     if (!ItemV.IsSorted()) { ItemV.Sort(); } // sort if not yet sorted
-    // merge counts
-    int LastItemN = 0; bool ZeroP = false;
+    // merge counts. ZeroP must be seeded from the FIRST item: a leading (or lone)
+    // non-positive item that no later equal-key item merges into was never
+    // inspected by the loop below and used to survive the merge (an Fq <= 0
+    // entry leaking into query results)
+    int LastItemN = 0; bool ZeroP = (ItemV[0].Dat <= 0);
     for (int ItemN = 1; ItemN < ItemV.Len(); ItemN++) {
         if (ItemV[ItemN].Key != ItemV[ItemN - 1].Key) {
             LastItemN++;

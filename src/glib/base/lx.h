@@ -115,6 +115,7 @@ private:
   TLxSym Sym;
   TStr Str, UcStr, CmtStr;
   bool Bool; int Int; double Flt;
+  bool FltIsIntP; int64 FltInt64; // exact-integer sidecar of Flt (see TILx)
   int SymLnN, SymLnChN, SymChN;
 public:
   TILxSymSt();
@@ -143,10 +144,24 @@ private:
   TStrIntH RwStrH;
   bool IsCmtAlw, IsRetEoln, IsSigNum, IsUniStr, IsCsSens;
   bool IsExcept, IsTabSep, IsList, IsIgnoreEscape;
+  /// block buffer for GetCh - the per-character path paid TWO virtual calls
+  /// (Eof + GetCh) per input byte, ~100K indirect calls for a 50KB document
+  char LxBf[1024];
+  int LxBfC, LxBfL;
   char GetCh(){
     Assert(Ch!=TCh::EofCh);
     PrevCh=Ch; LnChN++; ChN++;
-    Ch=((RSIn.Eof()) ? TCh::EofCh : RSIn.GetCh());
+    if (LxBfC==LxBfL){
+      const int Left=RSIn.Len();
+      if (Left<=0){
+        Ch=TCh::EofCh;
+        if (IsList){putchar(Ch);}
+        return Ch;
+      }
+      LxBfL=(Left<(int)sizeof(LxBf))?Left:(int)sizeof(LxBf);
+      RSIn.GetBf(LxBf, LxBfL); LxBfC=0;
+    }
+    Ch=LxBf[LxBfC++];
     if (IsList){putchar(Ch);}
     return Ch;
   }
@@ -155,6 +170,10 @@ public: // symbol state
   TLxSym Sym;
   TChA Str, UcStr, CmtStr;
   bool Bool; int Int; double Flt;
+  /// exact-integer sidecar of Flt: JSON numbers always lex as syFlt/double,
+  /// which silently rounds integers above 2^53 (large ids). When the token is a
+  /// plain integer of up to 18 digits, FltInt64 carries its exact value
+  bool FltIsIntP; int64 FltInt64;
   int SymLnN, SymLnChN, SymChN;
   bool QuoteP;
   char QuoteCh;

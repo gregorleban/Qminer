@@ -28,6 +28,11 @@ private:
   TJsonValType JsonValType;
   TBool Bool;
   TFlt Num;
+  /// Exact-integer sidecar of Num, set by the JSON parser for plain integer
+  /// tokens: doubles silently round integers above 2^53 (large ids). Transient -
+  /// deliberately NOT part of the binary Save/Load format
+  TBool ExactIntP;
+  TInt64 ExactInt;
   TStr Str;
   TJsonValV ValV;
   THash<TStr, PJsonVal> KeyValH;
@@ -47,7 +52,10 @@ public:
   // putting value
   void PutNull(){JsonValType=jvtNull;}
   void PutBool(const bool& BoolArg){ JsonValType = jvtBool; Bool = BoolArg; }
-  void PutNum(const double& _Num){JsonValType=jvtNum; Num=_Num;}
+  void PutNum(const double& _Num){JsonValType=jvtNum; Num=_Num; ExactIntP=false; ExactInt=0;}
+  /// Number with an exact integer value (used by the parser for integer tokens)
+  void PutExactIntNum(const int64& _ExactInt){
+    JsonValType=jvtNum; Num=(double)_ExactInt; ExactIntP=true; ExactInt=_ExactInt;}
   void PutStr(const TStr& _Str){JsonValType=jvtStr; Str=_Str;}
   void PutArr(){JsonValType=jvtArr;}
   void AddToArr(const PJsonVal& Val){
@@ -111,6 +119,8 @@ public:
   bool IsNull() const {return JsonValType==jvtNull;}
   bool IsBool() const {return JsonValType==jvtBool;}
   bool IsNum() const {return JsonValType==jvtNum;}
+  /// Number carrying an exact parsed integer (see ExactIntP)
+  bool IsExactInt() const {return JsonValType==jvtNum && ExactIntP;}
   bool IsStr() const {return JsonValType==jvtStr;}
   bool IsArr() const {return JsonValType==jvtArr;}
   bool IsObj() const {return JsonValType==jvtObj;}
@@ -120,9 +130,12 @@ public:
   bool GetBool() const {EAssert(IsBool()); return Bool;}
   double GetNum() const {EAssert(IsNum()); return Num;}
   int GetInt() const {EAssert(IsNum()); return TFlt::Round(Num);}
-  uint64 GetUInt64() const {EAssert(IsNum()); return (unsigned long long)(int64)(Num);}
+  uint64 GetUInt64() const {EAssert(IsNum());
+    if (ExactIntP) { return (uint64)ExactInt.Val; }
+    // a huge positive double cast through int64 was UB - cast directly when >= 0
+    return (Num >= 0) ? (uint64)(double)Num : (uint64)(int64)(double)Num;}
   uint GetUInt() const { EAssert(IsNum()); return uint(Num); }
-  int64 GetInt64() const { EAssert(IsNum()); return int64(Num); }
+  int64 GetInt64() const { EAssert(IsNum()); return ExactIntP ? ExactInt.Val : int64(Num); }
   const TStr& GetStr() const {EAssert(IsStr()); return Str;}
   uint64 GetTmMSecs() const { return TTm::GetMSecsFromTm(GetTm()); }
   TTm GetTm() const;

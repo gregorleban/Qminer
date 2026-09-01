@@ -512,8 +512,6 @@ private:
     void LoadChildVectors() const;
     /// Refresh total count
     void RecalcTotalCnt();
-    /// Check if there are any dirty child vectors with size outside the tolerance
-    int FirstDirtyChild();
     /// Get the index of the first child index from which onward the content needs to be merged
     /// There can be other children with smaller indices that are dirty, but we might not want to merge them
     int GetFirstChildToMerge();
@@ -724,6 +722,13 @@ private:
     /// flag indicating cache is full (mutable - the cache is refreshed/purged also
     /// from the const read path, see GetItemSet)
     mutable bool CacheFullP;
+    /// Blob pointers of itemsets that a write (AddItem/DelItem) left unmerged
+    /// since the last RefreshMemUsed. The refresh packs (DefLocal) exactly these
+    /// instead of walking the ENTIRE cache LRU - the full walk over millions of
+    /// merged itemsets was the bulk of the periodic multi-second cleanup stalls.
+    /// Best-effort: a stale entry (evicted or reused pointer) is skipped/harmless,
+    /// a missed entry only delays that itemset's local packing to its next Def
+    mutable THashSet<TBlobPt> UnmergedKeyIdSet;
     /// When set, dirty itemsets leaving the cache (LRU purge, DropFromCache) are
     /// DISCARDED instead of stored. Only safe when every itemset's blob content is
     /// current (call Flush() first): from then on itemsets only become dirty through
@@ -776,8 +781,6 @@ private:
     /// being fetched - the ER7 reindex stage "corruption")
     PGixItemSet GetItemSetNoRefresh(const TBlobPt& Pt) const;
 
-    /// get keyid of a given key and create it if does not exist
-    TBlobPt AddKeyId(const TKey& Key);
     /// get keyid of a given key
     TBlobPt GetKeyId(const TKey& Key) const;
 
@@ -891,7 +894,9 @@ public:
     PGixItemSet GetItemSet(const TKey& Key) const;
     /// Get items for given key
     void GetItemV(const TKey& Key, TVec<TItem>& ItemV) const;
-    /// Like GetItemV, but only returns items whose value lies in the half-open range [MinItem, MaxItem).
+    /// Like GetItemV, but skips loading child vectors that lie entirely outside the half-open
+    /// range [MinItem, MaxItem). NOTE: returns a SUPERSET of the range - whole overlapping
+    /// children plus the entire work buffer - so the caller must filter the returned items
     /// Uses per-child min/max metadata to avoid loading child vectors that fall entirely outside the range.
     void GetItemVInRange(const TKey& Key, const TItem& MinItem, const TItem& MaxItem, TVec<TItem>& ItemV) const;
     /// Go over all children and working buffer and pass it to HandleItemV function
@@ -950,7 +955,7 @@ public:
     /// Get amount of memory currently used
     int64 GetMemUsed() const;
     /// Get current cache increment size count
-    int GetNewCacheSizeInc() const { return NewCacheSizeInc; }
+    uint64 GetNewCacheSizeInc() const { return NewCacheSizeInc; } // was int - truncated the uint64 counter
     /// Get current cache size
     uint64 GetCacheSize() const { return ItemSetCache.GetMemUsed(); }
     /// Get maximal memory that can be used by the cache

@@ -66,19 +66,6 @@ void TGixItemSet<TKey, TItem>::RecalcTotalCnt() {
 }
 
 template <class TKey, class TItem>
-int TGixItemSet<TKey, TItem>::FirstDirtyChild() {
-    for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
-        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len < SplitLenMin) {
-            return ChildN;
-        }
-        if (ChildInfoV[ChildN].DirtyP && ChildInfoV[ChildN].Len > SplitLenMax) {
-            return ChildN;
-        }
-    }
-    return -1;
-}
-
-template <class TKey, class TItem>
 int TGixItemSet<TKey, TItem>::GetFirstChildToMerge() {
     // start checking either from 0 or 1 depending on whether we allow the first child to be
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
@@ -757,7 +744,7 @@ uint64 TGixItemSet<TKey, TItem>::DelItemsBelow(const TItem& MinKeepItem) {
 
 template <class TKey, class TItem>
 void TGixItemSet<TKey, TItem>::Clr() {
-    const int OldSize = GetMemUsed();
+    const uint64 OldSize = GetMemUsed(); // int truncated for >2GB itemsets and corrupted the cache-growth counter
     if (ChildInfoV.Len() > 0) {
         for (int i = 0; i < ChildInfoV.Len(); i++) {
             Gix->DeleteChildVector(ChildInfoV[i].Pt);
@@ -898,18 +885,6 @@ void TGixItemSet<TKey, TItem>::Print() const {
 template <class TKey, class TItem>
 void TGix<TKey, TItem>::AssertReadOnly() const {
     EAssertR(((Access == faCreate) || (Access == faUpdate)), "Index opened in Read-Only mode!");
-}
-
-template <class TKey, class TItem>
-TBlobPt TGix<TKey, TItem>::AddKeyId(const TKey& Key) {
-    if (IsKey(Key)) { return KeyIdH.GetDat(Key); }
-    // we don't have this key, create an empty item set and return pointer to it
-    AssertReadOnly(); // check if we are allowed to write
-    PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, &ItemHandler, this);
-    TBlobPt KeyId = EnlistItemSet(ItemSet);
-    KeyIdH.AddDat(Key, KeyId); // remember the new key and its Id
-    KeyIdHDirtyP = true;
-    return KeyId;
 }
 
 template <class TKey, class TItem>
@@ -1061,16 +1036,17 @@ TPt<TGixItemSet<TKey, TItem> > TGix<TKey, TItem>::GetItemSetNoRefresh(const TBlo
         return TGixItemSet<TKey, TItem>::New(TKey(), this);
     }
     PGixItemSet ItemSet;
-    if (!ItemSetCache.Get(KeyId, ItemSet)) {
+    // single-lookup hit path: GetAndRefresh fetches AND moves the entry to the
+    // top of the LRU (Get + Put paid two full hash lookups per itemset access)
+    if (!ItemSetCache.GetAndRefresh(KeyId, ItemSet)) {
         // have to load it from the hard drive...
         PSIn ItemSetSIn = ItemSetBlobBs->GetBlob(KeyId);
         ItemSet = TGixItemSet<TKey, TItem>::Load(*ItemSetSIn, this);
         // account the freshly loaded itemset as cache growth (TCache::Put adds it
         // to its running total, but that total is only trusted between refreshes)
         AddToNewCacheSizeInc(ItemSet->GetMemUsed());
+        ItemSetCache.Put(KeyId, ItemSet);
     }
-    // bring the itemset to the top of the cache
-    ItemSetCache.Put(KeyId, ItemSet);
     return ItemSet;
 }
 
@@ -1170,6 +1146,7 @@ void TGix<TKey, TItem>::AddItem(const TKey& Key, const TItem& Item) {
             "TGix::AddItem: the itemset loaded from blob " + KeyId.GetAddrStr() +
             " belongs to a different key (stale blob pointer)");
         ItemSet->AddItem(Item);
+        if (!ItemSet->IsMerged()) { UnmergedKeyIdSet.AddKey(KeyId); } // for the targeted DefLocal pass in RefreshMemUsed
     } else {
         // we don't have this key, create a new itemset and add new item immidiatelly
         PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, this);
@@ -1196,6 +1173,7 @@ void TGix<TKey, TItem>::AddItemV(const TKey& Key, const TVec<TItem>& ItemV) {
             "TGix::AddItemV: the itemset loaded from blob " + KeyId.GetAddrStr() +
             " belongs to a different key (stale blob pointer)");
         ItemSet->AddItemV(ItemV);
+        if (!ItemSet->IsMerged()) { UnmergedKeyIdSet.AddKey(KeyId); } // for the targeted DefLocal pass in RefreshMemUsed
     } else {
         // we don't have this key, create a new itemset and add new item immidiatelly
         PGixItemSet ItemSet = TGixItemSet<TKey, TItem>::New(Key, this);
@@ -1229,6 +1207,7 @@ void TGix<TKey, TItem>::DelItem(const TKey& Key, const TItem& Item) {
             " belongs to a different key (stale blob pointer)");
         // clear the items from the ItemSet
         ItemSet->DelItem(Item);
+        UnmergedKeyIdSet.AddKey(KeyId); // deletes always leave the itemset unmerged
         if (ItemSet->Empty()) {
             DeleteItemSet(Key);
         }
@@ -1249,6 +1228,7 @@ void TGix<TKey, TItem>::DelItemV(const TKey& Key, const TVec<TItem>& DelV) {
             " belongs to a different key (stale blob pointer)");
         // enqueue all deletes with a single flush
         ItemSet->DelItemV(DelV);
+        UnmergedKeyIdSet.AddKey(KeyId); // deletes always leave the itemset unmerged
         if (ItemSet->Empty()) {
             DeleteItemSet(Key);
         }
@@ -1266,6 +1246,11 @@ uint64 TGix<TKey, TItem>::DelItemsBelow(const TKey& Key, const TItem& MinKeepIte
     EAssertR(ItemSet->GetKey() == Key,
         "TGix::DelItemsBelow: the itemset loaded from blob " + KeyId.GetAddrStr() +
         " belongs to a different key (stale blob pointer)");
+    // the itemset-level DelItemsBelow declines (returns 0) on an unmerged itemset
+    // or pending delete markers - a cached itemset with markers from an earlier
+    // DelItemV would silently skip the whole retention pass. Def() first: it is
+    // content-preserving and a no-op when already merged
+    ItemSet->Def();
     const uint64 Removed = ItemSet->DelItemsBelow(MinKeepItem);
     if (ItemSet->Empty()) {
         DeleteItemSet(Key);
@@ -1334,13 +1319,18 @@ void TGix<TKey, TItem>::RefreshMemUsed() const {
     if (NewCacheSizeInc > CacheResetThreshold) {
         const uint64 GrowthBeforeCleanup = NewCacheSizeInc;
         TExeTm ExeTm;
-        // pack all the item sets
-        TBlobPt BlobPt;
-        PGixItemSet ItemSet;
-        void* KeyDatP = ItemSetCache.FFirstKeyDat();
-        while (ItemSetCache.FNextKeyDat(KeyDatP, BlobPt, ItemSet)) {
-            ItemSet->DefLocal();
+        // pack only the itemsets a write left unmerged since the last refresh.
+        // Walking the ENTIRE cache LRU here - a pointer chase over up to millions
+        // of nodes with a full hash lookup per node, just to no-op DefLocal on
+        // the merged majority - was the bulk of the periodic cleanup stalls
+        int UnmergedKeyN = UnmergedKeyIdSet.FFirstKeyId();
+        while (UnmergedKeyIdSet.FNextKeyId(UnmergedKeyN)) {
+            PGixItemSet ItemSet;
+            if (ItemSetCache.Get(UnmergedKeyIdSet.GetKey(UnmergedKeyN), ItemSet)) {
+                ItemSet->DefLocal();
+            }
         }
+        UnmergedKeyIdSet.Clr();
         // clean-up cache
         CacheFullP = ItemSetCache.RefreshMemUsed();
         NewCacheSizeInc = 0;

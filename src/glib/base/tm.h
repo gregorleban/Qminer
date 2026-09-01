@@ -36,7 +36,11 @@ private:
   static void InitMonthNmV();
   static void InitDayOfWeekNmV();
   static void EnsureInit(){
-    if (!InitP){InitMonthNmV(); InitDayOfWeekNmV(); InitP=true;}}
+    // C++11 magic static: exactly-once, thread-safe initialization. The old
+    // plain-bool guard let two request threads race into the init at process
+    // warm-up and grow the global name vectors concurrently
+    static const bool DoneP = [](){ InitMonthNmV(); InitDayOfWeekNmV(); InitP=true; return true; }();
+    (void)DoneP;}
 public:
   static int GetMonthN(const TStr& MonthNm, const TLoc& Loc=lUs);
   static bool IsMonthNm(const TStr& MonthNm, const TLoc& Loc=lUs){

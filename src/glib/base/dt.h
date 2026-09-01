@@ -1565,13 +1565,13 @@ public:
     int GetMemUsed() const { return sizeof(TNum); }
 
 #ifdef GLib_WIN
-  TStr GetStr() const { return TStr::Fmt("%I64", Val); }
-  static TStr GetStr(const TNum& Int){ return TStr::Fmt("%I64", Int.Val); }
+  TStr GetStr() const { return TStr::Fmt("%I64d", Val); } // was "%I64" - an incomplete format that printed nothing
+  static TStr GetStr(const TNum& Int){ return TStr::Fmt("%I64d", Int.Val); } // was "%I64"
   static TStr GetHexStr(const TNum& Int){ return TStr::Fmt("%I64X", Int.Val); }
 #else
-  TStr GetStr() const { return TStr::Fmt("%ll", Val); }
-  static TStr GetStr(const TNum& Int){ return TStr::Fmt("%ll", Int.Val); }
-  static TStr GetHexStr(const TNum& Int){ return TStr::Fmt("%ll", Int.Val); }
+  TStr GetStr() const { return TStr::Fmt("%lld", Val); } // was "%ll" - an incomplete format
+  static TStr GetStr(const TNum& Int){ return TStr::Fmt("%lld", Int.Val); } // was "%ll"
+  static TStr GetHexStr(const TNum& Int){ return TStr::Fmt("%llX", Int.Val); } // was "%ll" - incomplete, and not hex at all
 #endif
 
   static TStr GetKiloStr(const int64& Val){

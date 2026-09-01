@@ -388,7 +388,23 @@ TSizeTy TVec<TVal, TSizeTy>::AddSorted(const TVal& Val, const bool& Asc, const T
     else if (!Asc && ValT[Len()-1] > Val) return Len()-1;
   }
   TSizeTy ValN=Add(Val);
-  if (Asc){
+  if (TIsBitwiseMovable<TVal>::Val && Vals > 1) {
+    // binary search for the insert position + one memmove instead of a 3-move
+    // Swap bubble per step. Position matches the bubble exactly: the new element
+    // lands AFTER existing equal elements (upper bound)
+    const TVal TmpVal = ValT[Vals-1];
+    TSizeTy Lo = 0, Hi = Vals-1;
+    while (Lo < Hi) {
+      const TSizeTy Mid = Lo + (Hi-Lo)/2;
+      const bool NewBeforeMid = Asc ? (TmpVal < ValT[Mid]) : (TmpVal > ValT[Mid]);
+      if (NewBeforeMid) { Hi = Mid; } else { Lo = Mid+1; }
+    }
+    if (Lo < Vals-1) {
+      memmove((void*)(ValT+Lo+1), (const void*)(ValT+Lo), sizeof(TVal)*(size_t)(Vals-1-Lo));
+      ValT[Lo] = TmpVal;
+    }
+    ValN = Lo;
+  } else if (Asc){
     while ((ValN>0)&&(ValT[ValN]<ValT[ValN-1])){
       Swap(ValN, ValN-1); ValN--;}
   } else {
@@ -461,9 +477,20 @@ void TVec<TVal, TSizeTy>::GetSubValVMemCpy(const TSizeTy& _BValN, const TSizeTy&
 template <class TVal, class TSizeTy>
 void TVec<TVal, TSizeTy>::Ins(const TSizeTy& ValN, const TVal& Val){
   AssertR(MxVals!=-1, "This vector was obtained from TVecPool. Such a vector cannot change its size!");
+  // self-reference guard: the shift below moves elements BEFORE Val is read, and
+  // Add() may reallocate the very buffer Val points into - copy it out first
+  if (ValT!=NULL && &Val>=ValT && &Val<ValT+Vals){
+    const TVal TmpVal = Val; Ins(ValN, TmpVal); return;
+  }
   Add();  Assert((0<=ValN)&&(ValN<Vals));
-  for (TSizeTy MValN=Vals-2; MValN>=ValN; MValN--){Move(MValN, MValN+1);}
-  //for (TSizeTy MValN=Vals-2; MValN>=ValN; MValN--){ValT[MValN+1]=ValT[MValN];}
+  // bitwise-movable elements are shifted with a single memmove (mirrors Del)
+  if (TIsBitwiseMovable<TVal>::Val) {
+    if (Vals-1 > ValN) {
+      memmove((void*)(ValT+ValN+1), (const void*)(ValT+ValN), sizeof(TVal)*(size_t)(Vals-1-ValN));
+    }
+  } else {
+    for (TSizeTy MValN=Vals-2; MValN>=ValN; MValN--){Move(MValN, MValN+1);}
+  }
   ValT[ValN]=Val;
 }
 
@@ -906,7 +933,7 @@ template <class TVal, class TSizeTy>
 TSizeTy TVec<TVal, TSizeTy>::SearchBin(const TVal& Val) const {
   TSizeTy LValN=0, RValN=Len()-1;
   while (RValN>=LValN){
-    TSizeTy ValN=(LValN+RValN)/2;
+    TSizeTy ValN=LValN+(RValN-LValN)/2; // overflow-safe midpoint
     if (Val==ValT[ValN]){return ValN;}
     if (Val<ValT[ValN]){RValN=ValN-1;} else {LValN=ValN+1;}
   }
@@ -917,7 +944,7 @@ template <class TVal, class TSizeTy>
 TSizeTy TVec<TVal, TSizeTy>::SearchBin(const TVal& Val, TSizeTy& InsValN) const {
   TSizeTy LValN=0, RValN=Len()-1;
   while (RValN>=LValN){
-    TSizeTy ValN=(LValN+RValN)/2;
+    TSizeTy ValN=LValN+(RValN-LValN)/2; // overflow-safe midpoint
     if (Val==ValT[ValN]){InsValN=ValN; return ValN;}
     if (Val<ValT[ValN]){RValN=ValN-1;} else {LValN=ValN+1;}
   }
@@ -953,28 +980,30 @@ TSizeTy TVec<TVal, TSizeTy>::SearchVForw(const TVec<TVal, TSizeTy>& ValV, const 
 
 template <class TVal, class TSizeTy>
 void TVec<TVal, TSizeTy>::FindAll(const TVal& Val, TVec<TInt, TSizeTy>& IdxV) const {
-  const int Dim = Len();
+  const TSizeTy Dim = Len();
   TSizeTy Count = 0;
   for (TSizeTy ValN = 0; ValN < Dim; ValN++) {
     if (ValT[ValN] == Val) { Count++; }
   }
   IdxV.Gen(Count, 0);
   for (TSizeTy ValN = 0; ValN < Dim; ValN++) {
-    if (ValT[ValN] == Val) { IdxV.Add(ValT[ValN]); }
+    // the INDEX, as documented (this used to add the element value itself)
+    if (ValT[ValN] == Val) { IdxV.Add(TInt((int)ValN)); }
   }
 }
 
 template <class TVal, class TSizeTy>
 template <typename TFun>
 void TVec<TVal, TSizeTy>::FindAllSatisfy(const TFun& Fun, TVec<TInt, TSizeTy>& IdxV) const {
-  const int Dim = Len();
+  const TSizeTy Dim = Len();
   TSizeTy Count = 0;
   for (TSizeTy ValN = 0; ValN < Dim; ValN++) {
     if (Fun(ValT[ValN])) { Count++; }
   }
   IdxV.Gen(Count, 0);
   for (TSizeTy ValN = 0; ValN < Dim; ValN++) {
-    if (Fun(ValT[ValN])) { IdxV.Add(ValT[ValN]); }
+    // the INDEX, as documented (this used to add the element value itself)
+    if (Fun(ValT[ValN])) { IdxV.Add(TInt((int)ValN)); }
   }
 }
 
@@ -1157,11 +1186,11 @@ void TVecPool<TVal, TSizeTy>::CompactPool(const TVal& DelVal) {
       if (*v == DelVal) {
         TVal* Beg = v;
         while (*v == DelVal && v < ValV+Len) { v++; NDel++; }
-        memcpy(Beg, v, sizeof(TVal)*int(Len - ::TSize(v - ValV)));
+        memmove(Beg, v, sizeof(TVal)*int(Len - ::TSize(v - ValV))); // overlapping ranges within the pool buffer
         v -= NDel;
       }
     }
-    memcpy(ValV-TotalDel, ValV, sizeof(TVal)*Len);  // move data
+    memmove(ValV-TotalDel, ValV, sizeof(TVal)*Len);  // move data (overlapping ranges)
     TotalDel += NDel;
   }
   IdToOffV.Last() -= TotalDel;

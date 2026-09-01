@@ -365,6 +365,11 @@ private:
     TVec<TFieldSerialDesc> FieldSerialDescV;
     /// Mapping from Field id (in TStore) to index inside FieldsF
     THash<TInt, TInt> FieldIdToSerialDescIdH;
+    /// Dense FieldId -> desc-id lookup rebuilt from the hash (never serialized) -
+    /// one array load instead of two hash probes per field access
+    TIntV FieldIdToSerialDescIdV;
+    /// Rebuild FieldIdToSerialDescIdV from FieldIdToSerialDescIdH
+    void BuildFieldIdToSerialDescIdV();
     /// Codebook for encoding strings
     TStrHash<TInt, TBigStrPool> CodebookH;
     /// Flag if TOAST should be used
@@ -587,7 +592,8 @@ public:
     void GetToastBlobPtOffsets(const TMemBase& RecMem, TIntV& OffsetV) const;
 
     /// Check if field inside this serializator
-    bool IsFieldId(const int& FieldId) const { return FieldIdToSerialDescIdH.IsKey(FieldId); }
+    bool IsFieldId(const int& FieldId) const {
+        return FieldId >= 0 && FieldId < FieldIdToSerialDescIdV.Len() && FieldIdToSerialDescIdV[FieldId] != -1; }
     /// True when no fields serialize into this serializator's storage location
     bool IsEmpty() const { return FieldSerialDescV.Empty(); }
     /// Check if field is in fixed part
@@ -1544,6 +1550,15 @@ private:
     TBool DataMemP;
     /// Store for parts of records that should be in-memory
     PPgBlob DataMem;
+
+    /// Per-record memo for GetPgBf: result rendering reads many fields of the
+    /// SAME record, and each read used to re-probe the record map (up to ~10^8
+    /// entries on a yearly instance). [0] = cache section, [1] = mem section.
+    /// Any write bumps PgBfWriteVersion, which invalidates the memo
+    mutable uint64 LastPgBfRecId[2] = { TUInt64::Mx, TUInt64::Mx };
+    mutable TPgBlobPt LastPgBfPt[2];
+    mutable uint64 LastPgBfVersion[2] = { 0, 0 };
+    mutable uint64 PgBfWriteVersion = 1;
 
     /// When set, ToastVal writes TOAST-ed values into this blob instead of
     /// DataBlob. Set by MigrateSchemaTo so values TOAST-ed while re-serializing

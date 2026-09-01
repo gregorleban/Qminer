@@ -7,6 +7,28 @@
  */
 
 /////////////////////////////////////////////////
+// ASCII case tables: the CRT tolower/toupper take an int in [0, 255] or EOF -
+// passing a NEGATIVE char (any UTF-8 lead/continuation byte on a signed-char
+// platform) is undefined behavior, and the result depends on the process's C
+// locale. glib strings are byte strings (UTF-8 must pass through case mapping
+// untouched), so a fixed ASCII-only table is both correct and much faster than
+// a locale-indirected CRT call per character.
+namespace {
+struct TAsciiCaseTbl {
+    unsigned char Lc[256];
+    unsigned char Uc[256];
+    TAsciiCaseTbl() {
+        for (int Ch = 0; Ch < 256; Ch++) { Lc[Ch] = Uc[Ch] = (unsigned char)Ch; }
+        for (int Ch = 'A'; Ch <= 'Z'; Ch++) { Lc[Ch] = (unsigned char)(Ch + ('a' - 'A')); }
+        for (int Ch = 'a'; Ch <= 'z'; Ch++) { Uc[Ch] = (unsigned char)(Ch - ('a' - 'A')); }
+    }
+};
+const TAsciiCaseTbl AsciiCaseTbl;
+inline char AsciiToLower(const char& Ch) { return (char)AsciiCaseTbl.Lc[(unsigned char)Ch]; }
+inline char AsciiToUpper(const char& Ch) { return (char)AsciiCaseTbl.Uc[(unsigned char)Ch]; }
+} // namespace
+
+/////////////////////////////////////////////////
 // Random
 const int TRnd::RndSeed = 0;
 const int TRnd::a = 16807;
@@ -173,7 +195,7 @@ double TRnd::GetGammaDev(const int &Order)
 
 double TRnd::GetPoissonDev(const double &Mean)
 {
-    static double sq, alxm, g, oldm = (-1.0);
+    static thread_local double sq, alxm, g, oldm = (-1.0);
     double em, t, y;
     if (Mean < 12.0) {
         if (Mean != oldm) {
@@ -211,7 +233,7 @@ double TRnd::GetBinomialDev(const double &Prb, const int &Trials)
     int j;
     static int nold = (-1);
     double am, em, g, angle, p, bnl, sq, t, y;
-    static double pold = (-1.0), pc, plog, pclog, en, oldg;
+    static thread_local double pold = (-1.0), pc, plog, pclog, en, oldg;
 
     p = (Prb <= 0.5 ? Prb : 1.0 - Prb);
     am = Trials * p;
@@ -642,7 +664,12 @@ const TStr TStr::base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstu
 
 TStr TStr::Base64Encode(const void *Bf, const int BfL)
 {
-    TStr ret;
+    // the output length is known exactly up front - fill a single buffer instead
+    // of appending through TStr::operator+= (which reallocated and copied the
+    // whole string per output character, making encoding O(n^2))
+    const size_t OutL = 4 * (((size_t)BfL + 2) / 3);
+    char* Out = new char[OutL + 1];
+    size_t OutN = 0;
     int i = 0;
     int j = 0;
     unsigned char char_array_3[3];
@@ -658,7 +685,7 @@ TStr TStr::Base64Encode(const void *Bf, const int BfL)
             char_array_4[3] = char_array_3[2] & 0x3f;
 
             for (i = 0; (i < 4); i++)
-                ret += base64_chars[char_array_4[i]];
+                Out[OutN++] = base64_chars[char_array_4[i]];
             i = 0;
         }
     }
@@ -673,13 +700,14 @@ TStr TStr::Base64Encode(const void *Bf, const int BfL)
         char_array_4[3] = char_array_3[2] & 0x3f;
 
         for (j = 0; (j < i + 1); j++) {
-            ret += base64_chars[char_array_4[j]];
+            Out[OutN++] = base64_chars[char_array_4[j]];
         }
         while ((i++ < 3)) {
-            ret += '=';
+            Out[OutN++] = '=';
         }
     }
-    return ret;
+    Out[OutN] = '\0';
+    return WrapCStr(Out);
 }
 
 void TStr::Base64Decode(const TStr &In, TMem &Mem)
@@ -1064,7 +1092,7 @@ bool TChA::IsPrefixLc(const char *CStr, const int &BChN) const
     }
     const char *B = Bf + BChN;
     const char *C = CStr;
-    while (*C != 0 && tolower(*B) == tolower(*C)) {
+    while (*C != 0 && AsciiToLower(*B) == AsciiToLower(*C)) {
         B++;
         C++;
     }
@@ -1127,19 +1155,19 @@ void TChA::ChangeCh(const char &SrcCh, const char &DstCh)
 
 /*void TChA::ToUc(){
   int StrLen=Len();
-  for (int ChN=0; ChN<StrLen; ChN++){Bf[ChN]=(char)toupper(Bf[ChN]);}
+  for (int ChN=0; ChN<StrLen; ChN++){Bf[ChN]=(char)AsciiToUpper(Bf[ChN]);}
 }
 
 void TChA::ToLc(){
   int StrLen=Len();
-  for (int ChN=0; ChN<StrLen; ChN++){Bf[ChN]=(char)tolower(Bf[ChN]);}
+  for (int ChN=0; ChN<StrLen; ChN++){Bf[ChN]=(char)AsciiToLower(Bf[ChN]);}
 }*/
 
 TChA &TChA::ToLc()
 {
     char *c = Bf;
     while (*c) {
-        *c = (char)tolower(*c);
+        *c = (char)AsciiToLower(*c);
         c++;
     }
     return *this;
@@ -1149,7 +1177,7 @@ TChA &TChA::ToUc()
 {
     char *c = Bf;
     while (*c) {
-        *c = (char)toupper(*c);
+        *c = (char)AsciiToUpper(*c);
         c++;
     }
     return *this;
@@ -1548,12 +1576,12 @@ int TStr::CmpI(const char *p, const char *r)
         return (*p ? 1 : 0);
     }
     while (*p && *r) {
-        int i = int(toupper(*p++)) - int(toupper(*r++));
+        int i = int(AsciiToUpper(*p++)) - int(AsciiToUpper(*r++));
         if (i != 0) {
             return i;
         }
     }
-    return int(toupper(*p++)) - int(toupper(*r++));
+    return int(AsciiToUpper(*p++)) - int(AsciiToUpper(*r++));
 }
 
 bool TStr::IsUc() const
@@ -1571,7 +1599,7 @@ TStr &TStr::ToUc()
 {
     const int StrLen = Len();
     for (int ChN = 0; ChN < StrLen; ChN++) {
-        Inner[ChN] = toupper(Inner[ChN]);
+        Inner[ChN] = AsciiToUpper(Inner[ChN]);
     }
     return *this;
 }
@@ -1596,7 +1624,7 @@ TStr &TStr::ToLc()
 {
     const int StrLen = Len();
     for (int ChN = 0; ChN < StrLen; ChN++) {
-        Inner[ChN] = tolower(Inner[ChN]);
+        Inner[ChN] = AsciiToLower(Inner[ChN]);
     }
     return *this;
 }
@@ -1613,10 +1641,10 @@ TStr &TStr::ToCap()
     }
     const int StrLen = Len();
     // copy first char in uppercase
-    Inner[0] = (char)toupper(Inner[0]);
+    Inner[0] = (char)AsciiToUpper(Inner[0]);
     // copy all other chars in lowercase
     for (int ChN = 1; ChN < StrLen; ChN++) {
-        Inner[ChN] = (char)tolower(Inner[ChN]);
+        Inner[ChN] = (char)AsciiToLower(Inner[ChN]);
     }
     return *this;
 }
@@ -2417,7 +2445,7 @@ bool TStr::IsHexInt(const bool &Check, const int &MnVal, const int &MxVal, int &
     }
     if (Ch() == '0') {
         Ch.GetCh();
-        if (tolower(Ch()) == 'x') {
+        if (AsciiToLower(Ch()) == 'x') {
             Ch.GetCh();
             if (Ch.Eof()) {
                 return false;
@@ -2508,7 +2536,7 @@ bool TStr::IsHexInt64(const bool &Check, const int64 &MnVal, const int64 &MxVal,
     }
     if (Ch() == '0') {
         Ch.GetCh();
-        if (tolower(Ch()) == 'x') {
+        if (AsciiToLower(Ch()) == 'x') {
             Ch.GetCh();
             if (Ch.Eof()) {
                 return false;
@@ -2957,9 +2985,13 @@ TStr TStr::GetStr(const TStr &Str, const char *FmtStr)
         return Str;
     }
     else {
-        char Bf[1000];
-        sprintf(Bf, FmtStr, Str.CStr());
-        return TStr(Bf);
+        // size the buffer from the inputs - the fixed 1000-byte stack buffer
+        // this used to sprintf into overflowed for strings longer than ~990
+        const size_t BfL = strlen(FmtStr) + (size_t)Str.Len() + 64;
+        char* Bf = new char[BfL];
+        const int RetVal = snprintf(Bf, BfL, FmtStr, Str.CStr());
+        if (RetVal < 0 || RetVal >= (int)BfL) { delete[] Bf; return Str; }
+        return WrapCStr(Bf);
     }
 }
 
@@ -2981,9 +3013,20 @@ TStr TStr::Fmt(const char *FmtStr, ...)
     char Bf[10 * 1024];
     va_list valist;
     va_start(valist, FmtStr);
-    const int RetVal = vsnprintf(Bf, 10 * 1024 - 2, FmtStr, valist);
+    const int RetVal = vsnprintf(Bf, sizeof(Bf), FmtStr, valist);
     va_end(valist);
-    return RetVal != -1 ? TStr(Bf) : TStr();
+    if (RetVal < 0) { return TStr(); }
+    if (RetVal < (int)sizeof(Bf)) { return TStr(Bf); }
+    // output longer than the stack buffer: C99/VS2015+ vsnprintf returns the
+    // NEEDED length on truncation - retry into an exact-size heap buffer instead
+    // of silently returning a truncated string (which corrupted long log lines
+    // embedding article bodies)
+    char* HeapBf = new char[(size_t)RetVal + 1];
+    va_start(valist, FmtStr);
+    const int RetVal2 = vsnprintf(HeapBf, (size_t)RetVal + 1, FmtStr, valist);
+    va_end(valist);
+    if (RetVal2 < 0) { delete[] HeapBf; return TStr(); }
+    return WrapCStr(HeapBf);
 }
 
 TStr TStr::GetSpaceStr(const int &Spaces)

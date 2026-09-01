@@ -3315,7 +3315,7 @@ public:
         /// Default constructor for vectors
         TQmGixItemPos(): RecId(TUInt::Mx) { }
         /// Start with record and no positons
-        TQmGixItemPos(const uint64& _RecId): RecId((uint)_RecId) { Assert(_RecId < TUInt::Mx); }
+        TQmGixItemPos(const uint64& _RecId): RecId((uint)_RecId) { EAssertR(_RecId < TUInt::Mx, "RecId overflows the 32-bit pos-gix item"); }
         /// Load from stream
         TQmGixItemPos(TSIn& SIn);
 
@@ -3665,6 +3665,10 @@ public:
 
     /// Low-level access to Gix search used for joining
     void SearchGixJoin(const int& KeyId, const uint64& RecId, TUInt64IntKdV& JoinRecIdFqV) const;
+    /// Is any record joined from RecId within [MinRecId, MaxRecId]? Loads only
+    /// the posting-list children overlapping the range (GetItemVInRange) instead
+    /// of materializing and merging the record's whole join list
+    bool HasGixJoinInRange(const int& KeyId, const uint64& RecId, const uint64& MinRecId, const uint64& MaxRecId) const;
     /// Low-level access to Gix search used for joining
     void SearchGixJoin(const int& KeyId, const TUInt64V& RecIdV, TUInt64IntKdV& JoinRecIdFqV) const;
 

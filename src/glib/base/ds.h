@@ -47,7 +47,9 @@ public:
 public:
   TPair(): Val1(), Val2(){}
   TPair(const TPair& Pair): Val1(Pair.Val1), Val2(Pair.Val2){}
-  TPair(const TPair&& Pair): Val1(std::move(Pair.Val1)), Val2(std::move(Pair.Val2)) {}
+  // non-const rvalue: a const&& made std::move produce const rvalues, which bind
+  // to the COPY constructors - every intended TPair move silently deep-copied
+  TPair(TPair&& Pair): Val1(std::move(Pair.Val1)), Val2(std::move(Pair.Val2)) {}
   TPair(const TVal1& _Val1, const TVal2& _Val2): Val1(_Val1), Val2(_Val2){}
   explicit TPair(TSIn& SIn): Val1(SIn), Val2(SIn){}
   void Save(TSOut& SOut) const {
@@ -637,9 +639,19 @@ public:
     if (Vals==MxVals){Resize();} return Vals++;}
   /// Adds a new element at the end of the vector, after its current last element. ##TVec::Add1
   TSizeTy Add(const TVal& Val){ AssertR(MxVals!=-1, "This vector was obtained from TVecPool. Such a vector cannot change its size!");
-    if (Vals==MxVals){Resize();} ValT[Vals]=Val; return Vals++;}
+    if (Vals==MxVals){
+      // self-reference guard: Val may be an element of THIS vector, whose buffer
+      // Resize is about to free - remember its index and re-read after the grow
+      if (ValT!=NULL && &Val>=ValT && &Val<ValT+Vals){
+        const TSizeTy ValN=(TSizeTy)(&Val-ValT); Resize(); ValT[Vals]=ValT[ValN]; return Vals++;}
+      Resize();}
+    ValT[Vals]=Val; return Vals++;}
   TSizeTy Add(TVal& Val){ AssertR(MxVals!=-1, "This vector was obtained from TVecPool. Such a vector cannot change its size!");
-    if (Vals==MxVals){Resize();} ValT[Vals]=Val; return Vals++;}
+    if (Vals==MxVals){
+      if (ValT!=NULL && &Val>=ValT && &Val<ValT+Vals){ // self-reference guard (see above)
+        const TSizeTy ValN=(TSizeTy)(&Val-ValT); Resize(); ValT[Vals]=ValT[ValN]; return Vals++;}
+      Resize();}
+    ValT[Vals]=Val; return Vals++;}
   /// Adds element \c Val at the end of the vector. #TVec::Add2
   TSizeTy Add(const TVal& Val, const TSizeTy& ResizeLen){ AssertR(MxVals!=-1, "This vector was obtained from TVecPool. Such a vector cannot change its size!");
     if (Vals==MxVals){Resize(MxVals+ResizeLen);} ValT[Vals]=Val; return Vals++;}
@@ -1435,7 +1447,8 @@ public:
         XDim(colmajor ? Vec.Len() : 1), YDim(colmajor ? 1 : Vec.Len()), ValV(std::move(Vec)), ColMajor(colmajor){}
     //-------------------------------------------------------------------------------------------
 #ifdef GLib_CPP11
-    TVVec(const TVVec&& Vec) :
+    // non-const rvalue: const&& silently copied instead of moving (see TPair)
+    TVVec(TVVec&& Vec) :
         XDim(std::move(Vec.XDim)), YDim(std::move(Vec.YDim)), ValV(std::move(Vec.ValV)), ColMajor(std::move(Vec.ColMajor)){ }
 #endif
     TVVec(const TSizeTy& _XDim, const TSizeTy& _YDim, const TBool& _ColMajor = false) :
@@ -1812,7 +1825,9 @@ public:
 
   /// Most recently added element, last one to go out
   const TVal& Back() const {
-    Assert(!Empty()); return ValV[(Last - 1) % ValV.Len()];
+    // (Last-1) % Len is -1 in C++ when the circular buffer has wrapped to
+    // Last == 0 - bias by Len before the modulo
+    Assert(!Empty()); return ValV[(Last - 1 + ValV.Len()) % ValV.Len()];
   }
 
   /// The oldest element, first one to go out
