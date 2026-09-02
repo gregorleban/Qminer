@@ -1363,17 +1363,19 @@ bool TFile::Exists(const TStr& FNm)
 #if defined(GLib_WIN)
 
 void TFile::Copy(const TStr& SrcFNm, const TStr& DstFNm, const bool& ThrowExceptP,
-                 const bool& FailIfExistsP)
+                 const bool& FailIfExistsP, const bool& UnbufferedP)
 {
-    if (ThrowExceptP) {
-        if (CopyFile(SrcFNm.CStr(), DstFNm.CStr(), FailIfExistsP) == 0) {
+    // COPY_FILE_NO_BUFFERING bypasses the OS file cache - the recommended way of copying very
+    // large files. it prevents the copy from evicting the file cache used by the running
+    // services and the target disk receives one clean sequential write stream
+    const DWORD CopyFlags = (UnbufferedP ? COPY_FILE_NO_BUFFERING : 0) |
+                            (FailIfExistsP ? COPY_FILE_FAIL_IF_EXISTS : 0);
+    if (CopyFileEx(SrcFNm.CStr(), DstFNm.CStr(), NULL, NULL, NULL, CopyFlags) == 0) {
+        if (ThrowExceptP) {
             int ErrorCode = (int)GetLastError();
             TExcept::Throw(TStr::Fmt("Error %d copying file '%s' to '%s'.", ErrorCode,
                                      SrcFNm.CStr(), DstFNm.CStr()));
         }
-    }
-    else {
-        CopyFile(SrcFNm.CStr(), DstFNm.CStr(), FailIfExistsP);
     }
 }
 
@@ -1387,8 +1389,9 @@ bool TFile::Move(const TStr& SrcFNm, const TStr& DstFNm, const bool& ThrowExcept
 
 #elif defined(GLib_LINUX)
 
+// UnbufferedP is ignored on Linux - the copy always goes through the mmap-ed buffers below
 void TFile::Copy(const TStr& SrcFNm, const TStr& DstFNm, const bool& ThrowExceptP,
-                 const bool& FailIfExistsP)
+                 const bool& FailIfExistsP, const bool& UnbufferedP)
 {
     int input, output;
     size_t filesize;
@@ -1465,7 +1468,7 @@ bool TFile::Move(const TStr& SrcFNm, const TStr& DstFNm, const bool& ThrowExcept
 #elif defined(GLib_MACOSX)
 
 void TFile::Copy(const TStr& SrcFNm, const TStr& DstFNm, const bool& ThrowExceptP,
-                 const bool& FailIfExistsP)
+                 const bool& FailIfExistsP, const bool& UnbufferedP)
 {
 
     FailR("Feature not implemented");

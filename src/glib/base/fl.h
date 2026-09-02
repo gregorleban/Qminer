@@ -607,8 +607,11 @@ public:
   static const TStr JarFExt;
 public:
   static bool Exists(const TStr& FNm);
-  static void Copy(const TStr& SrcFNm, const TStr& DstFNm, 
-    const bool& ThrowExceptP=true, const bool& FailIfExistsP=false);
+  // UnbufferedP bypasses the OS file cache while copying (Windows only) - use it when copying
+  // very large files, so that the copy does not evict the file cache and the target disk
+  // receives one sequential write stream
+  static void Copy(const TStr& SrcFNm, const TStr& DstFNm,
+    const bool& ThrowExceptP=true, const bool& FailIfExistsP=false, const bool& UnbufferedP=false);
   static bool Del(const TStr& FNm, const bool& ThrowExceptP=true);
   static bool Move(const TStr& SrcFNm, const TStr& DstFNm,
 	const bool& ThrowExceptP = true, const bool& FailIfExistsP = false);

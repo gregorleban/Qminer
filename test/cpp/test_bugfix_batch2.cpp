@@ -424,3 +424,44 @@ TEST(BugfixBatch2, IndexJoinRangeFilter)
     }
     TDir::DelNonEmptyDir(FPath);
 }
+
+// TFile::Copy with UnbufferedP=true must produce a byte-identical copy also for sizes
+// that are not sector aligned, and must respect FailIfExistsP/overwrite semantics
+TEST(BugfixBatch2, UnbufferedFileCopy) {
+    const TStr FPath = "./bugfix_batch2_copy/";
+    if (TDir::Exists(FPath)) { TDir::DelNonEmptyDir(FPath); }
+    TDir::GenDir(FPath);
+
+    // odd, non-sector-aligned size
+    const int Len = 123457;
+    TStr SrcFNm = FPath + "src.bin";
+    {
+        PSOut SOut = TFOut::New(SrcFNm);
+        TRnd Rnd(1);
+        for (int N = 0; N < Len; N++) { SOut->PutCh((char)Rnd.GetUniDevInt(256)); }
+    }
+
+    // unbuffered copy creates an identical file
+    TStr DstFNm = FPath + "dst.bin";
+    TFile::Copy(SrcFNm, DstFNm, true, false, true);
+    ASSERT_EQ((uint64)Len, TFile::GetSize(DstFNm));
+    {
+        TFIn SrcIn(SrcFNm); TFIn DstIn(DstFNm);
+        while (!SrcIn.Eof()) { ASSERT_EQ(SrcIn.GetCh(), DstIn.GetCh()); }
+        ASSERT_TRUE(DstIn.Eof());
+    }
+
+    // overwriting an existing file with an unbuffered copy works
+    {
+        PSOut SOut = TFOut::New(SrcFNm);
+        for (int N = 0; N < 1000; N++) { SOut->PutCh('x'); }
+    }
+    TFile::Copy(SrcFNm, DstFNm, true, false, true);
+    ASSERT_EQ((uint64)1000, TFile::GetSize(DstFNm));
+
+    // FailIfExistsP=true must not overwrite and must not throw when ThrowExceptP=false
+    TFile::Copy(SrcFNm, DstFNm, false, true, true);
+    ASSERT_EQ((uint64)1000, TFile::GetSize(DstFNm));
+
+    TDir::DelNonEmptyDir(FPath);
+}

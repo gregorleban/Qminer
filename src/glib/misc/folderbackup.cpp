@@ -177,7 +177,10 @@ void TBackupProfile::CopyFolder(const TStr& BaseTargetFolder, const TStr& Source
                 const TStr TargetFNm = TargetFolder + FileName;
                 if (ReportP)
                     TNotify::StdNotify->OnStatusFmt("Copying file: %s\r", FileName.CStr());
-                TFile::Copy(FileV[N], TargetFNm);
+                // copy unbuffered - backups copy huge files and a buffered copy would evict the
+                // OS file cache used by the running services and roughly halve the write
+                // throughput of the target disk
+                TFile::Copy(FileV[N], TargetFNm, true, false, true);
             }
             // we found a folder
             else {
