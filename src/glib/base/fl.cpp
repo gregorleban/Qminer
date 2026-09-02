@@ -1355,9 +1355,15 @@ bool TFile::Exists(const TStr& FNm)
     if (FNm.Empty()) {
         return false;
     }
-    bool DoExists;
-    TFIn FIn(FNm, DoExists);
-    return DoExists;
+    // check the file attributes instead of opening the file - it is faster and, unlike
+    // fopen, gives the same answer on all platforms (on Linux fopen also opens directories)
+#ifdef GLib_WIN
+    const DWORD Attrs = GetFileAttributes(FNm.CStr());
+    return (Attrs != INVALID_FILE_ATTRIBUTES) && ((Attrs & FILE_ATTRIBUTE_DIRECTORY) == 0);
+#else
+    struct stat St;
+    return (stat(FNm.CStr(), &St) == 0) && S_ISREG(St.st_mode);
+#endif
 }
 
 #if defined(GLib_WIN)
