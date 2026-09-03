@@ -3190,6 +3190,9 @@ private:
         bool IsLt(const TQmGixItem& Item1, const TQmGixItem& Item2) const { return Item1 < Item2; }
         /// <= comparator between items
         bool IsLtE(const TQmGixItem& Item1, const TQmGixItem& Item2) const { return Item1 <= Item2; }
+        /// partial deletes are added as (RecId, -Fq): such an item only makes sense once it
+        /// has been summed against the record's positive posting (see TIndex::DeleteGix)
+        bool IsDeleteMarker(const TQmGixItem& Item) const { return Item.Dat.Val <= 0; }
 
         /// Memory footprint
         uint64 GetMemUsed() const { return sizeof(TQmGixSumItemHandler<TQmGixItem>); }

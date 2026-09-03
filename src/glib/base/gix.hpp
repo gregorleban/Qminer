@@ -533,6 +533,11 @@ void TGixItemSet<TKey, TItem>::AddItem(const TItem& NewItem, const bool& NotifyC
             // compare to the last item in the work buffer
             MergedP = Gix->GetItemHandler()->IsLt(ItemV.Last(), NewItem);
         }
+        // a delete marker (qminer: a negative-frequency posting) appended after everything
+        // stored has nothing to sum against yet - keeping the set "merged" would hand it
+        // out to readers as a ghost posting and later cancel a legitimate re-add of the
+        // same record. Force a Def(), whose merge cancels it or scrubs it
+        if (MergedP && Gix->GetItemHandler()->IsDeleteMarker(NewItem)) { MergedP = false; }
     }
     const uint64 OldItemVSize = ItemV.GetMemUsed();
     // if first item we are adding to the itemset, we start with size 2 to avoid default of 16
@@ -768,6 +773,18 @@ void TGixItemSet<TKey, TItem>::Def() {
         Gix->GetItemHandler()->Merge(ItemV, true); // first do local merge of work-buffer
         DirtyP = true;
         InjectWorkBufferToChildren(); // inject data into child vectors
+        // whatever is still in the work buffer lies beyond the last child (or the key has no
+        // children), so no child item can cancel it any more - run the handler's GLOBAL merge
+        // over that tail. The local merge above deliberately keeps negative-frequency items
+        // (qminer's partial deletes are adds of -Fq, waiting for their positive in a child);
+        // a negative that survived the inject has no partner and would otherwise be pushed
+        // into a child as a permanent ghost posting, and cancel a later legitimate re-add of
+        // the same record. Until 2026-07 the always-on global merge below did this scrubbing;
+        // the local rebalancing removed that merge for the common case. The tail is at most
+        // SplitLen items and already sorted, so this costs one linear pass
+        if (ItemV.Len() > 0) {
+            Gix->GetItemHandler()->Merge(ItemV, false);
+        }
 
         int FirstChildToMerge = GetFirstChildToMerge();
         if (FirstChildToMerge >= 0 && !HasOverlappingChildren()) {
@@ -831,12 +848,18 @@ void TGixItemSet<TKey, TItem>::DefLocal() {
             const int OldItemVLen = ItemV.Len();
             Gix->GetItemHandler()->Merge(ItemV, true); // perform local merge
             DirtyP = true;
-            if (ChildInfoV.Len() > 0 && ItemV.Len() > 0) {
-                if (Gix->GetItemHandler()->IsLt(ChildInfoV.Last().MaxItem, ItemV[0])) {
-                    MergedP = true; // local merge achieved global merge
-                }
-            } else {
-                MergedP = true;
+            // the local merge achieved a global merge when the (merged) work buffer lies
+            // entirely beyond the last child, or when there are no children at all. In
+            // that case no child item can pair with anything in the buffer any more, so
+            // the buffer can also be merged GLOBALLY: that drops the lone negative-frequency
+            // delete markers the local merge keeps for a positive that might sit in a
+            // child. Without it the set is declared merged with the ghost inside and
+            // Def() never gets to scrub it (see the matching step in Def())
+            const bool TailBeyondChildrenP = ChildInfoV.Len() == 0 || ItemV.Len() == 0 ||
+                Gix->GetItemHandler()->IsLt(ChildInfoV.Last().MaxItem, ItemV[0]);
+            if (TailBeyondChildrenP) {
+                if (ItemV.Len() > 0) { Gix->GetItemHandler()->Merge(ItemV, false); }
+                MergedP = true; // local merge achieved global merge
             }
             // update the total count - since we have only been modifying the ItemV we can simply
             // update the total count by comparing previous and current number of items in ItemV

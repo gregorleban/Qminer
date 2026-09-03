@@ -32,6 +32,13 @@ public:
     /// Is Item1 <= Item2?
     virtual bool IsLtE(const TItem& Item1, const TItem& Item2) const = 0;
 
+    /// Is Item a delete marker, i.e. an item that must not survive a global Merge on
+    /// its own (a non-positive frequency for the summing handlers)? An itemset that
+    /// receives one can no longer be treated as merged just because the item sorts
+    /// after everything already stored - it needs a Def() to cancel or scrub it.
+    /// Handlers whose items carry no such notion keep the default.
+    virtual bool IsDeleteMarker(const TItem& Item) const { return false; }
+
     /// Memory footprint
     virtual uint64 GetMemUsed() const = 0;
 };
