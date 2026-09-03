@@ -1427,10 +1427,21 @@ public:
     /// Number of allocated slots (live + deleted-sentinel); for tests/diagnostics
     int64 Slots() const { return PtV.Len(); }
     /// Drop the empty slots before the first live record and advance the id
-    /// offset accordingly, reallocating so the freed memory is returned. Called
-    /// after deletes, so a store whose oldest records are rolling-deleted stays
-    /// compact between defrags. Returns the number of slots dropped.
+    /// offset accordingly. The shift is done in place (TVec::Del is a single
+    /// memmove for the flat TPgBlobPt) and keeps the vector's capacity, so a
+    /// yearly store (~10^8 slots, >1 GB) is never copied into a second allocation.
+    /// Large maps trim with hysteresis: a rolling delete removes the oldest
+    /// records on every call, and shifting 10^8 slots per call would stall each
+    /// delete, so a map above TrimHysteresisMnSlots only trims once at least
+    /// 1/TrimHysteresisDiv of its slots are leading-empty, and then compacts
+    /// them in one go. Maps up to the threshold (tests, small stores) trim
+    /// immediately, so their offset always equals the first live id after a
+    /// delete. Called after deletes, so a store whose oldest records are
+    /// rolling-deleted stays compact between defrags. Returns the number of
+    /// slots dropped (0 when nothing was trimmed, including a deferred trim).
     int64 TrimLeadingEmpty() {
+        const int64 TrimHysteresisMnSlots = int64(1) << 20;	// 1M slots (8 MB)
+        const int64 TrimHysteresisDiv = 16;
         int64 FirstLiveN = 0;
         while (FirstLiveN < PtV.Len() && PtV[FirstLiveN].Empty()) { FirstLiveN++; }
         if (FirstLiveN == 0) { return 0; }
@@ -1439,11 +1450,11 @@ public:
             PtV.Clr(); RecIdOffset = uint64(0);
             return FirstLiveN;
         }
-        TVec<TPgBlobPt, int64> NewPtV(PtV.Len() - FirstLiveN);
-        for (int64 SlotN = FirstLiveN; SlotN < PtV.Len(); SlotN++) {
-            NewPtV[SlotN - FirstLiveN] = PtV[SlotN];
+        if (PtV.Len() > TrimHysteresisMnSlots && FirstLiveN < PtV.Len() / TrimHysteresisDiv) {
+            // large map, not enough leading slack yet to be worth the shift
+            return 0;
         }
-        PtV.MoveFrom(NewPtV);
+        PtV.Del(0, FirstLiveN - 1);
         RecIdOffset += (uint64)FirstLiveN;
         return FirstLiveN;
     }
@@ -1675,6 +1686,10 @@ private:
 
     // given the recid and the fieldid get the memory that contains it, get blob that contains it and the page blob pointer
     void GetRecData(const uint64& RecId, const int& FieldId, TMem& Mem, TRecPtMap* &RecIdBlobPtr, PPgBlob& Blob, TPgBlobPt* &PgPt);
+
+    // write back the record memory obtained via GetRecData (relocating the record
+    // when it no longer fits) and invalidate the GetPgBf memo
+    void PutRecData(const uint64& RecId, const TMem& Mem, TRecPtMap* RecIdBlobPtr, const PPgBlob& Blob, const TPgBlobPt* PgPt);
 
     /// Build the record maps in the TDstMap representation and write a complete
     /// "<prefix>PgBlobStore" state file with them (the record blobs are untouched

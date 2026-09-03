@@ -3167,6 +3167,9 @@ void TStoreImpl::GetRecMem(const uint64& RecId, const int& FieldId, TMem& Rec) c
 }
 
 void TStoreImpl::PutRecMem(const TStoreLoc& RecLoc, const uint64& RecId, const TMem& Rec) {
+    // every field setter comes through here; a string setter can add a codebook
+    // entry, and the codebooks are saved with the store metadata
+    MetaDirtyP = true;
     if (RecLoc == slDisk) {
         DataCache.SetVal(RecId, Rec);
     } else if (RecLoc == slMemory)  {
@@ -3570,6 +3573,10 @@ uint64 TStoreImpl::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
         RecVal->AddToObj(TStoreWndDesc::SysInsertedAtFieldName, TTm::GetCurUniTm().GetStr());
     }
 
+    // serializing a record can add entries to the serializators' string
+    // codebooks, which are saved to .GenericStore together with the (primary)
+    // metadata - the file must be rewritten on close even without a primary field
+    MetaDirtyP = true;
     // for storing record id
     uint64 RecId = TUInt64::Mx;
     uint64 CacheRecId = TUInt64::Mx;
@@ -3612,6 +3619,8 @@ uint64 TStoreImpl::AddRec(const PJsonVal& RecVal, const bool& TriggerEvents) {
 }
 
 void TStoreImpl::UpdateRec(const uint64& RecId, const PJsonVal& RecVal) {
+    // an update can add codebook entries (saved with the store metadata)
+    MetaDirtyP = true;
     // figure out which storage fields are affected
     bool CacheP = false, MemP = false, PrimaryP = false;
     for (int FieldId = 0; FieldId < GetFields(); FieldId++) {
@@ -4540,6 +4549,9 @@ void TStorePbBlobT<TRecPtMap>::UpdateRec(const uint64& RecId, const PJsonVal& Re
             SerializatorCache->SerializeUpdateInPlace(RecVal, MIn, this,
                 CacheChangedFieldIdSet);
             DataBlob->SetDirty(Pt);
+            // an in-place update of a codebook string can add a codebook entry;
+            // the codebooks are saved with the store metadata, so it must be rewritten
+            MetaDirtyP = true;
         }
     }
     // update in-memory serialization when necessary
@@ -4573,6 +4585,8 @@ void TStorePbBlobT<TRecPtMap>::UpdateRec(const uint64& RecId, const PJsonVal& Re
             SerializatorMem->SerializeUpdateInPlace(RecVal, MIn, this,
                 ChangedFieldIdSet);
             DataMem->SetDirty(Pt);
+            // same as above - the codebooks live in the saved metadata
+            MetaDirtyP = true;
         }
     }
     // check if primary key changed and update the mapping
@@ -4848,6 +4862,9 @@ void TStorePbBlobT<TRecPtMap>::GetRecData(const uint64& RecId, const int& FieldI
     // callers (variable-length field setters) may re-point the returned hash
     // entry to a new blob location, which changes the persisted metadata
     MetaDirtyP = true;
+    // ... and makes the GetPgBf per-record memo stale (the callers' IsFieldNull
+    // re-primes it after this call, so PutRecData bumps the version once more)
+    PgBfWriteVersion++;
     TMemBase MemInternal;
     if (FieldLocV[FieldId] == TStoreLoc::slDisk) {
         Blob = DataBlob;
@@ -4868,6 +4885,15 @@ void TStorePbBlobT<TRecPtMap>::GetRecData(const uint64& RecId, const int& FieldI
     else {
         Mem = MemInternal;
     }
+}
+
+template <class TRecPtMap>
+void TStorePbBlobT<TRecPtMap>::PutRecData(const uint64& RecId, const TMem& Mem, TRecPtMap* RecIdBlobPtr, const PPgBlob& Blob, const TPgBlobPt* PgPt) {
+    RecIdBlobPtr->GetDat(RecId) = Blob->Put(Mem.GetBf(), Mem.Len(), *PgPt);
+    // Put may have moved the record: the memo entry that IsFieldNull (called by
+    // every setter between GetRecData and here) made for this record now points
+    // at a freed slot, which the blob can hand to another record
+    PgBfWriteVersion++;
 }
 
 /// Set the value of given field to NULL
@@ -4984,7 +5010,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldIntV(const uint64& RecId, const int& Fiel
 
     // index new data
     RecIndexer.IndexRecField(mem_out, RecId, FieldId, *FieldSerializator);
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
 template <class TRecPtMap>
@@ -5081,7 +5107,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldStr(const uint64& RecId, const int& Field
     if (FieldId == PrimaryFieldId) {
         SetPrimaryFieldStr(RecId, Str);
     }
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
 template <class TRecPtMap>
@@ -5101,7 +5127,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldStrV(const uint64& RecId, const int& Fiel
 
     // index new data
     RecIndexer.IndexRecField(mem_out, RecId, FieldId, *FieldSerializator);
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
 template <class TRecPtMap>
@@ -5203,7 +5229,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldFltV(const uint64& RecId, const int& Fiel
 
     // index new data
     RecIndexer.IndexRecField(mem_out, RecId, FieldId, *FieldSerializator);
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
 template <class TRecPtMap>
@@ -5269,7 +5295,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldNumSpV(const uint64& RecId, const int& Fi
 
     // index new data
     RecIndexer.IndexRecField(mem_out, RecId, FieldId, *FieldSerializator);
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
 template <class TRecPtMap>
@@ -5289,7 +5315,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldBowSpV(const uint64& RecId, const int& Fi
 
     // index new data
     RecIndexer.IndexRecField(mem_out, RecId, FieldId, *FieldSerializator);
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
 template <class TRecPtMap>
@@ -5309,7 +5335,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldTMem(const uint64& RecId, const int& Fiel
 
     // index new data
     RecIndexer.IndexRecField(mem_out, RecId, FieldId, *FieldSerializator);
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 /// Set field value using field id (default implementation throws exception)
 template <class TRecPtMap>
@@ -5329,7 +5355,7 @@ void TStorePbBlobT<TRecPtMap>::SetFieldJsonVal(const uint64& RecId, const int& F
 
     // index new data
     RecIndexer.IndexRecField(mem_out, RecId, FieldId, *FieldSerializator);
-    RecIdBlobPtr->GetDat(RecId) = Blob->Put(mem_out.GetBf(), mem_out.Len(), *PgPt);
+    PutRecData(RecId, mem_out, RecIdBlobPtr, Blob, PgPt);
 }
 
 /// Check if given ID is valid
@@ -5619,6 +5645,8 @@ void TStorePbBlobT<TRecPtMap>::DeleteAllRecs() {
             //DataMem->Del(Pt);
             RecIdBlobPtHMem.DelKey(DelRecId);
         }
+        // the record is no longer in the maps - drop any memo entry for it
+        PgBfWriteVersion++;
         // delete record from joins
         TRec Rec(this, DelRecId);
         for (int JoinN = 0; JoinN < GetJoins(); JoinN++) {
@@ -5728,6 +5756,9 @@ void TStorePbBlobT<TRecPtMap>::DeleteRecs(const TUInt64V& DelRecIdV, const int& 
             DataMem->Del(Pt);
             RecIdBlobPtHMem.DelKey(DelRecId);
         }
+        // the reads above (OnDelete, DoJoin) may have re-primed the GetPgBf memo
+        // with this record, whose slots are now freed (and reusable)
+        PgBfWriteVersion++;
     }
 
     // deleting the oldest records may have freed leading record-map slots (a
@@ -5817,6 +5848,9 @@ void TStorePbBlobT<TRecPtMap>::BatchDeleteRecs(const TUInt64V& DelRecIdV, const 
                 DataMem->Del(Pt);
                 RecIdBlobPtHMem.DelKey(DelRecId);
             }
+            // same as DeleteRecs: drop the memo entry the reads above made for
+            // this record, its slots are gone
+            PgBfWriteVersion++;
             DeletedRecs++;
         }
         const int64 Done = N + 1;
