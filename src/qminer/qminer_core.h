@@ -3454,9 +3454,11 @@ private:
     /// Executes GIX query expression against the tiny index
     bool DoQueryTiny(const TPt<TQmGixExpItemTiny>& ExpItem, TVec<TQmGixItemFull>& RecIdFqV) const;
 
-    /// Rebuild one gix into DestFPath - used by DefragGix
+    /// Rebuild one gix into DestFPath - used by DefragGix. Returns false when
+    /// the rebuilt key count does not match the non-empty source keys (index
+    /// entries lost or duplicated - the rebuilt gix must not be swapped in)
     template <class TQmGixItem>
-    void DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
+    bool DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const int64& CacheSize, const int& VerifySampleKeys) const;
 
@@ -3478,9 +3480,11 @@ private:
     /// RebuiltKeyIdSet) with a stage gix holding the freshly rebuilt postings of
     /// the keys in RebuiltKeyIdSet. Both sources are streamed key-by-key in
     /// sorted order, so every key's child vectors end up contiguous in the
-    /// destination - a separate defrag pass is not needed. Used by ReindexCopyGix
+    /// destination - a separate defrag pass is not needed. Used by ReindexCopyGix.
+    /// Returns false when the rebuilt key count does not match the non-empty
+    /// stage keys (the rebuilt gix must not be swapped in)
     template <class TQmGixItem>
-    void ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+    bool ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
         const TPt<TGix<TQmGixKey, TQmGixItem> >& StageGix, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize, const int& VerifySampleKeys) const;
@@ -3497,9 +3501,11 @@ private:
     /// record partitions keep it record-id ascending). MergeThreads reader
     /// threads prepare ordered chunks of merged posting lists; a single writer
     /// (the calling thread) appends them to the destination in key order.
-    /// Used by ReindexMergePartitionsGix
+    /// Used by ReindexMergePartitionsGix. Returns false when the rebuilt key
+    /// count does not match the non-empty final keys (the rebuilt gix must not
+    /// be swapped in)
     template <class TQmGixItem>
-    void ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+    bool ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
         const TVec<TPt<TGix<TQmGixKey, TQmGixItem> > >& WorkerGixV, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const TIntSet& RebuiltKeyIdSet, const TVec<THash<TInt, TUInt64V> >& WorkerVocWordMapV,
@@ -3728,8 +3734,12 @@ public:
     /// change. GixNmV selects which of "full", "small", "tiny" and "pos" to rebuild
     /// (empty = all). When VerifySampleKeys > 0, a sample of that many keys is re-read
     /// from both indices and compared in depth after each rebuild.
+    /// The rebuilt key count of every gix is checked against its non-empty
+    /// source keys; a mismatch is logged and, when MismatchGixNmV is given, the
+    /// gix's file-name prefix (e.g. "Index.GixFull") is appended to it so the
+    /// caller can refuse to swap that gix in (NULL = log only).
     void DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
-        const int& VerifySampleKeys) const;
+        const int& VerifySampleKeys, TStrV* MismatchGixNmV = NULL) const;
 
     /// Combine this (live) index with a stage index holding freshly rebuilt
     /// postings of the text keys in RebuiltKeyIdSet into new gix files at
@@ -3743,10 +3753,13 @@ public:
     /// VerifySampleKeys > 0, a sample of keys from each source is additionally
     /// compared in depth against the destination. The stage index must contain
     /// ONLY keys from RebuiltKeyIdSet. Used by the ReindexIndex console action,
-    /// together with a vocabulary produced by TIndexVoc::CloneWithFreshWordVocs
+    /// together with a vocabulary produced by TIndexVoc::CloneWithFreshWordVocs.
+    /// When MismatchGixNmV is given, the prefixes of the gixes whose rebuilt key
+    /// count does not match the non-empty stage keys are appended to it so the
+    /// caller can refuse to swap them in (NULL = log only)
     void ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
-        const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const;
+        const int& VerifySampleKeys, TStrV& RebuiltGixNmV, TStrV* MismatchGixNmV = NULL) const;
 
     /// Parallel-partition variant of ReindexCopyGix: combine this (live) index
     /// with N worker stage indexes that each hold the freshly rebuilt postings
@@ -3766,12 +3779,15 @@ public:
     /// VerifySampleKeys > 0, samples of both the kept and the merged keys are
     /// additionally compared in depth against the destination. Each worker
     /// index must contain ONLY keys from RebuiltKeyIdSet. FinalVoc is what
-    /// must be saved as the rebuilt index's IndexVoc.dat
+    /// must be saved as the rebuilt index's IndexVoc.dat. When MismatchGixNmV
+    /// is given, the prefixes of the gixes whose rebuilt key count does not
+    /// match the non-empty final keys are appended to it so the caller can
+    /// refuse to swap them in (NULL = log only)
     void ReindexMergePartitionsGix(const TVec<PIndex>& WorkerIndexV,
         const TVec<PIndexVoc>& WorkerVocV, const PIndexVoc& FinalVoc,
         const TIntSet& RebuiltKeyIdSet, const TStr& DestFPath,
         const int64& CacheSize, const int& VerifySampleKeys,
-        const int& MergeThreads, TStrV& RebuiltGixNmV) const;
+        const int& MergeThreads, TStrV& RebuiltGixNmV, TStrV* MismatchGixNmV = NULL) const;
 
     /// Diagnostic: open the gix file set of GixNm ("full", "small", "tiny" or
     /// "pos") in FPath read-only and try to fully read every itemset (header

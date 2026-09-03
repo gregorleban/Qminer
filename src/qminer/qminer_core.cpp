@@ -7099,7 +7099,7 @@ void TIndex::PutKeySplitLen(const int& KeyId, const int& SplitLen) {
 }
 
 template <class TQmGixItem>
-void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
+bool TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const int64& CacheSize, const int& VerifySampleKeys) const {
 
@@ -7132,7 +7132,8 @@ void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const
         "[Defrag] %s: source keys %s (of which %s empty - skipped), rebuilt keys %s, items copied %s",
         GixNm.CStr(), TStrUtil::GetStr(SrcKeys).CStr(), TStrUtil::GetStr(EmptyKeys).CStr(),
         TStrUtil::GetStr(DestKeys).CStr(), TStrUtil::GetStr(CopiedItems).CStr()));
-    if (DestKeys != SrcKeys - EmptyKeys) {
+    const bool KeyCountOkP = (DestKeys == SrcKeys - EmptyKeys);
+    if (!KeyCountOkP) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Defrag] WARNING: %s rebuilt key count %s does not match the %s non-empty source keys - "
             "index entries were lost or duplicated by the rebuild, do not swap this index in!",
@@ -7146,10 +7147,11 @@ void TIndex::DefragOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& SrcGix, const
     // releasing the destination gix flushes it and saves its key hash table
     DestGix.Clr();
     TEnv::Logger->OnStatus("Defragmenting " + GixNm + " done");
+    return KeyCountOkP;
 }
 
 void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& CacheSize,
-        const int& VerifySampleKeys) const {
+        const int& VerifySampleKeys, TStrV* MismatchGixNmV) const {
 
     // make sure the destination folder exists
     TDir::GenDir(DestFPath);
@@ -7158,21 +7160,25 @@ void TIndex::DefragGix(const TStr& DestFPath, const TStrV& GixNmV, const int64& 
     for (int GixNmN = 0; GixNmN < GixNmV.Len(); GixNmN++) { LcGixNmV.Add(GixNmV[GixNmN].GetLc()); }
     const bool AllP = LcGixNmV.Empty();
     if (AllP || LcGixNmV.IsIn("full")) {
-        DefragOneGix<TQmGixItemFull>(GixFull, "Index.GixFull", DestFPath, SumItemHandlerFull, CacheSize, VerifySampleKeys);
+        if (!DefragOneGix<TQmGixItemFull>(GixFull, "Index.GixFull", DestFPath, SumItemHandlerFull, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixFull"); }
     }
     if (AllP || LcGixNmV.IsIn("small")) {
-        DefragOneGix<TQmGixItemSmall>(GixSmall, "Index.GixSmall", DestFPath, SumItemHandlerSmall, CacheSize, VerifySampleKeys);
+        if (!DefragOneGix<TQmGixItemSmall>(GixSmall, "Index.GixSmall", DestFPath, SumItemHandlerSmall, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixSmall"); }
     }
     if (AllP || LcGixNmV.IsIn("tiny")) {
-        DefragOneGix<TQmGixItemTiny>(GixTiny, "Index.GixTiny", DestFPath, ItemHandlerTiny, CacheSize, VerifySampleKeys);
+        if (!DefragOneGix<TQmGixItemTiny>(GixTiny, "Index.GixTiny", DestFPath, ItemHandlerTiny, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixTiny"); }
     }
     if (AllP || LcGixNmV.IsIn("pos")) {
-        DefragOneGix<TQmGixItemPos>(GixPos, "Index.GixPos", DestFPath, ItemHandlerPos, CacheSize, VerifySampleKeys);
+        if (!DefragOneGix<TQmGixItemPos>(GixPos, "Index.GixPos", DestFPath, ItemHandlerPos, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixPos"); }
     }
 }
 
 template <class TQmGixItem>
-void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+bool TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
         const TPt<TGix<TQmGixKey, TQmGixItem> >& StageGix, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize, const int& VerifySampleKeys) const {
@@ -7234,7 +7240,8 @@ void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
         TStrUtil::GetStr(StageItems).CStr(), TStrUtil::GetStr(DestKeys - KeysAfterLiveCopy).CStr()));
     // before/after accounting, as in the defrag rebuild: only fully-deleted
     // posting lists may be missing from the destination
-    if (DestKeys - KeysAfterLiveCopy != StageGix->GetKeys() - StageEmptyKeys) {
+    const bool KeyCountOkP = (DestKeys - KeysAfterLiveCopy == StageGix->GetKeys() - StageEmptyKeys);
+    if (!KeyCountOkP) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Reindex] WARNING: %s rebuilt key count %d does not match the %d non-empty stage keys - "
             "index entries were lost or duplicated by the rebuild, do not swap this index in!",
@@ -7250,11 +7257,12 @@ void TIndex::ReindexCopyOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
     // releasing the destination gix flushes it and saves its key hash table
     DestGix.Clr();
     TEnv::Logger->OnStatus("Rebuilding " + GixNm + " done");
+    return KeyCountOkP;
 }
 
 void TIndex::ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
         const TIntSet& RebuiltKeyIdSet, const int64& CacheSize,
-        const int& VerifySampleKeys, TStrV& RebuiltGixNmV) const {
+        const int& VerifySampleKeys, TStrV& RebuiltGixNmV, TStrV* MismatchGixNmV) const {
 
     RebuiltGixNmV.Clr();
     QmAssertR(!RebuiltKeyIdSet.Empty(), "[TIndex::ReindexCopyGix] the rebuilt key set is empty");
@@ -7284,29 +7292,33 @@ void TIndex::ReindexCopyGix(const PIndex& StageIndex, const TStr& DestFPath,
     }
     TDir::GenDir(DestFPath);
     if (FullP) {
-        ReindexCopyOneGix<TQmGixItemFull>(GixFull, StageIndex->GixFull, "Index.GixFull",
-            DestFPath, SumItemHandlerFull, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        if (!ReindexCopyOneGix<TQmGixItemFull>(GixFull, StageIndex->GixFull, "Index.GixFull",
+                DestFPath, SumItemHandlerFull, RebuiltKeyIdSet, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixFull"); }
         RebuiltGixNmV.Add("Index.GixFull");
     }
     if (SmallP) {
-        ReindexCopyOneGix<TQmGixItemSmall>(GixSmall, StageIndex->GixSmall, "Index.GixSmall",
-            DestFPath, SumItemHandlerSmall, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        if (!ReindexCopyOneGix<TQmGixItemSmall>(GixSmall, StageIndex->GixSmall, "Index.GixSmall",
+                DestFPath, SumItemHandlerSmall, RebuiltKeyIdSet, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixSmall"); }
         RebuiltGixNmV.Add("Index.GixSmall");
     }
     if (TinyP) {
-        ReindexCopyOneGix<TQmGixItemTiny>(GixTiny, StageIndex->GixTiny, "Index.GixTiny",
-            DestFPath, ItemHandlerTiny, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        if (!ReindexCopyOneGix<TQmGixItemTiny>(GixTiny, StageIndex->GixTiny, "Index.GixTiny",
+                DestFPath, ItemHandlerTiny, RebuiltKeyIdSet, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixTiny"); }
         RebuiltGixNmV.Add("Index.GixTiny");
     }
     if (PosP) {
-        ReindexCopyOneGix<TQmGixItemPos>(GixPos, StageIndex->GixPos, "Index.GixPos",
-            DestFPath, ItemHandlerPos, RebuiltKeyIdSet, CacheSize, VerifySampleKeys);
+        if (!ReindexCopyOneGix<TQmGixItemPos>(GixPos, StageIndex->GixPos, "Index.GixPos",
+                DestFPath, ItemHandlerPos, RebuiltKeyIdSet, CacheSize, VerifySampleKeys)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixPos"); }
         RebuiltGixNmV.Add("Index.GixPos");
     }
 }
 
 template <class TQmGixItem>
-void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
+bool TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix,
         const TVec<TPt<TGix<TQmGixKey, TQmGixItem> > >& WorkerGixV, const TStr& GixNm,
         const TStr& DestFPath, const TGixItemHandler<TQmGixKey, TQmGixItem>* GixItemHandler,
         const TIntSet& RebuiltKeyIdSet, const TVec<THash<TInt, TUInt64V> >& WorkerVocWordMapV,
@@ -7626,7 +7638,8 @@ void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix
         "[Reindex] %s: %s items in %s keys kept from the live index, %s items in %s keys merged from %d partitions",
         GixNm.CStr(), TStrUtil::GetStr(LiveItems).CStr(), TStrUtil::GetStr(KeysAfterLiveCopy).CStr(),
         TStrUtil::GetStr(RebuiltItems).CStr(), TStrUtil::GetStr(DestKeys - KeysAfterLiveCopy).CStr(), Workers));
-    if (DestKeys - KeysAfterLiveCopy != FinalKeyV.Len() - RebuiltEmptyKeys) {
+    const bool KeyCountOkP = (DestKeys - KeysAfterLiveCopy == FinalKeyV.Len() - RebuiltEmptyKeys);
+    if (!KeyCountOkP) {
         TEnv::Logger->OnStatus(TStr::Fmt(
             "[Reindex] WARNING: %s rebuilt key count %d does not match the %d non-empty final keys - "
             "index entries were lost or duplicated by the rebuild, do not swap this index in!",
@@ -7684,13 +7697,14 @@ void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix
     // releasing the destination gix flushes it and saves its key dictionary
     DestGix.Clr();
     TEnv::Logger->OnStatus("Rebuilding " + GixNm + " done");
+    return KeyCountOkP;
 }
 
 void TIndex::ReindexMergePartitionsGix(const TVec<PIndex>& WorkerIndexV,
         const TVec<PIndexVoc>& WorkerVocV, const PIndexVoc& FinalVoc,
         const TIntSet& RebuiltKeyIdSet, const TStr& DestFPath,
         const int64& CacheSize, const int& VerifySampleKeys,
-        const int& MergeThreads, TStrV& RebuiltGixNmV) const {
+        const int& MergeThreads, TStrV& RebuiltGixNmV, TStrV* MismatchGixNmV) const {
 
     RebuiltGixNmV.Clr();
     QmAssertR(!RebuiltKeyIdSet.Empty(), "[TIndex::ReindexMergePartitionsGix] the rebuilt key set is empty");
@@ -7769,29 +7783,33 @@ void TIndex::ReindexMergePartitionsGix(const TVec<PIndex>& WorkerIndexV,
     if (FullP) {
         TVec<TPt<TGix<TQmGixKey, TQmGixItemFull> > > WorkerGixV;
         for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixFull); }
-        ReindexMergeOneGix<TQmGixItemFull>(GixFull, WorkerGixV, "Index.GixFull", DestFPath,
-            SumItemHandlerFull, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
+        if (!ReindexMergeOneGix<TQmGixItemFull>(GixFull, WorkerGixV, "Index.GixFull", DestFPath,
+                SumItemHandlerFull, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixFull"); }
         RebuiltGixNmV.Add("Index.GixFull");
     }
     if (SmallP) {
         TVec<TPt<TGix<TQmGixKey, TQmGixItemSmall> > > WorkerGixV;
         for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixSmall); }
-        ReindexMergeOneGix<TQmGixItemSmall>(GixSmall, WorkerGixV, "Index.GixSmall", DestFPath,
-            SumItemHandlerSmall, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
+        if (!ReindexMergeOneGix<TQmGixItemSmall>(GixSmall, WorkerGixV, "Index.GixSmall", DestFPath,
+                SumItemHandlerSmall, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixSmall"); }
         RebuiltGixNmV.Add("Index.GixSmall");
     }
     if (TinyP) {
         TVec<TPt<TGix<TQmGixKey, TQmGixItemTiny> > > WorkerGixV;
         for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixTiny); }
-        ReindexMergeOneGix<TQmGixItemTiny>(GixTiny, WorkerGixV, "Index.GixTiny", DestFPath,
-            ItemHandlerTiny, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
+        if (!ReindexMergeOneGix<TQmGixItemTiny>(GixTiny, WorkerGixV, "Index.GixTiny", DestFPath,
+                ItemHandlerTiny, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixTiny"); }
         RebuiltGixNmV.Add("Index.GixTiny");
     }
     if (PosP) {
         TVec<TPt<TGix<TQmGixKey, TQmGixItemPos> > > WorkerGixV;
         for (int WorkerN = 0; WorkerN < Workers; WorkerN++) { WorkerGixV.Add(WorkerIndexV[WorkerN]->GixPos); }
-        ReindexMergeOneGix<TQmGixItemPos>(GixPos, WorkerGixV, "Index.GixPos", DestFPath,
-            ItemHandlerPos, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads);
+        if (!ReindexMergeOneGix<TQmGixItemPos>(GixPos, WorkerGixV, "Index.GixPos", DestFPath,
+                ItemHandlerPos, RebuiltKeyIdSet, WorkerVocWordMapV, CacheSize, VerifySampleKeys, MergeThreads)
+            && MismatchGixNmV != NULL) { MismatchGixNmV->Add("Index.GixPos"); }
         RebuiltGixNmV.Add("Index.GixPos");
     }
 }
