@@ -7502,7 +7502,11 @@ void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix
                 std::lock_guard<std::mutex> ExcLock(ExcMx);
                 if (!FirstExc) { FirstExc = std::current_exception(); }
             }
-            StopP = true;
+            // StopP is tested inside the wait predicates, so it must be set under
+            // QueueMx: a store + notify outside the lock can land between a waiter's
+            // predicate check and its block, and that wake-up is lost - with one
+            // reader the writer then waits forever instead of rethrowing
+            { std::lock_guard<std::mutex> QueueLock(QueueMx); StopP = true; }
             CanConsume.notify_all();
             CanPublish.notify_all();
         }
@@ -7517,8 +7521,9 @@ void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix
         for (int ThreadN = 0; ThreadN < MergeThreads; ThreadN++) { ReaderThreadV.emplace_back(ReaderFun); }
     } catch (...) {
         // a failed thread spawn: stop and join the readers already running before
-        // unwinding (a std::thread must never be destroyed joinable)
-        StopP = true;
+        // unwinding (a std::thread must never be destroyed joinable). StopP is set
+        // under QueueMx so the wake-up cannot be lost (see the reader's catch)
+        { std::lock_guard<std::mutex> QueueLock(QueueMx); StopP = true; }
         CanPublish.notify_all();
         for (size_t ThreadN = 0; ThreadN < ReaderThreadV.size(); ThreadN++) { ReaderThreadV[ThreadN].join(); }
         // auto: TMergeChunk is local to this template function, so the map's
@@ -7593,7 +7598,9 @@ void TIndex::ReindexMergeOneGix(const TPt<TGix<TQmGixKey, TQmGixItem> >& LiveGix
             std::lock_guard<std::mutex> ExcLock(ExcMx);
             if (!FirstExc) { FirstExc = std::current_exception(); }
         }
-        StopP = true;
+        // set under QueueMx so a reader between its predicate check and its wait
+        // cannot miss the stop (see the reader's catch)
+        { std::lock_guard<std::mutex> QueueLock(QueueMx); StopP = true; }
     }
     // shut the pipeline down: wake every waiting reader, join them all (a
     // std::thread must never be destroyed joinable), release leftover chunks
