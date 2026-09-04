@@ -444,7 +444,7 @@ void TGixItemSet<TKey, TItem>::ProcessDeletes() {
 
 template <class TKey, class TItem>
 TGixItemSet<TKey, TItem>::TGixItemSet(TSIn& SIn, const TGix<TKey, TItem>* _Gix):
-    ItemSetKey(SIn), ItemV(SIn), ChildInfoV(SIn), MergedP(true), DirtyP(false), Gix(_Gix) {
+    ItemSetKey(SIn), ItemV(SIn), ChildInfoV(SIn), MergedP(true), DirtyP(false), DeleteMarkerP(false), Gix(_Gix) {
 
     ResolveSplitLen();
     for (int ChildN = 0; ChildN < ChildInfoV.Len(); ChildN++) {
@@ -539,6 +539,9 @@ void TGixItemSet<TKey, TItem>::AddItem(const TItem& NewItem, const bool& NotifyC
         // same record. Force a Def(), whose merge cancels it or scrubs it
         if (MergedP && Gix->GetItemHandler()->IsDeleteMarker(NewItem)) { MergedP = false; }
     }
+    // remember that the buffer holds a marker so Def()/DefLocal() run the scrubbing pass
+    // (checked here for every item, so that a marker added to an unmerged set counts too)
+    if (!DeleteMarkerP && Gix->GetItemHandler()->IsDeleteMarker(NewItem)) { DeleteMarkerP = true; }
     const uint64 OldItemVSize = ItemV.GetMemUsed();
     // if first item we are adding to the itemset, we start with size 2 to avoid default of 16
     if (ItemV.Len() == 0) { ItemV.Reserve(2); }
@@ -760,6 +763,7 @@ void TGixItemSet<TKey, TItem>::Clr() {
     ItemV.Clr();
     ItemVDel.Clr();
     MergedP = true;
+    DeleteMarkerP = false;
     DirtyP = true;
     TotalCnt = 0;
     Gix->AddToNewCacheSizeInc(OldSize, GetMemUsed());
@@ -781,10 +785,14 @@ void TGixItemSet<TKey, TItem>::Def() {
         // into a child as a permanent ghost posting, and cancel a later legitimate re-add of
         // the same record. Until 2026-07 the always-on global merge below did this scrubbing;
         // the local rebalancing removed that merge for the common case. The tail is at most
-        // SplitLen items and already sorted, so this costs one linear pass
-        if (ItemV.Len() > 0) {
+        // SplitLen items and already sorted, so this costs one linear pass - and it only runs
+        // when a marker was actually added since the last global pass (DeleteMarkerP): on the
+        // pure-add path the local merge above already produced the final buffer, and for the
+        // handlers without markers (pos, default) the two merges are the same work anyway
+        if (DeleteMarkerP && ItemV.Len() > 0) {
             Gix->GetItemHandler()->Merge(ItemV, false);
         }
+        DeleteMarkerP = false; // every marker is now either cancelled, scrubbed, or in a merged child
 
         int FirstChildToMerge = GetFirstChildToMerge();
         if (FirstChildToMerge >= 0 && !HasOverlappingChildren()) {
@@ -858,7 +866,9 @@ void TGixItemSet<TKey, TItem>::DefLocal() {
             const bool TailBeyondChildrenP = ChildInfoV.Len() == 0 || ItemV.Len() == 0 ||
                 Gix->GetItemHandler()->IsLt(ChildInfoV.Last().MaxItem, ItemV[0]);
             if (TailBeyondChildrenP) {
-                if (ItemV.Len() > 0) { Gix->GetItemHandler()->Merge(ItemV, false); }
+                // the global pass is only needed when a marker is pending (see Def())
+                if (DeleteMarkerP && ItemV.Len() > 0) { Gix->GetItemHandler()->Merge(ItemV, false); }
+                DeleteMarkerP = false;
                 MergedP = true; // local merge achieved global merge
             }
             // update the total count - since we have only been modifying the ItemV we can simply

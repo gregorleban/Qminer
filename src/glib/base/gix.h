@@ -497,6 +497,12 @@ private:
     TBool MergedP;
     /// Should this itemset be stored to disk?
     TBool DirtyP;
+    /// A delete marker (see TGixItemHandler::IsDeleteMarker) was added to the work buffer
+    /// and has not been through a global merge yet. Only then do Def()/DefLocal() run the
+    /// extra global pass over the buffer tail that scrubs unpaired markers - on the
+    /// pure-add path (indexing) the pass would just repeat the local merge. Not persisted:
+    /// a loaded itemset is merged, so nothing is pending
+    TBool DeleteMarkerP;
 
     /// Pointer to gix used to access storage and merger.
     /// (serialization of self, loading children, notifying about changes...)
@@ -556,7 +562,7 @@ private:
 public:
     /// Create empty itemset
     TGixItemSet(const TKey& _ItemSetKey, const TGix<TKey, TItem>* _Gix) :
-        ItemSetKey(_ItemSetKey), TotalCnt(0), MergedP(true), DirtyP(true), Gix(_Gix) {
+        ItemSetKey(_ItemSetKey), TotalCnt(0), MergedP(true), DirtyP(true), DeleteMarkerP(false), Gix(_Gix) {
         ResolveSplitLen(); }
     /// Create empty itemset
     static PGixItemSet New(const TKey& ItemSetKey, const TGix<TKey, TItem>* Gix) {
