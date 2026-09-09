@@ -148,6 +148,7 @@ typedef long long index_t;
 #include <ctype.h>
 #include <float.h>
 #include <complex>
+#include <mutex>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>

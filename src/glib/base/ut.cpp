@@ -347,9 +347,15 @@ TChA TBufferStackWalker::GetOutput()
 // it will load the modules. This is a slow process so we want to call it only once.
 TBufferStackWalker GlobalStackWalker;
 
-// static method that generates stack trace and returns it
+// static method that generates stack trace and returns it.
+// Serialized: the walker's output buffer is shared, and the DbgHelp symbol functions behind
+// ShowCallstack are documented as single-threaded per process. Every EAssert* on Windows ends
+// up here, so two threads throwing at the same time (an omp parallel for over a batch of bad
+// records) used to corrupt the heap and take the process down (ServerArticles, 2026-09-09)
+static std::mutex StackTraceMutex;
 TChA TBufferStackWalker::GetStackTrace()
 {
+    std::lock_guard<std::mutex> Lock(StackTraceMutex);
     GlobalStackWalker.ClearOutput();
     GlobalStackWalker.ShowCallstack();
     return GlobalStackWalker.GetOutput();
