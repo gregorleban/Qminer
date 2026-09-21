@@ -774,9 +774,23 @@ private:
     private:
         TGix<TKey, TItem>& DestGix;
         TKey Key;
+        /// how many of the streamed source items are delete markers. They are the only
+        /// items the destination may legitimately end up without: its global merge
+        /// cancels each against its positive posting, or drops it when it is lone.
+        /// CopyTo's count check needs this to tell a repair from real data loss
+        int MarkerCnt;
     public:
-        TCopyToHandler(TGix<TKey, TItem>& _DestGix, const TKey& _Key): DestGix(_DestGix), Key(_Key) {}
-        void operator()(const TVec<TItem>& ItemV) { if (!ItemV.Empty()) { DestGix.AddItemV(Key, ItemV); } }
+        TCopyToHandler(TGix<TKey, TItem>& _DestGix, const TKey& _Key):
+            DestGix(_DestGix), Key(_Key), MarkerCnt(0) {}
+        void operator()(const TVec<TItem>& ItemV) {
+            if (ItemV.Empty()) { return; }
+            const TGixItemHandler<TKey, TItem>* ItemHandler = DestGix.GetItemHandler();
+            for (int ItemN = 0; ItemN < ItemV.Len(); ItemN++) {
+                if (ItemHandler->IsDeleteMarker(ItemV[ItemN])) { MarkerCnt++; }
+            }
+            DestGix.AddItemV(Key, ItemV);
+        }
+        int GetMarkerCnt() const { return MarkerCnt; }
     };
 
 private:

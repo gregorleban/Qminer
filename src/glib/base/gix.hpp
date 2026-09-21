@@ -1448,6 +1448,9 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
     printf("Copying %s: %d keys\n", GixFNm.GetFMid().CStr(), KeyV.Len());
     uint64 TotalItems = 0;
     int EmptyKeys = 0;
+    // items the destination dropped because they were stale delete markers (see the
+    // count check below). Reported at the end so a rebuild that repaired ghosts says so
+    uint64 ScrubbedItems = 0; int ScrubbedKeys = 0;
     // progress timing: report item throughput (items/second) alongside the counter.
     // the rate refreshes at most once per RateWindowSecs, computed over that whole
     // window, so it stays stable instead of oscillating when many keys copy in well
@@ -1466,11 +1469,24 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
                 TCopyToHandler Handler(DestGix, Key);
                 ItemSet->GetItemV(Handler);
                 TotalItems += (uint64) SrcItems;
-                // validate that the destination received all the items
+                // validate that the destination received all the items. The one legitimate
+                // shrinkage is a delete marker (a negative-frequency posting): the destination
+                // is built fresh, so its global merge either cancels the marker against its
+                // positive (one item less, or two when the sum reaches exactly zero) or, when
+                // the marker is lone, drops it. Lone markers persist in the source because
+                // writers between the 2026-07 local rebalancing and the 2026-09-03 scrub fix
+                // pushed them into child vectors, where Def()'s work-buffer scrub cannot reach
+                // them - the destination is the more correct of the two. Anything the markers
+                // do not account for is real data loss and still fails
                 const int DestItems = DestGix.GetItemSet(Key)->GetItems();
-                EAssertR(DestItems == SrcItems, TStr::Fmt(
-                    "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination",
-                    KeyN, KeyV.Len(), SrcItems, DestItems));
+                const int MarkerItems = Handler.GetMarkerCnt();
+                EAssertR(DestItems <= SrcItems && DestItems >= SrcItems - 2 * MarkerItems, TStr::Fmt(
+                    "TGix::CopyTo: item count mismatch for key %d of %d: %d in source, %d in destination "
+                    "(%d delete marker(s) in the source explain at most %d of the difference)",
+                    KeyN, KeyV.Len(), SrcItems, DestItems, MarkerItems, 2 * MarkerItems));
+                if (DestItems < SrcItems) {
+                    ScrubbedItems += (uint64)(SrcItems - DestItems); ScrubbedKeys++;
+                }
                 // the destination itemset is finished (keys are copied in sorted order
                 // and never revisited) - flush it and evict it so the destination cache
                 // holds only the key in flight instead of every key copied so far
@@ -1505,11 +1521,23 @@ void TGix<TKey, TItem>::CopyTo(TGix<TKey, TItem>& DestGix, uint64* CopiedItemsOu
                 TStrUtil::GetStr(TotalItems).CStr(), TStrUtil::GetStr((uint64)ItemsPerSec).CStr());
         }
     }
+    // after scrubbing, count the keys the destination really lacks (an all-marker key may
+    // be kept as an empty shell or dropped); the caller reconciles against this number
+    if (ScrubbedKeys > 0) {
+        EmptyKeys = 0;
+        for (int KeyN = 0; KeyN < KeyV.Len(); KeyN++) {
+            if (!DestGix.IsKey(KeyV[KeyN])) { EmptyKeys++; }
+        }
+    }
     const double TotSecs = CopyTm.GetSecs();
     const uint64 AvgItemsPerSec = TotSecs > 0 ? (uint64)((double)TotalItems / TotSecs) : (uint64)0;
     printf("%s / %s keys (100.0%%), %s items copied, %s empty keys skipped, avg %s items/s\n",
         TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(KeyV.Len()).CStr(), TStrUtil::GetStr(TotalItems).CStr(),
         TStrUtil::GetStr(EmptyKeys).CStr(), TStrUtil::GetStr(AvgItemsPerSec).CStr());
+    if (ScrubbedItems > 0) {
+        printf("TGix::CopyTo: %s stale delete-marker item(s) across %s key(s) dropped by the destination merge\n",
+            TStrUtil::GetStr(ScrubbedItems).CStr(), TStrUtil::GetStr(ScrubbedKeys).CStr());
+    }
     if (FailedKeyV != NULL && !FailedKeyV->Empty()) {
         printf("TGix::CopyTo: %d key(s) FAILED - the destination is incomplete and must not be used\n", FailedKeyV->Len());
     }
@@ -1575,18 +1603,22 @@ bool TGix<TKey, TItem>::IsKeyDataEqual(const TGix<TKey, TItem>& OtherGix, const 
     PGixItemSet ItemSet = GetItemSet(Key);
     PGixItemSet OtherItemSet = OtherGix.GetItemSet(Key);
     const int Items = ItemSet->GetItems();
-    bool EqualP = (Items == OtherItemSet->GetItems());
-    if (EqualP && Items > 0) {
-        if (Items <= MxItems) {
-            // compare complete item vectors
-            TVec<TItem> ItemV; ItemSet->GetItemV(ItemV);
-            TVec<TItem> OtherItemV; OtherItemSet->GetItemV(OtherItemV);
-            EqualP = (ItemV == OtherItemV);
-        } else {
-            // too large to fully materialize twice - compare the boundary items
-            EqualP = (ItemSet->GetItem(0) == OtherItemSet->GetItem(0)) &&
-                (ItemSet->GetItem(Items - 1) == OtherItemSet->GetItem(Items - 1));
-        }
+    const int OtherItems = OtherItemSet->GetItems();
+    bool EqualP;
+    if (Items <= MxItems) {
+        // compare complete item vectors, with the source merged GLOBALLY first: a rebuilt
+        // gix is produced by exactly that merge, so stale delete markers the source still
+        // carries are cancelled or dropped here too instead of being reported as a
+        // difference against the repaired copy. Without markers the merge is a no-op
+        TVec<TItem> ItemV; ItemSet->GetItemV(ItemV);
+        ItemHandler->Merge(ItemV, false);
+        TVec<TItem> OtherItemV; OtherItemSet->GetItemV(OtherItemV);
+        EqualP = (ItemV == OtherItemV);
+    } else {
+        // too large to fully materialize twice - compare count and the boundary items
+        EqualP = (Items == OtherItems) && (Items == 0 ||
+            ((ItemSet->GetItem(0) == OtherItemSet->GetItem(0)) &&
+             (ItemSet->GetItem(Items - 1) == OtherItemSet->GetItem(Items - 1))));
     }
     // release both itemsets so verification does not grow the caches
     DropFromCache(Key);
