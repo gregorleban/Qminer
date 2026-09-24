@@ -315,7 +315,22 @@ void TWebPgFetchEvent::OnGetHost(const PSockHost& SockHost)
             PortN = PortNStr.GetInt(80);
         }
         Sock->PutTimeOut(TimeOutMSecs);
-        Sock->Connect(SockHost, PortN);
+        // Connect runs inside the async DNS-resolution callback, not under the
+        // FetchHttpRq caller's try/catch: a synchronous throw here (e.g. WSAENOBUFS
+        // when the machine is briefly out of socket buffers) used to unwind the
+        // whole event loop and shut the service down with EXIT_CODE_EXCEPTION.
+        // Route it through the same retry/error path as an asynchronously reported
+        // socket error: OnError retries up to MxRetries and then fails just this
+        // fetch, which the callers (e.g. the kafka REST poll) already handle
+        try {
+            Sock->Connect(SockHost, PortN);
+        }
+        catch (PExcept E) {
+            OnError(0, -1, E->GetMsgStr());
+        }
+        catch (...) {
+            OnError(0, -1, "unknown exception in Sock->Connect");
+        }
     }
     else {
         OnFetchError("Invalid Host");
